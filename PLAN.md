@@ -20,21 +20,24 @@ someone else's decades of work.
 
 We don't need multi-user. We don't need login. We don't need file ownership or
 permissions. We don't need 30 platform ports. We need a small, single-user OS
-for the 68000 that can run GNU tools and is simple enough that one person can
-read the entire kernel source in an afternoon.
+for the 68000 that can run Unix utilities and is simple enough that one person
+can read the entire kernel source in an afternoon.
 
 ## Goals
 
 1. **Readable** — The entire kernel fits in your head. Every line has a reason.
 2. **Single-user** — No UIDs, no permissions, no login. Like DOS, but with a
    proper syscall interface.
-3. **POSIX-enough** — Enough POSIX syscalls that newlib works and GNU tools
-   (gcc, as, ld, make, gdb) can be ported without heroics.
+3. **POSIX-enough** — Enough POSIX syscalls that standard C programs compile
+   and Unix utilities run.
 4. **No MMU required** — Designed from the start for flat memory, no virtual
    address translation.
 5. **Portable to Mega Drive** — The Mega Drive is the final target, but we
    develop on something simpler first.
 6. **Small** — Measured in thousands of lines, not tens of thousands.
+7. **Multitasking** — Preemptive scheduling, job control, pipes, redirection.
+8. **Maximum app portability** — Choose formats and APIs that give access to
+   the largest pool of portable Unix utilities.
 
 ## Non-Goals
 
@@ -44,20 +47,538 @@ read the entire kernel source in an afternoon.
 - POSIX compliance certification
 - Supporting any CPU other than 68000 (initially)
 
+---
+
+## Binary Format Decision: Fuzix-style a.out
+
+### The Analysis
+
+We evaluated four binary format options:
+
+| Format | Header | Relocation | Toolchain | App Ecosystem |
+|--------|--------|------------|-----------|---------------|
+| **Fuzix a.out** | 16 bytes | Kernel-applied relocs | m68k-linux-gnu-gcc + Fuzix link scripts | 143+ Fuzix utilities, proven on 68000 MD |
+| **bFLT v4** | 64 bytes | Offset list | m68k-linux-gnu-gcc + elf2flt | uClinux apps (mostly too large for 64KB) |
+| **Raw ELF** | ~52+ bytes | Full ELF relocs | Any m68k gcc | Theoretically huge, but loader is complex |
+| **Flat binary** | None | None (fixed address) | Any | None — every app must know its load address |
+
+### Decision: Fuzix a.out
+
+**Fuzix's binary format is the right choice.** Here's why:
+
+1. **143+ utilities ready to compile.** Fuzix has `sh`, `ed`, `vi` (levee),
+   `grep`, `sed`, `awk`, `sort`, `ls`, `cp`, `mv`, `rm`, `cat`, `make`,
+   `cc` (small C), `tar`, `ar`, `dd`, BASIC, BCPL, games, and more. All
+   designed for 68000 systems with 64KB-class RAM.
+
+2. **Proven on this exact hardware.** Fuzix ran on the Mega Drive with
+   multitasking, job control, pipes, and a working shell. The binary format
+   and loader are known good.
+
+3. **Right-sized for the hardware.** The 16-byte header and simple relocation
+   scheme waste almost nothing. bFLT's 64-byte header is overkill. ELF is
+   absurdly complex for a 64KB system.
+
+4. **The toolchain exists.** `m68k-linux-gnu-gcc` with Fuzix's crt0 and link
+   scripts produces these binaries. No need to build or port `elf2flt`.
+
+5. **Relocation is simple.** Fuzix's 68000 binaries use kernel-applied
+   relocations. The loader reads a relocation table and adjusts absolute
+   addresses by adding the load base. ~30 lines of C.
+
+### What about uClinux/bFLT apps?
+
+uClinux apps are designed for systems with megabytes of RAM and uClibc
+(~100KB+ C library). They're too large for the Mega Drive. The few that would
+fit can be recompiled against our libc anyway — the binary format doesn't
+matter for source-level ports.
+
+### What about "largest possible app library"?
+
+The limiting factor is **RAM, not binary format.** With 64KB main + 512KB
+cart RAM, only programs designed for tiny systems will fit. Fuzix's 143+
+utilities are the largest collection of Unix programs designed for exactly
+this scale. No other ecosystem comes close.
+
+For larger programs (GCC, GDB, dash), cross-compilation is the answer.
+They run on the host and produce Genix binaries.
+
+### Binary Header
+
+```c
+/* Fuzix a.out header — 16 bytes */
+struct exec {
+    uint16_t a_magic;     /* 0x80A8 */
+    uint8_t  a_cpu;       /* 9 = 68000 */
+    uint8_t  a_cpufeat;   /* CPU feature flags */
+    uint8_t  a_base;      /* Load address page */
+    uint8_t  a_hints;     /* 0x01=graphics, 0x02=debug */
+    uint16_t a_text;      /* Text segment size */
+    uint16_t a_data;      /* Data segment size */
+    uint16_t a_bss;       /* BSS segment size */
+    uint8_t  a_entry;     /* Entry point offset */
+    uint8_t  a_size;      /* Memory request (0=all available) */
+    uint8_t  a_stack;     /* Stack size hint */
+    uint8_t  a_zp;        /* Zero/direct page (unused on 68000) */
+};
+```
+
+Note: Segment sizes in the header are 16-bit. For 68000 32-bit systems,
+Fuzix uses an extended format with 32-bit sizes (the "small extensions to
+handle the relocation maps" mentioned in Fuzix's README.binfmt). If
+needed, we can use a 32-bit variant or encode sizes in 256-byte pages.
+
+### Memory Layout at exec()
+
+```
+                    ┌──────────────────┐  ← load_base + total_size
+                    │  Stack (grows ↓) │
+                    │  (a_stack pages) │
+                    ├──────────────────┤  ← initial SP
+                    │  BSS (zeroed)    │
+                    │  (a_bss bytes)   │
+                    ├──────────────────┤
+                    │  Data segment    │
+                    │  (a_data bytes)  │
+                    ├──────────────────┤
+                    │  Text segment    │
+                    │  (a_text bytes)  │
+                    └──────────────────┘  ← load_base (entry point)
+```
+
+### Relocation at Load Time
+
+1. Read binary from filesystem
+2. Allocate contiguous memory block (text + data + bss + stack)
+3. Copy text + data into the block
+4. Zero BSS
+5. Walk relocation table: for each entry, add `load_base` to the 32-bit
+   word at the given offset
+6. Set up stack with `argc`, `argv[]`, `envp[]`, string data
+7. Set PC = entry point, SP = top of stack, jump to userspace
+
+### Loader Implementation (~100 lines)
+
+```c
+int do_exec(const char *path, const char **argv) {
+    struct exec hdr;
+    /* Read and validate header */
+    /* Calculate sizes: text + data + bss + stack */
+    /* Allocate memory via kmalloc */
+    /* Read text + data segments */
+    /* Zero BSS */
+    /* Apply relocations */
+    /* Set up user stack: argc, argv, envp */
+    /* Set process registers: PC, SP */
+    /* If vfork child: wake parent */
+    /* Switch to user mode */
+}
+```
+
+---
+
+## C Library Strategy
+
+### Decision: Fuzix libc (ported to our syscall ABI)
+
+| Option | Size | POSIX Coverage | Fits 64KB? | Apps It Enables |
+|--------|------|---------------|------------|-----------------|
+| **Fuzix libc** | ~5-10KB | Good enough | Yes | 143+ Fuzix utils |
+| newlib | ~50-100KB | Excellent | Barely | Broader POSIX apps |
+| uClibc-ng | ~100-200KB | Near-complete | No | Full Linux apps |
+| Hand-written stubs | ~1KB | Minimal | Yes | Only custom apps |
+
+**Fuzix libc wins** because:
+- It provides `stdio` (printf, fprintf, fopen, fgets), `stdlib` (malloc,
+  free, atoi, qsort), `string`, `ctype`, `errno`, `signal`, `termios`,
+  `dirent`, and `unistd` — everything the 143 Fuzix utilities need.
+- It's ~5KB compiled — fits easily alongside apps in 64KB.
+- It was designed for systems exactly like ours.
+- The Fuzix apps are already written against it.
+
+### Syscall ABI
+
+Keep our existing convention (already in `crt0.S`):
+
+| Register | Purpose |
+|----------|---------|
+| `d0` | Syscall number (in), return value (out) |
+| `d1` | Argument 1 |
+| `d2` | Argument 2 |
+| `d3` | Argument 3 |
+| `d4` | Argument 4 |
+
+Entry via `TRAP #0`. Return `d0` ≥ 0 = success, negative = `-errno`.
+
+Fuzix uses `TRAP #14` and puts some args in address registers (`a0-a2`).
+Since we're recompiling all apps from source, the C library handles the
+mapping — apps never make raw syscalls. Our convention is cleaner (all data
+registers) and already implemented.
+
+### Syscall Numbers
+
+Keep our existing numbers (they match Linux m68k where possible). The C
+library's `_read()`, `_write()`, etc. stubs translate function calls to
+`TRAP #0` with the right number. Apps don't care about numbers.
+
+### User-mode crt0.S
+
+```asm
+; apps/crt0.S — user program entry point
+; Called with: SP pointing to argc
+    .globl _start
+_start:
+    move.l  (%sp)+, %d0     ; argc
+    move.l  %sp, %a0        ; argv
+    ; Calculate envp = argv + (argc+1)*4
+    move.l  %d0, %d1
+    addq.l  #1, %d1
+    lsl.l   #2, %d1
+    lea     (%a0,%d1.l), %a1
+    ; Call main(argc, argv, envp)
+    move.l  %a1, -(%sp)     ; push envp
+    move.l  %a0, -(%sp)     ; push argv
+    move.l  %d0, -(%sp)     ; push argc
+    jsr     _main
+    ; exit(return_value)
+    move.l  %d0, %d1        ; exit code
+    moveq   #1, %d0         ; SYS_EXIT
+    trap    #0
+```
+
+---
+
+## Multitasking Architecture
+
+### Overview
+
+Preemptive multitasking with process groups, job control, pipes, and
+I/O redirection. This is the minimum required for a usable interactive
+Unix shell.
+
+### Process Model
+
+```
+Boot → init (pid 1) → shell (pid 2)
+  shell: parse command line
+    simple:    vfork → exec(program) → waitpid
+    pipe:      vfork → pipe → vfork → exec(left) | exec(right)
+    background: vfork → exec(program) → shell continues (no wait)
+    job ctrl:  ^Z → SIGTSTP → fg/bg → SIGCONT
+```
+
+### Process Table (expanded from current)
+
+```c
+struct proc {
+    uint8_t  state;         /* P_FREE, P_RUNNING, P_READY, P_SLEEPING, P_ZOMBIE, P_STOPPED */
+    uint8_t  pid;
+    uint8_t  ppid;
+    int8_t   exitcode;
+
+    /* Saved CPU state */
+    uint32_t sp;
+    uint32_t pc;
+    uint32_t regs[16];      /* d0-d7, a0-a7 */
+    uint16_t sr;
+
+    /* Memory */
+    uint32_t mem_base;
+    uint32_t mem_size;
+    uint32_t brk;
+
+    /* Job control (NEW) */
+    uint8_t  pgrp;          /* process group ID */
+    uint8_t  session;       /* session ID */
+    uint8_t  ctty;          /* controlling terminal minor */
+
+    /* Signals (NEW) */
+    uint16_t sig_pending;   /* bitmask of pending signals */
+    uint16_t sig_blocked;   /* bitmask of blocked signals */
+    uint32_t sig_handler[16]; /* handler addresses (SIG_DFL=0, SIG_IGN=1, or function pointer) */
+
+    /* Filesystem */
+    uint16_t cwd;
+    struct ofile *fd[MAXFD];
+};
+```
+
+### Scheduler
+
+Timer-driven preemptive round-robin. The VBlank interrupt (50/60 Hz on
+Mega Drive) or the workbench timer interrupt fires, and the scheduler
+picks the next READY process.
+
+```c
+void schedule(void) {
+    struct proc *next = NULL;
+    /* Round-robin: scan from curproc+1, wrapping */
+    for (int i = 1; i <= MAXPROC; i++) {
+        struct proc *p = &proctab[(curproc->pid + i) % MAXPROC];
+        if (p->state == P_READY) {
+            next = p;
+            break;
+        }
+    }
+    if (next == NULL) return;  /* only one runnable process */
+    context_switch(curproc, next);  /* save/restore regs, swap stacks */
+}
+```
+
+Context switch implemented in assembly (~30 lines):
+- Save d0-d7/a0-a6 via `MOVEM.L` (one instruction, 15 registers)
+- Save/restore USP via `MOVE USP, An` / `MOVE An, USP`
+- Save/restore kernel SP in proc struct
+- `RTE` to resume
+
+### vfork() Implementation
+
+```c
+int do_vfork(void) {
+    struct proc *child = proc_alloc();
+    if (!child) return -ENOMEM;
+
+    /* Child shares parent's memory — no copy */
+    child->mem_base = curproc->mem_base;
+    child->mem_size = curproc->mem_size;
+    child->brk = curproc->brk;
+
+    /* Copy file descriptors (increment refcounts) */
+    for (int i = 0; i < MAXFD; i++) {
+        child->fd[i] = curproc->fd[i];
+        if (child->fd[i]) child->fd[i]->refcount++;
+    }
+
+    /* Copy job control state */
+    child->pgrp = curproc->pgrp;
+    child->session = curproc->session;
+    child->ctty = curproc->ctty;
+    child->cwd = curproc->cwd;
+
+    /* Save parent state, block parent */
+    curproc->state = P_VFORK;
+
+    /* Child runs on parent's stack */
+    child->state = P_RUNNING;
+    child->ppid = curproc->pid;
+
+    /* Return 0 to child, child's pid to parent (when it wakes) */
+    curproc = child;
+    return 0;  /* in child */
+}
+```
+
+The libc vfork stub must save the return address in a register (not on
+the stack) because the child will corrupt the stack:
+
+```asm
+; libc/vfork.S
+_vfork:
+    move.l  (%sp)+, %a1     ; save return address in a1
+    moveq   #190, %d0       ; SYS_VFORK
+    trap    #0
+    move.l  %a1, -(%sp)     ; restore return address
+    rts
+```
+
+### Pipes
+
+```c
+#define PIPE_SIZE 512  /* fits comfortably in RAM */
+
+struct pipe {
+    uint8_t  buf[PIPE_SIZE];
+    uint16_t read_pos;
+    uint16_t write_pos;
+    uint16_t count;         /* bytes in buffer */
+    uint8_t  readers;       /* number of open read ends */
+    uint8_t  writers;       /* number of open write ends */
+};
+```
+
+`pipe()` creates two file descriptors sharing a kernel `struct pipe`.
+- `write()` to pipe: copies data into ring buffer, wakes sleeping reader
+- `read()` from pipe: copies data from ring buffer, wakes sleeping writer
+- If pipe full: writer sleeps
+- If pipe empty: reader sleeps (or returns 0 if no writers remain = EOF)
+- If reader closed: writer gets `SIGPIPE`
+
+~80 lines of kernel C.
+
+### Signals
+
+Minimum signal set for job control and shell operation:
+
+| Signal | Number | Default | Use |
+|--------|--------|---------|-----|
+| SIGHUP | 1 | terminate | Terminal hangup |
+| SIGINT | 2 | terminate | ^C |
+| SIGQUIT | 3 | terminate | ^\ |
+| SIGKILL | 9 | terminate (uncatchable) | Force kill |
+| SIGPIPE | 13 | terminate | Broken pipe |
+| SIGTERM | 15 | terminate | Graceful kill |
+| SIGCHLD | 17 | ignore | Child exited (for waitpid) |
+| SIGCONT | 18 | continue | Resume stopped process |
+| SIGSTOP | 19 | stop (uncatchable) | Force stop |
+| SIGTSTP | 20 | stop | ^Z |
+
+Signal delivery on 68000 — build a trampoline frame on the user stack:
+
+```c
+void deliver_signal(struct proc *p, int sig) {
+    uint32_t handler = p->sig_handler[sig];
+    if (handler == SIG_DFL) { default_action(p, sig); return; }
+    if (handler == SIG_IGN) return;
+
+    /* Build signal frame on user stack */
+    uint32_t sp = p->regs[15];  /* a7 = user SP */
+    sp -= 4;  /* return address: sigreturn trampoline */
+    sp -= 4;  /* signal number argument */
+
+    /* Write trampoline: moveq #SYS_SIGRETURN, d0; trap #0 */
+    /* This is 4 bytes of 68000 machine code */
+    *(uint32_t *)(sp) = sig;
+    *(uint32_t *)(sp - 4) = sp + 8;  /* trampoline addr */
+
+    /* The trampoline itself (written to stack): */
+    /* 0x70XX4E40 where XX = SYS_SIGRETURN number */
+
+    p->regs[15] = sp;
+    p->pc = handler;
+}
+```
+
+~150 lines total for signal dispatch + sigreturn.
+
+---
+
+## TTY Subsystem
+
+### Architecture
+
+Three layers, following the proven Fuzix design:
+
+```
+┌─────────────────────────────────────┐
+│  User: read() / write() / ioctl()   │
+├─────────────────────────────────────┤
+│  tty.c: Line discipline             │
+│  • Cooked mode (canonical input)    │
+│  • Raw mode (pass-through)          │
+│  • Echo, erase, kill                │
+│  • Signal generation (^C, ^Z, ^\)   │
+│  • termios support                  │
+│  • Job control (foreground pgrp)    │
+├─────────────────────────────────────┤
+│  devtty.c: Platform driver          │
+│  • tty_putc() → VDP tile output     │
+│  • VBlank ISR → keyboard polling    │
+│  • tty_inproc() injection           │
+├─────────────────────────────────────┤
+│  Hardware: VDP + Saturn keyboard    │
+└─────────────────────────────────────┘
+```
+
+### Implementation Strategy: Port Fuzix tty.c
+
+The Fuzix `tty.c` is ported nearly as-is. It already works on this hardware.
+
+**Core functions retained:**
+- `tty_open(minor)` / `tty_close(minor)` — device lifecycle
+- `tty_read(minor, flag)` — blocking canonical/raw read
+- `tty_write(minor, flag)` — character output via `tty_putc()`
+- `tty_inproc(minor, c)` — ISR-safe character injection
+- `tty_ioctl(minor, request, data)` — termios, winsize, pgrp
+
+**Line discipline features:**
+- Cooked mode: line buffering, echo, erase (`^H`), kill (`^U`)
+- Raw mode: immediate character delivery
+- Signal generation: `^C` → SIGINT, `^Z` → SIGTSTP, `^\` → SIGQUIT
+- `^D` on empty line → EOF
+
+**Data structures:**
+```c
+struct tty {
+    struct termios termios;     /* c_iflag, c_oflag, c_cflag, c_lflag, c_cc[] */
+    uint8_t  inq[256];         /* circular input buffer */
+    uint8_t  inq_head;         /* write pointer (ISR writes here) */
+    uint8_t  inq_tail;         /* read pointer (reader reads here) */
+    uint8_t  fg_pgrp;          /* foreground process group */
+    uint8_t  minor;            /* device minor number */
+    uint8_t  flags;            /* TTYF_OPEN, etc. */
+};
+```
+
+The 256-byte circular buffer with `uint8_t` indices gives free modulo
+wraparound — no modulo instruction needed on 68000.
+
+### Platform Driver (from Fuzix)
+
+Ported directly from the Fuzix Mega Drive branch:
+
+| File | Function | Status |
+|------|----------|--------|
+| `devtty.c` | `tty_putc()`, `tty_setup()`, `do_beep()` | Port as-is |
+| `devvdp.c` / `devvdp.h` | VDP register access, DMA, tile upload | Port as-is |
+| `devvt.S` | `plot_char`, `scroll_up/down`, `clear_*`, cursor | Port as-is |
+| `font_init.S` | 8x8 font loading into VRAM | Port as-is |
+| `keyboard.c` / `keyboard.h` | Saturn keyboard decode state machine | Port with cleanup |
+| `keyboard_read.S` | Controller port polling (asm) | Port as-is |
+
+### TTY Phases
+
+| Phase | Feature | Complexity |
+|-------|---------|------------|
+| 1 | Port Fuzix tty.c + devtty.c + VDP + keyboard | ~500 lines (mostly ported) |
+| 2 | `/dev/tty` alias, `TIOCGWINSZ` (40×28), termios polish | ~50 lines |
+| 3 | Interrupt-driven keyboard (TH line on controller port) | ~100 lines asm |
+| 4 | Multiple TTY devices (port 2, EXP port) | ~200 lines |
+| 5 | Full job control polish, `/dev/null`, `/dev/zero` | ~100 lines |
+
+---
+
+## Fuzix Optimizations We Inherit
+
+By using Fuzix's drivers and porting its tty.c, we get:
+
+1. **VDP tile rendering in 68000 asm** — `MOVEM`-based bulk copies for scroll,
+   word-aligned VDP writes, cursor via hardware sprite or tile swap.
+
+2. **Saturn keyboard state machine** — handles key-up/key-down, auto-repeat,
+   modifier keys (Shift, Ctrl, Alt), all in tested C code.
+
+3. **ISR-safe tty input** — `tty_inproc()` designed to be called from interrupt
+   context. Head/tail buffer updates are single-word writes = atomic on 68000.
+
+4. **Context switch via MOVEM** — saves 15 registers in one instruction. This
+   is the fastest possible approach on 68000.
+
+5. **ROM disk + RAM disk drivers** — zero-copy reads from ROM, block-level
+   writes to SRAM. Already handles the Mega Drive memory map.
+
+6. **Efficient buffer cache** — 16 1KB buffers with dirty tracking. Minimizes
+   disk I/O for the shell's frequent small reads/writes.
+
+---
+
 ## Architecture Overview
 
 ```
 ┌─────────────────────────────────────┐
-│  User Programs (sh, gcc, make ...)  │
-│  Linked with newlib (C library)     │
+│  User Programs (sh, ed, grep ...)   │
+│  Linked with Fuzix libc            │
+│  Binary format: Fuzix a.out        │
 ├─────────────────────────────────────┤
 │  TRAP #0 — Syscall Interface        │
 ├─────────────────────────────────────┤
-│  Kernel                             │
-│  ┌───────────┬──────────┬────────┐  │
-│  │ Process   │ Filesys  │ Device │  │
-│  │ Manager   │ (minifs) │ Table  │  │
-│  └───────────┴──────────┴────────┘  │
+│  Kernel (~3500 lines)              │
+│  ┌──────────┬────────┬──────────┐  │
+│  │ Process  │Filesys │ Device   │  │
+│  │ (vfork,  │(minifs)│ (console,│  │
+│  │  exec,   │        │  disk,   │  │
+│  │  sched,  │        │  pipe,   │  │
+│  │  signal) │        │  tty)    │  │
+│  └──────────┴────────┴──────────┘  │
 ├─────────────────────────────────────┤
 │  Platform Abstraction Layer (PAL)   │
 │  (console, timer, disk, memory)     │
@@ -81,6 +602,7 @@ Memory Map (Workbench SBC):
   0x000000 - 0x0FFFFF   1MB RAM (ROM at reset, then RAM)
   0xF00000 - 0xF00003   UART (data register + status register)
   0xF10000 - 0xF10003   Timer (count register + control register)
+  0xF20000 - 0xF20010   Disk controller (command + block + buffer)
 ```
 
 **Implementation:** Use **Musashi** (MIT license, C, battle-tested in MAME) as
@@ -94,433 +616,224 @@ This gives us `./emu68k kernel.bin` — runs in any terminal, no X11, no
 framebuffer, instant startup, `printf`-debugging works, GDB host-side debugging
 works.
 
-### Why Musashi?
-
-- MIT license, single-file C, no dependencies
-- Supports 68000 specifically (not just ColdFire)
-- Callback-based: we provide `read_byte`/`write_byte`, it does the rest
-- Used in MAME for decades — rock solid
-- QEMU's m68k targets 68040/ColdFire, not plain 68000
+**Status: COMPLETE.** The workbench emulator is implemented and working.
 
 ## Phase 2: The Kernel
 
-### Syscall Interface
+### Status: Core complete, exec/multitasking pending
 
-Enter kernel via `TRAP #0` with syscall number in `d0`, arguments in `d1-d4`.
-Return value in `d0` (negative = errno). This is the standard m68k convention.
+**Completed:**
+- Boot, console I/O, kprintf
+- Filesystem (minifs) — read, write, create, delete, rename, mkdir, rmdir
+- Memory allocator (first-fit with coalescing)
+- Buffer cache (16 blocks)
+- Device table (console + disk)
+- Basic process structure (16 slots, file descriptors)
+- Syscall dispatch via TRAP #0 (~20 syscalls implemented)
+- Built-in debug shell (ls, cat, echo, mkdir, write, mem, etc.)
 
-**Minimum syscall set for a working system with newlib:**
+**Remaining (in priority order):**
 
-```
-Process:    _exit, exec, waitpid, getpid, brk/sbrk, times
-Files:      open, close, read, write, lseek, stat, fstat, unlink,
-            rename, mkdir, rmdir, chdir, getcwd
-File desc:  dup, dup2, pipe, fcntl (minimal), ioctl (minimal)
-Directory:  opendir, readdir, closedir (or getdents)
-Signals:    kill, signal/sigaction (basic)
-```
+### Phase 2a: Binary Loading + Single-Tasking exec()
 
-That's roughly 30 syscalls. FUZIX implements ~70. Linux has 400+.
+1. **Binary loader** (~100 lines) — Read Fuzix a.out header, allocate memory,
+   load text+data, zero BSS, apply relocations, set up user stack.
+2. **User crt0.S** (~30 lines) — Set up argc/argv, call main(), call _exit().
+3. **Minimal libc stubs** (~100 lines asm) — `_exit`, `read`, `write`, `open`,
+   `close`, `lseek`, `brk` via TRAP #0.
+4. **exec()** — Load binary, set up process, jump to entry point.
+5. **First user program** — "hello world" loaded from filesystem and executed.
+6. **Minimal shell** — Read line, parse, exec command, wait.
 
-**No fork().** This is the critical decision. `fork()` on a no-MMU system is the
-source of FUZIX's bug and uClinux's complexity. Instead:
+### Phase 2b: Multitasking
 
-- **`vfork()`** — Child shares parent's memory. Parent sleeps until child calls
-  `exec()` or `_exit()`. This is trivial to implement: save parent's registers,
-  child runs in parent's stack, on `exec()` restore parent.
-- **`posix_spawn()`** — Convenience wrapper. Most shell use is
-  `fork()+exec()` anyway.
+7. **Preemptive scheduler** (~50 lines) — Timer interrupt triggers round-robin
+   scheduling. Context switch via MOVEM save/restore.
+8. **vfork()** (~80 lines) — Parent sleeps, child runs on parent's stack.
+   Libc stub saves return address in a1 register.
+9. **waitpid()** (~40 lines) — Parent collects zombie children.
+10. **exit()** cleanup (~30 lines) — Free memory, close fds, reparent children,
+    wake parent.
 
-GNU coreutils, GCC, and make all work with `vfork()+exec()`. This is exactly
-what uClinux does and it supports a full GNU toolchain.
+### Phase 2c: Pipes and Redirection
 
-### Process Model
+11. **pipe()** (~80 lines) — 512-byte kernel ring buffer. Blocking read/write
+    with sleep/wake.
+12. **dup2()** — Already implemented. Used by shell for I/O redirection.
+13. **Shell pipes** — Shell creates pipe, vfork twice, exec left and right
+    sides, connect via dup2.
+14. **Shell redirection** — `>`, `<`, `>>`, `2>` via open() + dup2().
 
-**Phase 2a — Single-tasking (week 1-2):**
+### Phase 2d: Signals and Job Control
 
-One process at a time. `exec()` replaces current process. When it exits, the
-shell resumes. Like CP/M or DOS. No context switching, no scheduler, no process
-table complexity.
+15. **Signal delivery** (~150 lines) — Trampoline on user stack, sigreturn
+    syscall, handler dispatch.
+16. **SIGINT/SIGQUIT/SIGTSTP** — Generated by tty line discipline on ^C/^\/ ^Z.
+17. **SIGCHLD** — Sent to parent when child exits or stops.
+18. **SIGCONT** — Resume stopped process.
+19. **SIGPIPE** — Sent when writing to pipe with no readers.
+20. **Process groups** (~50 lines) — `setpgrp()`, foreground/background groups.
+21. **Job control in shell** — `fg`, `bg`, `jobs` commands. ^Z stops foreground
+    job, shell resumes.
 
-This is enough to run: a shell, an editor, a compiler, an assembler, a linker.
-Each one at a time. This is how people actually used Unix on PDP-11s with 64KB.
+### Phase 2e: TTY Subsystem
 
-```
-Boot → init → shell
-  shell: read command → exec(program) → program runs → exits → shell resumes
-```
+22. **Port Fuzix tty.c** — Line discipline, cooked/raw modes, echo, erase.
+23. **Port devtty.c** — VDP output, keyboard input via VBlank polling.
+24. **Port VDP stack** — devvdp, devvt.S, font_init.S.
+25. **Port keyboard driver** — keyboard.c, keyboard_read.S.
+26. **termios** — TCGETS/TCSETS ioctls, TIOCGWINSZ (40×28).
 
-**Phase 2b — Multi-tasking (week 3-4):**
+### Phase 2f: Fuzix libc + Utilities
 
-Add a process table (max 8-16 processes), round-robin preemptive scheduling via
-timer interrupt, `vfork()+exec()`. Processes get memory from a simple allocator
-(first-fit or buddy, from a flat heap).
-
-Binary format: **Position-independent ELF** (`-fPIC -msep-data`) or **bFLT**
-(ELF converted via `elf2flt`, like uClinux). PIC is simpler — no relocation
-fixups at load time.
-
-### Memory Management
-
-No MMU means no virtual addresses. All processes see physical memory.
-
-```
-┌──────────────────┐ 0x000000
-│ Interrupt Vectors │
-├──────────────────┤ 0x000400
-│ Kernel code+data │
-├──────────────────┤ ~0x010000 (depends on kernel size)
-│ Kernel heap       │ (process table, file table, inodes, buffers)
-├──────────────────┤
-│ Process memory    │ (allocated chunks for each process)
-│ [proc 0: shell]  │
-│ [proc 1: gcc]    │
-│ [proc 2: as]     │
-│ ...              │
-├──────────────────┤
-│ Free memory       │
-└──────────────────┘ top of RAM
-```
-
-Allocation: simple linked-list of free blocks. `brk()`/`sbrk()` grows the
-current process's data segment. When a process exits, its block returns to the
-free list.
-
-No memory protection. A buggy process can corrupt the kernel. This is acceptable
-for a single-user development OS. (Same as DOS, same as classic Mac OS, same as
-every 8-bit micro.)
-
-### Filesystem
-
-#### What GNU tools actually require from the filesystem
-
-| Requirement | Why | Who needs it |
-|-------------|-----|-------------|
-| `stat()` with `st_mtime` | Rebuild decisions (is .o newer than .c?) | `make` |
-| Temp files: create, write, close, reopen, unlink | Compiler pipeline (cpp→cc1→as→ld communicates via temp files) | GCC |
-| Unlink-while-open (deferred delete) | GCC unlinks temp files while child still reads them; data must survive until last fd closes | GCC |
-| Atomic `rename()` | Editors/compilers write to temp then rename over target to prevent half-written files | GCC, editors, `install` |
-| `lseek()` on files | Random access into object files and archives | `ld`, `ar`, `objcopy` |
-| Hierarchical directories with `.` and `..` | Path resolution, `cd ..`, relative paths | Everything |
-| Directory listing (`opendir`/`readdir`) | `ls`, `find`, `make` pattern rules, shell globbing | Everything |
-
-#### What we do NOT need
-
-- **Permissions / mode bits** — single user, everything is rwx
-- **Owner / group (uid/gid)** — single user
-- **Symbolic links** — nice to have, not required by any core tool
-- **Multiple filesystem types / mount** — one fs is enough
-- **File locking** — advisory anyway, nothing enforces it
-- **Sparse files, extended attributes, ACLs** — no
-
-#### Options evaluated
-
-**Option A: Write our own (minifs)** — RECOMMENDED
-- Superblock → inode table → data blocks, classic Unix layout
-- We control every line, easy to debug, educational
-- ~500 lines of C for the kernel side, ~200 for host-side `mkfs`/`fsck`
-- See on-disk format below
-
-**Option B: FAT16** — REJECTED
-- No `mtime` with second-level precision (FAT timestamps are 2-second granularity)
-- No deferred delete (unlink-while-open) — FAT has no inode concept, directory
-  entry IS the file metadata. Unlinking means removing the dir entry, which
-  breaks any open fd.
-- No atomic `rename()` across directories without inode indirection
-- These are not obscure features — GCC and make depend on them daily.
-
-**Option C: FUZIX filesystem format** — FALLBACK
-- We have working `mkfs`, `ucp`, `fsck` from `Standalone/`
-- But: it has permissions, uid/gid, and complexity we don't need
-- And: tying our new OS to FUZIX's format defeats the point of starting fresh
-
-#### minifs on-disk format
-
-```
-Block 0:        Superblock
-Block 1..N:     Inode table (fixed-size inodes)
-Block N+1..:    Data blocks
-
-Block size: 1024 bytes (good balance for our RAM constraints)
-```
-
-**Superblock (1024 bytes, block 0):**
-```c
-struct superblock {
-    uint32_t magic;          // 0x4D494E49 ("MINI")
-    uint16_t block_size;     // 1024
-    uint16_t nblocks;        // total blocks in filesystem
-    uint16_t ninodes;        // total inodes
-    uint16_t free_list;      // head of free block linked list
-    uint16_t free_inodes;    // count of free inodes
-    uint32_t mtime;          // last mount time
-};
-```
-
-**Inode (64 bytes):**
-```c
-struct inode {
-    uint8_t  type;           // 0=free, 1=file, 2=dir, 3=device
-    uint8_t  nlink;          // hard link count (usually 1)
-    uint32_t size;           // file size in bytes
-    uint32_t mtime;          // modification time (seconds since epoch)
-    uint16_t direct[12];     // 12 direct block pointers → 12KB
-    uint16_t indirect;       // single indirect → +512 blocks → 524KB
-    uint8_t  pad[14];        // reserved (future: double indirect, ctime)
-};
-// With 1KB blocks: max file size = 12KB + 512KB = 524KB
-// That's enough for any reasonable object file or binary on this platform.
-// The entire Mega Drive RAM disk is 1.5MB.
-```
-
-**Directory entry (32 bytes):**
-```c
-struct dirent {
-    uint16_t inode;          // inode number (0 = deleted entry)
-    char     name[30];       // null-terminated filename
-};
-// 32 entries per 1KB block. 30-char names (classic Unix was 14).
-```
-
-**Free block list:** Each free block starts with a `uint16_t` pointing to the
-next free block (0 = end of list). Simple, no bitmap needed.
-
-#### Key filesystem operations
-
-| Operation | Implementation |
-|-----------|---------------|
-| `open(path)` | Walk directories resolving each component, return inode |
-| `read(fd, buf, n)` | Map file offset to block via direct/indirect pointers, copy data |
-| `write(fd, buf, n)` | Allocate blocks as needed from free list, update inode size and mtime |
-| `unlink(path)` | Remove directory entry, decrement nlink. If nlink==0 AND no open fds, free inode+blocks. If fds still open, defer. |
-| `rename(old, new)` | Add new dir entry pointing to same inode, remove old entry. Atomic because it's one inode. |
-| `mkdir(path)` | Allocate inode (type=dir), create `.` and `..` entries |
-| `stat(path)` | Return inode metadata (type, size, mtime) |
-
-#### Storage on Mega Drive
-
-- **ROM** (read-only, baked into cartridge) — boot filesystem with kernel, shell, core utils
-- **SRAM at 0x200000** (read-write, battery-backed) — user filesystem for development, compiler output, etc.
-
-### Device Model
-
-Minimal device table. Everything is a file descriptor.
-
-```c
-struct device {
-    int (*open)(int minor);
-    int (*close)(int minor);
-    int (*read)(int minor, void *buf, int len);
-    int (*write)(int minor, void *buf, int len);
-    int (*ioctl)(int minor, int cmd, void *arg);
-};
-```
-
-Initial devices:
-- `/dev/console` — UART on workbench, VDP+keyboard on Mega Drive
-- `/dev/rd0` — ROM disk (read-only)
-- `/dev/rd1` — RAM disk (read-write)
-
-### C Library: newlib
-
-newlib is the standard C library for bare-metal m68k-elf targets. It's already
-packaged and working. The porting layer is ~15 stub functions:
-
-```c
-_read()    → syscall READ
-_write()   → syscall WRITE
-_open()    → syscall OPEN
-_close()   → syscall CLOSE
-_sbrk()    → syscall BRK
-_exit()    → syscall EXIT
-_execve()  → syscall EXEC
-_fork()    → return -ENOSYS (use vfork)
-_wait()    → syscall WAITPID
-_stat()    → syscall STAT
-_fstat()   → syscall FSTAT
-_link()    → syscall LINK
-_unlink()  → syscall UNLINK
-_lseek()   → syscall LSEEK
-_kill()    → syscall KILL
-_getpid()  → syscall GETPID
-```
-
-This is a well-documented, well-trodden path. Hundreds of embedded projects
-have done exactly this.
+27. **Port Fuzix libc** — stdio, stdlib, string, ctype, unistd, dirent,
+    termios. Adapt syscall stubs to our TRAP #0 / d1-d4 convention.
+28. **Port Fuzix shell** — Job control, pipes, redirection, history.
+29. **Port core utilities** — ls, cat, cp, mv, rm, mkdir, rmdir, echo, grep,
+    wc, sort, head, tail, tee, chmod (no-op), date, pwd, kill, ps.
+30. **Port editors** — ed (line editor), levee (vi clone).
+31. **Port development tools** — ar, make, small C compiler.
 
 ## Phase 3: Mega Drive Port
 
 Once the kernel works on the workbench emulator, porting to Mega Drive means
-implementing the Platform Abstraction Layer:
+implementing the Platform Abstraction Layer. **Status: Already implemented**
+from the Fuzix port.
 
-```c
-// Platform Abstraction Layer — each platform implements these
-void     pal_init(void);                    // Hardware init
-void     pal_console_putc(char c);          // Write character
-int      pal_console_getc(void);            // Read character (blocking)
-int      pal_console_ready(void);           // Character available?
-void     pal_disk_read(int dev, uint32_t block, void *buf);
-void     pal_disk_write(int dev, uint32_t block, void *buf);
-uint32_t pal_mem_start(void);               // Start of usable RAM
-uint32_t pal_mem_end(void);                 // End of usable RAM
-void     pal_timer_init(int hz);            // Start periodic interrupt
-```
-
-For the Mega Drive, we already have all of this code from the FUZIX port:
-- `devvt.S` — VDP text output (console putc)
-- `keyboard.c` / `keyboard_read.S` — Saturn keyboard (console getc)
+The PAL implementation reuses proven Fuzix drivers:
+- `devvt.S` — VDP text output
+- `keyboard.c` / `keyboard_read.S` — Saturn keyboard
 - `devrd.c` — ROM disk + RAM disk
-- `crt0.S` — boot code, vector table
-- `megadrive.S` — interrupt handlers, hardware init
+- `crt0.S` — boot code, vector table, VDP init
+- `megadrive.S` — interrupt handlers
 
-We **reuse these drivers directly**. The kernel is new; the drivers are proven.
+## Phase 4: Polish and Extended Features
 
-## Phase 4: GNU Toolchain
+32. **Interrupt-driven keyboard** — TH line interrupt on controller port,
+    replacing VBlank polling. Reduces latency from ~20ms to ~microseconds.
+33. **Multiple TTY devices** — Port 2, EXP port for second keyboard or serial.
+34. **/dev/null, /dev/zero** — Standard special devices.
+35. **getcwd()** — Walk `.` and `..` entries to reconstruct path.
+36. **More Fuzix apps** — games, BASIC, BCPL, TCL, tar, dd.
 
-With newlib and POSIX syscalls working, porting GNU tools follows the standard
-cross-compilation recipe:
+---
 
-1. **Shell** — Port or write a minimal sh (or use `dash`, which is small)
-2. **Coreutils** — `ls`, `cat`, `cp`, `mv`, `rm`, `mkdir` — most are trivial
-   with POSIX syscalls
-3. **make** — Needs `fork`/`vfork`, `exec`, `pipe`, `waitpid`. All provided.
-4. **binutils** — `as`, `ld`, `objcopy` — these are portable C, just need
-   newlib + POSIX
-5. **gcc** — Needs more memory than we probably have (4MB Mega Drive RAM).
-   Cross-compile is fine. Native compilation is a stretch goal.
-6. **gdb stub** — Implement the GDB remote serial protocol in the kernel.
-   ~200 lines. Connect from host GDB over UART (workbench) or blastem
-   debug port (Mega Drive).
+## Memory Map
 
-## Timeline Estimate
-
-| Phase | What | Scope |
-|-------|------|-------|
-| 1 | Workbench emulator (Musashi + UART + timer + disk) | ~300 lines C |
-| 2a | Single-tasking kernel (boot, console, fs, exec) | ~2000 lines C + ~200 asm |
-| 2b | Multi-tasking (scheduler, vfork, process table) | ~500 lines C + ~100 asm |
-| 3 | Mega Drive PAL (reuse existing drivers) | ~500 lines asm (existing) |
-| 4 | Shell + basic coreutils | Port existing code |
-
-**Total new kernel code: ~3000 lines.** Compare to FUZIX kernel: ~15,000 lines
-(platform-independent) plus ~2000 lines per platform.
-
-## What We Take From FUZIX
-
-- **Driver code** — VDP, keyboard, RAM disk, ROM disk. Proven, working.
-- **Filesystem tools** — `mkfs`, `ucp`, `fsck` from `Standalone/`. Useful even
-  if we write our own filesystem format.
-- **Build system knowledge** — The Makefile structure, link scripts, ROM
-  layout. We know what works.
-- **Boot code** — `crt0.S`, vector table, VDP init. Tested on emulator.
-
-## What We Throw Away
-
-- The entire FUZIX generic kernel (~15K lines)
-- Multi-user support, permissions, UIDs, login
-- Banking/paging memory management
-- 30+ platform abstraction layers we don't need
-- `fork()` — replaced with `vfork()+exec()`
-- Complex inode lifecycle management (the source of our bug)
-- The tty layer (we have one console, not a tty multiplexer)
-
-## Why This Will Work
-
-1. **It's been done before.** uClinux runs GNU tools on 68000 with no MMU
-   using exactly this architecture (vfork+exec, flat memory, newlib/uClibc).
-   We're just doing it smaller and cleaner.
-
-2. **The hard parts are solved.** The Mega Drive drivers work. newlib works on
-   m68k-elf. The toolchain exists. We're writing glue, not inventing anything.
-
-3. **Scope is controlled.** 3000 lines of kernel code is auditable. When
-   something breaks, you can read the entire kernel to find it. The FUZIX
-   "inode freed" bug is unfindable because the kernel is too big and too
-   abstract for the time we can invest.
-
-4. **Single-tasking first.** By starting with one process at a time, we
-   eliminate the entire class of bugs related to context switching, shared
-   state, and concurrent inode access. We add complexity only after the
-   simple version works.
-
-## File Structure (Proposed)
+### Workbench (1MB RAM)
 
 ```
-megadrive-os/
-├── emu/                    # Workbench emulator
-│   ├── main.c              # Musashi wrapper (RAM + UART + timer + disk)
-│   ├── Makefile
-│   └── musashi/            # Musashi 68000 core (vendored, MIT)
-├── kernel/
-│   ├── crt0.S              # Startup, vector table
-│   ├── trap.S              # Syscall entry (TRAP #0 handler)
-│   ├── main.c              # Kernel init
-│   ├── proc.c              # Process management (exec, exit, wait, vfork)
-│   ├── fs.c                # Filesystem
-│   ├── dev.c               # Device table and dispatch
-│   ├── mem.c               # Memory allocator
-│   ├── syscall.c           # Syscall dispatch table
-│   ├── signal.c            # Basic signal handling
-│   └── kernel.h            # All kernel headers (one file)
-├── pal/                    # Platform Abstraction Layer
-│   ├── pal.h               # PAL interface
-│   ├── workbench/          # Workbench SBC platform
-│   │   ├── console.c
-│   │   ├── disk.c
-│   │   └── platform.c
-│   └── megadrive/          # Mega Drive platform (from FUZIX drivers)
-│       ├── console.S        # VDP text output
-│       ├── keyboard.c
-│       ├── keyboard_read.S
-│       ├── disk.c           # ROM/RAM disk
-│       ├── vdp.S
-│       └── platform.c
-├── libc/                   # newlib syscall stubs
-│   ├── syscalls.c          # _read, _write, _sbrk, etc.
-│   ├── crt0.S              # User-mode startup
-│   └── Makefile
-├── apps/                   # Userspace
-│   ├── init.c
-│   ├── sh.c                # Minimal shell
-│   └── ...
-└── Makefile                # Top-level build
+0x000000 ┌──────────────────┐
+         │ Interrupt Vectors │ 1KB
+0x000400 ├──────────────────┤
+         │ Kernel code+data │ ~16KB
+0x004400 ├──────────────────┤
+         │ Kernel heap       │ (proc table, ofile table, inodes, bufs, pipes)
+         │ ~32KB             │
+0x00C000 ├──────────────────┤
+         │ User processes    │ (allocated by kmalloc per exec)
+         │ [proc: shell]    │
+         │ [proc: grep]     │
+         │ [proc: sort]     │
+         │ ...              │
+         │ Free memory       │
+0x100000 └──────────────────┘
 ```
+
+### Mega Drive
+
+```
+ROM (4MB):
+0x000000 ┌──────────────────┐
+         │ Vectors + Header │ 512 bytes
+0x000200 ├──────────────────┤
+         │ Kernel code       │ ~16KB
+         ├──────────────────┤
+         │ .rodata           │ (font, strings)
+         ├──────────────────┤
+         │ ROM disk          │ ~1.9MB (read-only filesystem)
+0x3FFFFF └──────────────────┘
+
+Cartridge SRAM (512KB):
+0x200000 ┌──────────────────┐
+         │ RAM disk          │ (read-write filesystem)
+0x27FFFF └──────────────────┘
+
+Main RAM (64KB):
+0xFF0000 ┌──────────────────┐
+         │ Kernel BSS+data  │ ~4KB
+         ├──────────────────┤
+         │ Kernel heap       │ (proc table, bufs, pipes)
+         │ ~24KB             │
+         ├──────────────────┤
+         │ User processes    │ (each ~8-16KB)
+         ├──────────────────┤
+         │ Stack (kernel)    │ ~2KB
+0xFFFFFF └──────────────────┘
+```
+
+---
 
 ## Decision Log
 
 | Decision | Choice | Reasoning |
 |----------|--------|-----------|
-| Start from scratch vs. fix FUZIX | From scratch | FUZIX is 15K+ lines of someone else's kernel. The bug is in the interaction between generic code and platform code. Cheaper to write 3K lines we understand. |
-| fork() vs vfork() | vfork only | fork() on no-MMU is the root cause of our problems. vfork+exec is proven (uClinux) and sufficient for GNU tools. |
-| Development platform | Musashi-based SBC emulator | Terminal I/O, instant startup, host-side debugging. Mega Drive requires Xvfb and screenshots. |
-| C library | newlib | Standard m68k-elf support, well-documented porting, small footprint. |
-| Filesystem | Custom simple fs (minifs) | Educational value, minimal code, exactly the features we need. Fallback to FUZIX fs format if needed. |
-| Single-tasking first | Yes | Eliminates entire classes of bugs. Add multitasking after everything else works. |
-| Binary format | PIC ELF or bFLT | Standard for no-MMU systems. elf2flt is maintained. |
-| Process limit | 8-16 | Mega Drive has 512KB RAM for kernel + processes. Each process needs at minimum ~8KB (4KB stack + 4KB data). 16 processes × 8KB = 128KB. Reasonable. |
+| Start from scratch vs. fix FUZIX | From scratch | FUZIX is 15K+ lines of someone else's kernel. Cheaper to write 3K lines we understand. |
+| fork() vs vfork() | vfork only | fork() on no-MMU is the root cause of problems. vfork+exec is proven (uClinux). |
+| Development platform | Musashi-based SBC emulator | Terminal I/O, instant startup, host-side debugging. |
+| **C library** | **Fuzix libc** | Right size (~5KB), proven on 68000, 143+ apps written against it. newlib is too large. |
+| Filesystem | Custom simple fs (minifs) | Educational value, minimal code, exactly the features we need. |
+| **Binary format** | **Fuzix a.out** | 16-byte header, simple relocations, 143+ utilities ready to compile. |
+| Process limit | 8-16 | 512KB cart RAM + 64KB main. Each process ~8KB min. 16 × 8KB = 128KB. |
+| **TTY subsystem** | **Port Fuzix tty.c** | Already working on this hardware. Line discipline, cooked/raw, signals. |
+| **Scheduler** | **Preemptive round-robin** | Timer interrupt (VBlank on MD). Simple, fair, proven. |
+| **Signals** | **10 signals minimum** | SIGINT, SIGQUIT, SIGTSTP, SIGCONT, SIGCHLD, SIGPIPE, SIGKILL, SIGTERM, SIGHUP, SIGSTOP. |
+| **Pipe buffer** | **512 bytes** | Fits in kernel heap. Large enough for most pipeline operations. |
+| **Keyboard** | **VBlank polling first, TH interrupt later** | Polling works now (proven). Interrupt is an optimization for Phase 4. |
+| **App ecosystem** | **Fuzix utilities first** | 143+ apps designed for 64KB-class systems. Largest available pool for this hardware. |
 
 ## Open Questions
 
-1. **Musashi vs. Moira?** Musashi is C (easier to build), Moira is C++20 (more
-   accurate). For kernel development, accuracy doesn't matter — we need
-   correctness at the instruction level, not cycle-level timing. **Musashi.**
+1. **Fuzix a.out 32-bit variant?** The 16-byte Fuzix header has 16-bit size
+   fields (max 64KB per segment). For the Mega Drive this is fine — 64KB main
+   RAM limits process size anyway. But if we want to use cartridge RAM for
+   larger programs (up to 512KB), we may need 32-bit sizes. Options:
+   a) Interpret sizes as 256-byte pages (gives up to 16MB per segment)
+   b) Use a 32-byte extended header for large programs
+   c) Accept 64KB limit (probably fine for all practical Mega Drive apps)
+   **Recommendation: Start with 64KB limit. Extend later if needed.**
 
-2. **Shell: write or port?** Writing a minimal shell (~500 lines) is educational
-   and removes a dependency. Porting `dash` is faster but larger. Start with
-   a minimal shell, port `dash` later.
+2. **Fuzix libc licensing.** Fuzix libc is GPL-2.0. Our kernel code should be
+   compatible. Verify before porting.
 
-3. **GDB support: when?** Implementing the GDB remote serial protocol in the
-   kernel (~200 lines) would give us source-level debugging on the workbench
-   emulator via the UART. Worth doing early (phase 2a) because it pays for
-   itself immediately in debug productivity.
+3. **Shell: Fuzix sh or custom?** Fuzix's shell has job control, pipes, and
+   history. Porting it is faster than writing our own but adds ~2000 lines.
+   A minimal custom shell (~500 lines) gets us started; port Fuzix sh when
+   we need full job control.
+   **Recommendation: Custom minimal shell first, port Fuzix sh for Phase 2d.**
+
+4. **brk() vs mmap() for userspace malloc.** In single-tasking mode, brk()
+   works fine — nothing is "after" the process. In multi-tasking mode, brk()
+   is problematic if another process is loaded after ours. Options:
+   a) Use brk() and always load processes from the top of memory downward
+   b) Implement a simple mmap()-like allocator
+   c) Accept that brk() only works for the last-loaded process
+   **Recommendation: brk() with careful load ordering. Revisit if it breaks.**
 
 ## Next Steps
 
-1. Set up repo structure
-2. Vendor Musashi, build the workbench emulator
-3. Write `crt0.S` + `trap.S` + kernel `main.c` — boot to a `>` prompt
-4. Implement `read`/`write`/`open`/`close` syscalls with console device
-5. Implement filesystem (minifs) with ROM disk
-6. Implement `exec()` — load and run a program from the filesystem
-7. Write minimal shell
-8. Celebrate: we have a working OS
+1. ~~Set up repo structure~~ ✓
+2. ~~Vendor Musashi, build the workbench emulator~~ ✓
+3. ~~Boot to a `>` prompt~~ ✓
+4. ~~Implement basic syscalls (read/write/open/close)~~ ✓
+5. ~~Implement filesystem (minifs)~~ ✓
+6. **Implement exec()** — binary loader with Fuzix a.out format
+7. **Implement user crt0.S + minimal libc stubs**
+8. **Write minimal shell**
+9. **Implement vfork() + waitpid()**
+10. **Implement preemptive scheduler**
+11. **Implement pipe()**
+12. **Port Fuzix tty.c**
+13. **Implement signals**
+14. **Port Fuzix libc**
+15. **Port Fuzix utilities**
