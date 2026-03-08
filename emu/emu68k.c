@@ -108,11 +108,19 @@ static int uart_rx_ready(void)
     return select(STDIN_FILENO + 1, &fds, NULL, NULL, &tv) > 0;
 }
 
+static int g_stdin_eof = 0;
+
 static int uart_read_char(void)
 {
     unsigned char c;
-    if (read(STDIN_FILENO, &c, 1) == 1)
+    ssize_t n = read(STDIN_FILENO, &c, 1);
+    if (n == 1)
         return c;
+    if (n == 0) {
+        /* EOF on stdin — signal quit so piped sessions terminate */
+        g_stdin_eof = 1;
+        g_quit = 1;
+    }
     return -1;
 }
 

@@ -1,6 +1,6 @@
 # Genix top-level Makefile
 
-.PHONY: all emu kernel tools disk run clean
+.PHONY: all emu kernel tools disk run test clean
 
 all: emu kernel tools disk
 
@@ -28,8 +28,13 @@ run: emu kernel disk
 megadrive: disk
 	$(MAKE) -C pal/megadrive
 
+# Run host unit tests (no cross-compiler needed)
+test:
+	$(MAKE) -C tests check
+
 clean:
 	$(MAKE) -C emu clean
 	$(MAKE) -C kernel clean
 	$(MAKE) -C tools clean
+	$(MAKE) -C tests clean
 	rm -f disk.img
