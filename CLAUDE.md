@@ -140,6 +140,9 @@ These guidelines are critical for making this project succeed. Follow them stric
 - **Emulator smoke test**: After host tests pass, `make run` and manually verify in the
   emulator shell. This catches ABI issues the host tests can't.
 - **Never skip `make test`**: Run it before every commit.
+- **Also run `make kernel`**: Host tests don't compile the full kernel, so they
+  can't catch missing declarations, ABI mismatches, or cross-compilation errors.
+  Always run `make kernel` (or `make run`) before considering a change done.
 
 ### 2. Keep the kernel small and flat
 
@@ -148,6 +151,9 @@ These guidelines are critical for making this project succeed. Follow them stric
 - If a function is over 80 lines, it's probably doing too much. Split it.
 - Global state is OK for a single-user kernel. Don't over-abstract.
 - No dynamic dispatch or vtables unless absolutely needed (device table is fine).
+- **Single source of truth for declarations**: Never duplicate function
+  declarations across headers. Use `#include` instead. Duplicated declarations
+  drift apart silently (e.g., `kernel.h` vs `pal.h`).
 
 ### 3. 68000 ABI and assembly rules
 
