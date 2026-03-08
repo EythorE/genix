@@ -165,25 +165,56 @@ source are all in the [open-ed repository](https://github.com/krikzz/open-ed).
 ### Configuration E: Mega EverDrive Pro
 
 The [Mega EverDrive Pro](https://krikzz.com/our-products/cartridges/mega-everdrive-pro.html)
-is an FPGA-based flash cartridge with extensive mapper emulation. It uses the
-SSF mapper for SRAM, which is different from both standard Sega and Open EverDrive.
+is an FPGA-based flash cartridge (Cyclone IV FPGA, 16 MB PSRAM, 1 MB SRAM)
+with extensive mapper emulation.
 
 ```
-ROM:  Up to 4 MB (loaded from SD card into FPGA RAM)
+ROM:  Up to 16 MB (loaded from SD card into FPGA PSRAM)
 RAM:  Kernel BSS + heap + user programs (64 KB main RAM)
-SRAM: Up to 2 MB at 0x200000–0x3FFFFF (FPGA-backed, saved to SD)
+SRAM: Up to 512 KB at 0x200000 (FPGA-backed, saved to SD on power-off)
 ```
 
-- **Mapper: SSF** (not standard Sega, not Open EverDrive)
-- SRAM is FPGA-emulated RAM, saved to SD card on power-off
-- The Pro can emulate various mapper types, but homebrew ROMs
-  typically use the SSF unlock sequence
+The Pro supports **two mapper modes**, selected by the ROM header system
+type field at offset 0x100:
 
-**SRAM enable for Mega EverDrive Pro:**
+**Traditional mode** (system type = `SEGA MEGA DRIVE` or `SEGA GENESIS`):
+- Behaves like a real cartridge with standard Sega mapper
+- For ROMs < 2 MB: SRAM is always mapped at 0x200000 — no enable needed
+- For ROMs >= 2 MB: enable SRAM via standard `0xA130F1 = 0x01`
+- 8-bit odd-byte access, up to 64 KB address space (32 KB usable)
+- **This is what Genix uses** — the ROM is ~543 KB, so SRAM just works
+
+**SSF mode** (system type = `SEGA SSF`):
+- Extended mapper with 8 bank registers at `0xA130F0`–`0xA130FE`
+- Each register maps a 512 KB bank into the address space
+- SRAM lives at bank 31 — write `0x001F` to CTRL4 (`0xA130F8`)
+  to map it at 0x200000
+- Word-wide access (no odd-byte quirk), up to 512 KB
+- CTRL0 (`0xA130F0`) format: P=protection bit (must be set),
+  W=write-enable, L=LED, C=#CART
+- Must disable interrupts and halt Z80 before bank switching
+- See [Krikzz extended SSF spec](https://krikzz.com/pub/support/mega-everdrive/pro-series/extended-ssf.txt)
+
 ```c
-/* SSF mapper unlock (Mega EverDrive Pro) */
-*(volatile uint16_t *)0xA130F0 = 0x8000;
+/* SSF mode: unlock + map SRAM bank */
+*(volatile uint16_t *)0xA130F0 = 0xA000;  /* P + W bits (unlock, write-enable) */
+*(volatile uint16_t *)0xA130F8 = 0x001F;  /* CTRL4 = bank 31 (SRAM) at 0x200000 */
+/* Now 0x200000-0x27FFFF is 512 KB word-wide SRAM */
 ```
+
+**For Genix, SSF mode is not needed** — traditional mode with the standard
+Sega header works. SSF would only be useful if we needed >32 KB of SRAM
+or word-wide access on the Pro.
+
+### Configuration F: Mega EverDrive X-series (X3/X5/X7)
+
+The older X-series EverDrives use DRAM-based save RAM:
+
+- 64 KB DRAM mapped at 0x200000 for save RAM
+- Saved to SD card (EDMD/SAVE/ folder) — battery backup only on X7
+- Same SSF bank registers as the Pro, but bank 31 gives only 256 KB
+- Standard `0xA130F1 = 0x01` works for ROMs < 2 MB (same as Pro)
+- **USB loading on X7 breaks SRAM** — must load ROMs from SD card
 
 ### SRAM Enable Summary
 
@@ -193,12 +224,19 @@ Each cartridge type requires a different enable sequence:
 |--------|----------|-------|-------|
 | **Standard cart** | `0xA130F1` (8-bit) | `0x03` | Bit 0=mapped, bit 1=write-enable |
 | **Open EverDrive** | `0xA13000` (16-bit) | `0x0001` | Bit 0=SRM_ON |
-| **Mega EverDrive Pro** | `0xA130F0` (16-bit) | `0x8000` | SSF mapper unlock |
+| **EverDrive Pro (traditional)** | `0xA130F1` (8-bit) | `0x01` | Same as standard; auto-mapped for ROM < 2 MB |
+| **EverDrive Pro (SSF)** | `0xA130F0` (16-bit) | `0xA000` + CTRL4=31 | Extended mapper; needs `SEGA SSF` header |
 | **BlastEm** | Any / none | — | Auto-detects from ROM header |
 
-**Current code** (`platform.c`) uses the standard cart sequence. To support
-other cartridges, the SRAM enable must be selectable at build time or
-auto-detected at runtime.
+**Good news for Genix:** The current standard mapper code (`0xA130F1 = 0x03`)
+works on real cartridges, all EverDrives (in traditional mode), and BlastEm.
+Since the Genix ROM is < 2 MB, SRAM is auto-mapped on EverDrive hardware
+and the register write is harmless.
+
+The only target that needs different code is the **Open EverDrive in
+`ROM_4M+RAM` mode** (register `0xA13000`). In `ROM_2M+RAM` mode (the
+likely auto-selected mode for Genix), SRAM is always on and the standard
+write is harmless.
 
 ## Platform Constants
 
@@ -493,9 +531,11 @@ standard write is harmless (it hits an unrelated address). But for
 3. Boot and select the ROM from the menu
 4. Connect a Saturn keyboard to controller port 2
 
-**Note:** The Pro's FPGA mapper may handle the standard `0xA130F1` write
-transparently. If SRAM doesn't work, the SSF unlock (`0xA130F0 = 0x8000`)
-may be needed. SRAM contents are saved to the SD card on power-off.
+The Pro reads the ROM header system type (`SEGA MEGA DRIVE` at offset
+0x100) and uses **traditional mapper mode**. Since the Genix ROM is
+< 2 MB, SRAM at 0x200000 is auto-mapped — the standard `0xA130F1`
+write in `platform.c` is compatible. SRAM is saved to the SD card
+automatically when you power off or press reset.
 
 #### What to Verify on Real Hardware
 
