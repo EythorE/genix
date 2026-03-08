@@ -116,6 +116,7 @@ test-md: megadrive
 clean:
 	$(MAKE) -C emu clean
 	$(MAKE) -C kernel clean
+	$(MAKE) -C pal/megadrive clean
 	$(MAKE) -C tools clean
 	$(MAKE) -C libc clean
 	$(MAKE) -C apps clean
