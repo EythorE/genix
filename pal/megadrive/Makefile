@@ -7,14 +7,17 @@ OBJCOPY = $(CROSS)objcopy
 LIBGCC = $(shell $(CC) -m68000 -print-libgcc-file-name)
 
 CFLAGS = -m68000 -nostdlib -nostartfiles -ffreestanding \
-         -Wall -Wextra -Wno-unused-function -O2 \
-         -I../../kernel -I../../pal
+         -Wall -Wextra -Wno-unused-function -Wno-unused-parameter -O2 \
+         -I../../kernel -I../../pal -I.
 
 KERNEL_DIR = ../../kernel
 
-# Mega Drive-specific startup
-ASM_SRCS = crt0.S $(KERNEL_DIR)/divmod.S
-C_SRCS = platform.c \
+# Assembly sources (Mega Drive platform + kernel)
+ASM_SRCS = crt0.S $(KERNEL_DIR)/divmod.S \
+           keyboard_read.S vdp.S devvt.S dbg_output.S
+
+# C sources (Mega Drive platform + kernel)
+C_SRCS = platform.c keyboard.c fontdata_8x8.c \
          $(KERNEL_DIR)/main.c $(KERNEL_DIR)/kprintf.c \
          $(KERNEL_DIR)/mem.c $(KERNEL_DIR)/buf.c $(KERNEL_DIR)/fs.c \
          $(KERNEL_DIR)/dev.c $(KERNEL_DIR)/proc.c $(KERNEL_DIR)/string.c
@@ -45,14 +48,28 @@ romdisk.o: $(DISK_IMG)
 $(TARGET): $(OBJS) romdisk.o megadrive.ld
 	$(LD) -T megadrive.ld -o $@ $(OBJS) romdisk.o $(LIBGCC)
 
-# Assembly
+# ---- Assembly files ----
+
 crt0.o: crt0.S
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 divmod.o: $(KERNEL_DIR)/divmod.S
 	$(CC) $(CFLAGS) -c -o $@ $<
 
-# C files from kernel directory
+keyboard_read.o: keyboard_read.S macros.S control_ports.def
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+vdp.o: vdp.S control_ports.def
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+devvt.o: devvt.S control_ports.def
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+dbg_output.o: dbg_output.S control_ports.def
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+# ---- C files from kernel directory ----
+
 main.o: $(KERNEL_DIR)/main.c
 	$(CC) $(CFLAGS) -c -o $@ $<
 
@@ -77,8 +94,15 @@ proc.o: $(KERNEL_DIR)/proc.c
 string.o: $(KERNEL_DIR)/string.c
 	$(CC) $(CFLAGS) -c -o $@ $<
 
-# Mega Drive platform
-platform.o: platform.c
+# ---- Mega Drive platform C files ----
+
+platform.o: platform.c keyboard.h keycode.h
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+keyboard.o: keyboard.c keyboard.h keycode.h
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+fontdata_8x8.o: fontdata_8x8.c
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 clean:
