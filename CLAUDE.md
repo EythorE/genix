@@ -203,3 +203,84 @@ These guidelines are critical for making this project succeed. Follow them stric
 - **Libc**: Currently minimal stubs. Will grow as we port more programs. If we need
   stdio/printf in userspace, add it to libc, don't duplicate.
 - If a design decision is causing pain, change it. Document why in the commit message.
+
+### 9. Division and arithmetic on the 68000
+
+The 68000 has NO 32÷32 hardware divide. Only DIVU.W (32÷16 → 16-bit
+quotient, 76-136 cycles) and DIVS.W (signed, 122-156 cycles). Full
+32-bit division goes through software in `kernel/divmod.S` (~300-600
+cycles). This matters in hot paths.
+
+**Rules for every `/` and `%` in kernel code:**
+
+- **Powers of 2**: Use `>> n` and `& (n-1)` explicitly. GCC does this
+  at `-O2` for constants, but be explicit for clarity.
+  ```c
+  blk = offset >> 10;       /* not offset / 1024 */
+  off = offset & 0x3FF;     /* not offset % 1024 */
+  ```
+- **16-bit constant divisors**: OK to use `/` and `%` — GCC or the
+  DIVU.W fast path handles these efficiently. Annotate with a comment:
+  ```c
+  /* DIVU.W safe: divisor=21 fits in 16 bits */
+  blk = 1 + (inum - 1) / INODES_PER_BLK;
+  ```
+- **Avoid division in hot paths**: Replace `cursor / COLS` with
+  separate row/col tracking (addition + comparison, not division).
+- **Circular buffers**: Use 256-byte buffers with `uint8_t` indices —
+  wraps naturally at 256 with no division at all.
+- **Never divide by a 32-bit runtime variable** in a hot path. If
+  unavoidable, document why and measure the cost.
+- **Annotate every `/` and `%`** with the divisor's properties so
+  future developers know the performance cost.
+
+### 10. Constrained system programming
+
+The Mega Drive has 64 KB main RAM, a 7.67 MHz CPU, and no MMU. Every
+byte and cycle matters. Follow these rules:
+
+- **Measure before optimizing**: Profile in the emulator first. Most
+  kernel code is not hot-path.
+- **Prefer computation over memory**: RAM is scarcer than cycles. A
+  few extra instructions to avoid a lookup table is usually better.
+- **Use fixed-size arrays**: Dynamic allocation should be rare. Process
+  table, buffer cache, inode cache — all statically sized.
+- **Avoid deep call stacks**: Each function call costs 18 cycles (JSR)
+  + register saves. Keep the call depth shallow.
+- **Inline tiny functions**: Small helpers (< 5 instructions) should
+  be `static inline` or macros to avoid call overhead.
+- **Keep structures aligned**: All fields at even offsets. The 68000
+  faults on unaligned word/long access. Pad with `uint8_t` if needed.
+- **Use `volatile` for hardware registers**: The compiler will
+  reorder or eliminate accesses to memory-mapped I/O without it.
+- **Test on host, verify on target**: Host tests catch logic bugs.
+  The emulator catches ABI and alignment bugs. Real hardware catches
+  timing bugs.
+
+### 11. Toolchain warnings
+
+- The distro `m68k-linux-gnu-gcc` defaults to 68020 and will silently
+  emit illegal instructions (BSR.L, EXTB.L, MULS.L). Prefer a
+  self-built `m68k-elf-gcc` with `--with-cpu=68000`.
+- Always pass `-m68000` to the compiler as a safety net.
+- Genix provides its own `divmod.S` (`__udivsi3`, `__umodsi3`,
+  `__divsi3`, `__modsi3`) to avoid depending on libgcc versions that
+  may contain 68020 instructions.
+- See `docs/toolchain.md` for the full toolchain build instructions.
+
+## Documentation
+
+Detailed technical documentation is in `docs/`:
+
+| Document | Description |
+|----------|-------------|
+| `docs/architecture.md` | System architecture, memory maps, layers |
+| `docs/kernel.md` | Kernel subsystems |
+| `docs/syscalls.md` | Syscall interface and convention |
+| `docs/filesystem.md` | minifs on-disk layout |
+| `docs/binary-format.md` | Genix binary format and loader |
+| `docs/tty.md` | VDP console and planned TTY subsystem |
+| `docs/multitasking.md` | Process model, vfork/exec, scheduling |
+| `docs/toolchain.md` | Compiler, build flags, libgcc |
+| `docs/68000-programming.md` | ISA constraints, division, ABI |
+| `docs/fuzix-heritage.md` | What we took from Fuzix, what's different |
