@@ -1,5 +1,4 @@
-TOOLCHAIN = /opt/m68k/m68k-68xxx--uclibc--stable-2024.05-1
-CROSS = $(TOOLCHAIN)/bin/m68k-buildroot-linux-uclibc-
+CROSS ?= m68k-linux-gnu-
 CC = $(CROSS)gcc
 AS = $(CROSS)as
 LD = $(CROSS)ld
