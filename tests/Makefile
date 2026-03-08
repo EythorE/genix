@@ -2,7 +2,7 @@
 CC = gcc
 CFLAGS = -Wall -Wextra -g -O0 -Wno-builtin-declaration-mismatch
 
-TESTS = test_string test_mem
+TESTS = test_string test_mem test_exec
 
 all: $(TESTS)
 
@@ -11,6 +11,9 @@ test_string: test_string.c testutil.h ../kernel/string.c
 
 test_mem: test_mem.c testutil.h ../kernel/mem.c
 	$(CC) $(CFLAGS) -o $@ test_mem.c
+
+test_exec: test_exec.c testutil.h
+	$(CC) $(CFLAGS) -o $@ test_exec.c
 
 check: $(TESTS)
 	@fail=0; \
@@ -21,6 +24,6 @@ check: $(TESTS)
 	exit $$fail
 
 clean:
-	rm -f $(TESTS)
+	rm -f $(TESTS) *.o
 
 .PHONY: all check clean

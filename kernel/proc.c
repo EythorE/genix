@@ -69,30 +69,22 @@ static int fd_alloc(struct ofile *of)
     return -EMFILE;
 }
 
-/* Single-tasking exec: just run the program and return */
-int do_exec(const char *path, const char **argv)
-{
-    (void)argv;
-    struct inode *ip = fs_namei(path);
-    if (!ip)
-        return -ENOENT;
-    if (ip->type != FT_FILE) {
-        fs_iput(ip);
-        return -ENOEXEC;
-    }
-    /* For now, we can't actually load and run ELF binaries in single-tasking mode.
-     * This will be implemented when we have the binary loader. */
-    fs_iput(ip);
-    return -ENOSYS;
-}
+/* do_exec() is implemented in exec.c */
 
 void do_exit(int code)
 {
+    /* If a user program is running via exec_enter, return to it */
+    if (exec_active) {
+        exec_exit_code = code;
+        exec_leave();
+        /* not reached */
+    }
+
+    /* Fallback for kernel-level exit (no user program running) */
     if (curproc) {
         curproc->exitcode = code;
         curproc->state = P_ZOMBIE;
     }
-    /* In single-tasking, return to shell */
 }
 
 int do_waitpid(int pid, int *status)
