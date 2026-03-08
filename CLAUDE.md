@@ -12,41 +12,83 @@ accelerate development — every feature must ultimately run on real Mega Drive 
 Design decisions should always consider the Mega Drive's constraints: 64 KB main RAM,
 7.67 MHz CPU, no MMU, optional cartridge SRAM.
 
-## Build
+## Getting Started
+
+### 1. Install Prerequisites
+
+You need a host C compiler and a 68000 cross-compiler.
 
 ```bash
-# Host toolchain (emulator)
-make emu
+# Host compiler + build tools (Ubuntu/Debian)
+sudo apt-get install build-essential
 
-# Kernel for workbench emulator
-make kernel
-
-# User programs (libc + apps)
-make apps
-
-# Full system (kernel + apps, run in emulator)
-make run
-
-# Mega Drive ROM
-make megadrive
-
-# Boot Mega Drive ROM headless in BlastEm (~5s smoke test)
-make test-md
-
-# Run host unit tests
-make test
+# 68000 cross-compiler (quick start — works with Genix's workarounds)
+sudo apt-get install gcc-m68k-linux-gnu binutils-m68k-linux-gnu
 ```
 
-### Prerequisites
+The distro cross-compiler defaults to 68020, but Genix works around this
+by passing `-m68000` and providing its own division routines. For a fully
+correct 68000 toolchain, build from source — see
+[docs/toolchain.md](docs/toolchain.md) for download links and build
+instructions.
 
-- `gcc` (host, for emulator)
-- `m68k-linux-gnu-gcc` (cross compiler for kernel/apps)
-- `make`
-- `blastem` (optional, for `make test-md` — headless Mega Drive smoke test)
+### 2. Build and Run
 
-Install on Ubuntu/Debian:
 ```bash
-sudo apt-get install gcc-m68k-linux-gnu binutils-m68k-linux-gnu
+make run       # Build everything + boot in the workbench emulator
+```
+
+This builds the emulator, kernel, user programs, and a filesystem image,
+then boots Genix in your terminal. You'll see a `>` prompt.
+
+### 3. Try It
+
+```
+> ls /bin           # List available programs
+> exec /bin/hello   # Run the hello world program
+> exec /bin/echo hello world
+> mem               # Show memory allocator state
+> help              # List all built-in commands
+> halt              # Shut down (exits the emulator)
+```
+
+Press **Ctrl+]** to force-quit the emulator at any time (like telnet).
+
+See [docs/emulator.md](docs/emulator.md) for full emulator documentation.
+
+### 4. Build the Mega Drive ROM
+
+```bash
+make megadrive     # Produces pal/megadrive/genix-md.bin
+```
+
+Test in BlastEm:
+```bash
+blastem pal/megadrive/genix-md.bin
+```
+
+On the Mega Drive, Genix uses the VDP for text output and reads input
+from a Saturn keyboard connected to controller port 2.
+
+### 5. Run Tests
+
+```bash
+make test          # Host unit tests (no cross-compiler needed)
+make test-md       # Headless BlastEm boot (~5s smoke test, needs blastem)
+```
+
+### All Build Targets
+
+```bash
+make emu           # Build workbench emulator only (host binary)
+make kernel        # Build kernel only (needs cross-compiler)
+make apps          # Build user programs (needs kernel built first)
+make disk          # Create filesystem image
+make run           # Build all + run in emulator
+make megadrive     # Build Mega Drive ROM
+make test          # Host unit tests
+make test-md       # Headless BlastEm smoke test
+make clean         # Remove all build artifacts
 ```
 
 ## Architecture
@@ -152,24 +194,9 @@ Build flow: `.c → .o → .elf (m68k-linux-gnu-ld) → mkbin → genix binary`
 
 ## Testing
 
+### Debugging with GDB via BlastEm
+
 ```bash
-# Run host unit tests (no cross-compiler needed)
-make test
-
-# Run in workbench emulator (interactive)
-make run
-
-# In the emulator shell:
-#   exec /bin/hello
-#   exec /bin/echo hello world
-
-# Build Mega Drive ROM
-make megadrive
-
-# Test in BlastEm (Mega Drive emulator)
-blastem pal/megadrive/genix-md.bin
-
-# Debug with GDB via BlastEm
 m68k-linux-gnu-gdb -q --tui \
     -ex "target remote | blastem -D pal/megadrive/genix-md.bin" \
     pal/megadrive/genix-md.elf
@@ -356,7 +383,10 @@ Detailed technical documentation is in `docs/`:
 
 | Document | Description |
 |----------|-------------|
-| `docs/megadrive.md` | Mega Drive target: memory, cartridges, testing |
+| `docs/emulator.md` | Workbench emulator: architecture, usage, keyboard |
+| `docs/toolchain.md` | Cross-compiler setup (apt quick-start + build from source) |
+| `docs/megadrive.md` | Mega Drive target: memory, cartridges, SRAM, testing |
+| `docs/decisions.md` | Design decisions, reversals, pain points, project history |
 | `docs/architecture.md` | System architecture, memory maps, layers |
 | `docs/kernel.md` | Kernel subsystems |
 | `docs/syscalls.md` | Syscall interface and convention |
@@ -364,6 +394,5 @@ Detailed technical documentation is in `docs/`:
 | `docs/binary-format.md` | Genix binary format and loader |
 | `docs/tty.md` | VDP console and planned TTY subsystem |
 | `docs/multitasking.md` | Process model, vfork/exec, scheduling |
-| `docs/toolchain.md` | Compiler, build flags, libgcc |
 | `docs/68000-programming.md` | ISA constraints, division, ABI |
 | `docs/fuzix-heritage.md` | What we took from Fuzix, what's different |

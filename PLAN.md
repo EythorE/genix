@@ -1,13 +1,15 @@
 # Genix Development Plan
 
-> **Origin:** This design document was originally created in the
-> [EythorE/FUZIX](https://github.com/EythorE/FUZIX) repository on branch
-> [`claude/create-dev-branch-Jpv7Z`](https://github.com/EythorE/FUZIX/blob/claude/create-dev-branch-Jpv7Z/PLAN.md).
-> It has been copied here as the canonical reference for the Genix project.
+> **Status (March 2026):** Phase 1 (emulator) and Phase 2a (binary loading,
+> single-tasking exec, user programs) are **complete**. Phase 2b (multitasking)
+> is next. The Mega Drive build boots in BlastEm and on real hardware.
+>
+> **Origin:** Originally created in
+> [EythorE/FUZIX](https://github.com/EythorE/FUZIX) and copied here as the
+> canonical reference. See [docs/decisions.md](docs/decisions.md) for design
+> history and reversals.
 
 ---
-
-# MegaDrive OS — Design Plan
 
 ## The Problem
 
@@ -49,9 +51,16 @@ can read the entire kernel source in an afternoon.
 
 ---
 
-## Binary Format Decision: Fuzix-style a.out
+## Binary Format Decision
 
-### The Analysis
+### Current: Genix Flat Binary (32-byte header)
+
+We currently use a custom flat binary format for single-tasking exec().
+See [docs/binary-format.md](docs/binary-format.md) for the header layout
+and loader details. This is a stepping stone — when we add multitasking
+and relocation, we'll migrate to Fuzix a.out.
+
+### Planned: Fuzix-style a.out (for multitasking)
 
 We evaluated four binary format options:
 
@@ -587,40 +596,18 @@ By using Fuzix's drivers and porting its tty.c, we get:
 └─────────────────────────────────────┘
 ```
 
-## Phase 1: The Workbench (Emulated 68000 SBC)
+## Phase 1: The Workbench (Emulated 68000 SBC) -- COMPLETE
 
-### Why not develop directly on the Mega Drive?
+Musashi-based 68000 SBC emulator with UART, timer, and disk I/O.
+Runs in any terminal, instant startup, printf debugging.
 
-The Mega Drive has a VDP (video display processor), no UART, and requires
-blastem with Xvfb to test. Every debug cycle involves screenshots. This is
-miserable for kernel development.
+See [docs/emulator.md](docs/emulator.md) for architecture and usage.
 
-Instead, we build a trivial 68000 single-board computer in software:
-
-```
-Memory Map (Workbench SBC):
-  0x000000 - 0x0FFFFF   1MB RAM (ROM at reset, then RAM)
-  0xF00000 - 0xF00003   UART (data register + status register)
-  0xF10000 - 0xF10003   Timer (count register + control register)
-  0xF20000 - 0xF20010   Disk controller (command + block + buffer)
-```
-
-**Implementation:** Use **Musashi** (MIT license, C, battle-tested in MAME) as
-the CPU core. Wrap it in ~200 lines of C that provides:
-- 1MB RAM
-- A memory-mapped UART that reads/writes to the host terminal (stdin/stdout)
-- A periodic timer interrupt (100 Hz) via `SIGALRM` or similar
-- A block device backed by a host file (for the filesystem)
-
-This gives us `./emu68k kernel.bin` — runs in any terminal, no X11, no
-framebuffer, instant startup, `printf`-debugging works, GDB host-side debugging
-works.
-
-**Status: COMPLETE.** The workbench emulator is implemented and working.
+**Status: COMPLETE.**
 
 ## Phase 2: The Kernel
 
-### Status: Core complete, exec/multitasking pending
+### Phase 2a: Binary Loading + Single-Tasking exec() -- COMPLETE
 
 **Completed:**
 - Boot, console I/O, kprintf
@@ -631,21 +618,18 @@ works.
 - Basic process structure (16 slots, file descriptors)
 - Syscall dispatch via TRAP #0 (~20 syscalls implemented)
 - Built-in debug shell (ls, cat, echo, mkdir, write, mem, etc.)
+- Binary loader (Genix flat binary, 32-byte header)
+- User crt0.S + minimal libc stubs (15 syscalls)
+- exec() with single-tasking semantics
+- User programs: hello, echo, cat
+- 34 host tests, all passing
+- Mega Drive ROM boots in BlastEm and on real hardware
+
+**Status: COMPLETE.** See [docs/binary-format.md](docs/binary-format.md).
 
 **Remaining (in priority order):**
 
-### Phase 2a: Binary Loading + Single-Tasking exec()
-
-1. **Binary loader** (~100 lines) — Read Fuzix a.out header, allocate memory,
-   load text+data, zero BSS, apply relocations, set up user stack.
-2. **User crt0.S** (~30 lines) — Set up argc/argv, call main(), call _exit().
-3. **Minimal libc stubs** (~100 lines asm) — `_exit`, `read`, `write`, `open`,
-   `close`, `lseek`, `brk` via TRAP #0.
-4. **exec()** — Load binary, set up process, jump to entry point.
-5. **First user program** — "hello world" loaded from filesystem and executed.
-6. **Minimal shell** — Read line, parse, exec command, wait.
-
-### Phase 2b: Multitasking
+### Phase 2b: Multitasking -- NEXT
 
 7. **Preemptive scheduler** (~50 lines) — Timer interrupt triggers round-robin
    scheduling. Context switch via MOVEM save/restore.
@@ -694,13 +678,15 @@ works.
 30. **Port editors** — ed (line editor), levee (vi clone).
 31. **Port development tools** — ar, make, small C compiler.
 
-## Phase 3: Mega Drive Port
+## Phase 3: Mega Drive Port -- COMPLETE
 
-Once the kernel works on the workbench emulator, porting to Mega Drive means
-implementing the Platform Abstraction Layer. **Status: Already implemented**
-from the Fuzix port.
+The PAL implementation reuses proven Fuzix drivers. The Mega Drive ROM
+builds, boots in BlastEm, and runs on real hardware with EverDrive.
 
-The PAL implementation reuses proven Fuzix drivers:
+See [docs/megadrive.md](docs/megadrive.md) for cartridge configurations,
+SRAM, and real hardware testing.
+
+**Status: COMPLETE.** Mega Drive PAL drivers ported from Fuzix:
 - `devvt.S` — VDP text output
 - `keyboard.c` / `keyboard_read.S` — Saturn keyboard
 - `devrd.c` — ROM disk + RAM disk
@@ -827,13 +813,14 @@ Main RAM (64KB):
 3. ~~Boot to a `>` prompt~~ ✓
 4. ~~Implement basic syscalls (read/write/open/close)~~ ✓
 5. ~~Implement filesystem (minifs)~~ ✓
-6. **Implement exec()** — binary loader with Fuzix a.out format
-7. **Implement user crt0.S + minimal libc stubs**
-8. **Write minimal shell**
-9. **Implement vfork() + waitpid()**
+6. ~~Implement exec() — binary loader~~ ✓
+7. ~~Implement user crt0.S + minimal libc stubs~~ ✓
+8. ~~Build and boot on Mega Drive (BlastEm + real hardware)~~ ✓
+9. **Implement vfork() + waitpid()** ← next
 10. **Implement preemptive scheduler**
 11. **Implement pipe()**
 12. **Port Fuzix tty.c**
 13. **Implement signals**
-14. **Port Fuzix libc**
-15. **Port Fuzix utilities**
+14. **Migrate binary format to Fuzix a.out** (relocation support)
+15. **Port Fuzix libc**
+16. **Port Fuzix utilities**
