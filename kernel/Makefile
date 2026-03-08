@@ -11,8 +11,8 @@ CFLAGS = -m68000 -nostdlib -nostartfiles -ffreestanding \
 ASFLAGS = -m68000
 
 # Kernel sources
-ASM_SRCS = crt0.S divmod.S
-C_SRCS = main.c kprintf.c mem.c buf.c fs.c dev.c proc.c string.c \
+ASM_SRCS = crt0.S divmod.S exec_asm.S
+C_SRCS = main.c kprintf.c mem.c buf.c fs.c dev.c proc.c exec.c string.c \
          ../pal/workbench/platform.c
 
 ASM_OBJS = $(ASM_SRCS:.S=.o)

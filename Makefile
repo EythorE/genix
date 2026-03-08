@@ -1,8 +1,8 @@
 # Genix top-level Makefile
 
-.PHONY: all emu kernel tools disk run test clean
+.PHONY: all emu kernel tools libc apps disk run test clean
 
-all: emu kernel tools disk
+all: emu kernel tools apps disk
 
 # Build the workbench emulator (host binary)
 emu:
@@ -12,13 +12,24 @@ emu:
 kernel:
 	$(MAKE) -C kernel
 
-# Build host tools (mkfs etc.)
+# Build host tools (mkfs, mkbin)
 tools:
 	$(MAKE) -C tools
 
-# Create a filesystem image
-disk: tools
-	tools/mkfs.minifs disk.img 512
+# Build the C library for user programs
+libc:
+	$(MAKE) -C libc
+
+# Build user programs
+apps: libc tools
+	$(MAKE) -C apps
+
+# Collect all user binaries
+APP_BINS = $(wildcard apps/hello apps/echo apps/cat)
+
+# Create a filesystem image with user programs
+disk: tools apps
+	tools/mkfs.minifs disk.img 512 $(APP_BINS)
 
 # Run the kernel in the emulator
 run: emu kernel disk
@@ -36,5 +47,7 @@ clean:
 	$(MAKE) -C emu clean
 	$(MAKE) -C kernel clean
 	$(MAKE) -C tools clean
+	$(MAKE) -C libc clean
+	$(MAKE) -C apps clean
 	$(MAKE) -C tests clean
 	rm -f disk.img

@@ -68,8 +68,13 @@ void kmain(void)
 
     kputs("\nGenix v0.1 starting...\n");
 
-    /* Initialize subsystems */
-    mem_init(pal_mem_start(), pal_mem_end());
+    /* Initialize subsystems.
+     * Kernel heap goes from end of BSS to USER_BASE.
+     * User programs get USER_BASE to USER_TOP. */
+    uint32_t heap_end = pal_mem_end();
+    if (heap_end > USER_BASE)
+        heap_end = USER_BASE;
+    mem_init(pal_mem_start(), heap_end);
     buf_init();
     dev_init();
     fs_init();

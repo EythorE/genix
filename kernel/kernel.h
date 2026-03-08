@@ -88,6 +88,28 @@ typedef int bool;
 #define SYS_SIGNAL      48
 #define SYS_SBRK        69
 
+/* User memory layout (single-tasking, fixed load address) */
+#define USER_BASE   0x040000    /* user programs load here */
+#define USER_TOP    0x0F0000    /* user stack starts here (grows down) */
+#define USER_SIZE   (USER_TOP - USER_BASE)
+
+/* Default user stack size */
+#define USER_STACK_DEFAULT  4096
+
+/* Genix binary format header (32 bytes, big-endian on disk) */
+#define GENIX_MAGIC  0x47454E58  /* "GENX" */
+#define GENIX_HDR_SIZE 32
+
+struct genix_header {
+    uint32_t magic;       /* 0x47454E58 "GENX" */
+    uint32_t load_size;   /* bytes to copy from file (text+data) */
+    uint32_t bss_size;    /* bytes to zero after load_size */
+    uint32_t entry;       /* absolute entry point address */
+    uint32_t stack_size;  /* stack size hint (0 = default 4KB) */
+    uint32_t flags;       /* reserved, must be 0 */
+    uint32_t reserved[2]; /* pad to 32 bytes */
+};
+
 /* Seek modes */
 #define SEEK_SET    0
 #define SEEK_CUR    1
@@ -258,6 +280,12 @@ int  do_exec(const char *path, const char **argv);
 void do_exit(int code);
 int  do_waitpid(int pid, int *status);
 int  do_vfork(void);
+
+/* Exec support (assembly in exec_asm.S) */
+extern int exec_enter(uint32_t entry, uint32_t sp);
+extern void exec_leave(void);
+extern int exec_exit_code;
+extern int exec_active;
 
 /* ======== Syscall dispatch ======== */
 

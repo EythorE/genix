@@ -7,3 +7,11 @@ emu/musashi/m68kmake
 emu/musashi/m68kops.c
 emu/musashi/m68kops.h
 tools/mkfs.minifs
+tools/mkbin
+libc/libc.a
+apps/hello
+apps/echo
+apps/cat
+tests/test_string
+tests/test_mem
+tests/test_exec
