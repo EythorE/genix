@@ -12,14 +12,15 @@ CFLAGS = -m68000 -nostdlib -nostartfiles -ffreestanding \
 KERNEL_DIR = ../../kernel
 
 # Assembly sources (Mega Drive platform + kernel)
-ASM_SRCS = crt0.S $(KERNEL_DIR)/divmod.S \
+ASM_SRCS = crt0.S $(KERNEL_DIR)/divmod.S $(KERNEL_DIR)/exec_asm.S \
            keyboard_read.S vdp.S devvt.S dbg_output.S
 
 # C sources (Mega Drive platform + kernel)
 C_SRCS = platform.c keyboard.c fontdata_8x8.c \
          $(KERNEL_DIR)/main.c $(KERNEL_DIR)/kprintf.c \
          $(KERNEL_DIR)/mem.c $(KERNEL_DIR)/buf.c $(KERNEL_DIR)/fs.c \
-         $(KERNEL_DIR)/dev.c $(KERNEL_DIR)/proc.c $(KERNEL_DIR)/string.c
+         $(KERNEL_DIR)/dev.c $(KERNEL_DIR)/proc.c $(KERNEL_DIR)/exec.c \
+         $(KERNEL_DIR)/string.c
 
 ASM_OBJS = $(notdir $(ASM_SRCS:.S=.o))
 C_OBJS = $(notdir $(C_SRCS:.c=.o))
@@ -88,6 +89,12 @@ dev.o: $(KERNEL_DIR)/dev.c
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 proc.o: $(KERNEL_DIR)/proc.c
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+exec.o: $(KERNEL_DIR)/exec.c
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+exec_asm.o: $(KERNEL_DIR)/exec_asm.S
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 string.o: $(KERNEL_DIR)/string.c
