@@ -77,6 +77,8 @@ make tools     # Host tools (mkfs.minifs)
 make disk      # Create a minifs disk image
 ```
 
+To exit the emulator, type `halt` at the shell prompt or press **Ctrl+]**.
+
 ## Testing
 
 ```bash
