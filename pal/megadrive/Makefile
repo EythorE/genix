@@ -7,7 +7,8 @@ LIBGCC = $(shell $(CC) -m68000 -print-libgcc-file-name)
 
 CFLAGS = -m68000 -nostdlib -nostartfiles -ffreestanding \
          -Wall -Wextra -Wno-unused-function -Wno-unused-parameter -O2 \
-         -I../../kernel -I../../pal -I.
+         -I../../kernel -I../../pal -I. \
+         $(EXTRA_CFLAGS)
 
 KERNEL_DIR = ../../kernel
 
