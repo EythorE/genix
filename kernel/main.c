@@ -94,8 +94,7 @@ void kmain(void)
     builtin_shell();
 
     kputs("System halted.\n");
-    for (;;)
-        ;
+    pal_halt();
 }
 
 /* Built-in emergency shell when no filesystem */

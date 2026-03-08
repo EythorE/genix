@@ -17,5 +17,6 @@ uint32_t pal_mem_start(void);
 uint32_t pal_mem_end(void);
 void     pal_timer_init(int hz);
 uint32_t pal_timer_ticks(void);
+void     pal_halt(void);
 
 #endif

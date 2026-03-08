@@ -27,6 +27,7 @@
 #define DISK_BLOCK   0xF20004
 #define DISK_STATUS  0xF20008
 #define DISK_BUFFER  0xF20010
+#define POWER_OFF    0xF30000
 
 #define UART_RX_RDY  0x01
 #define UART_TX_RDY  0x02
@@ -106,4 +107,12 @@ void pal_timer_init(int hz)
 uint32_t pal_timer_ticks(void)
 {
     return REG32(TIMER_COUNT);
+}
+
+void pal_halt(void)
+{
+    REG16(POWER_OFF) = 1;
+    /* If we get here, spin */
+    for (;;)
+        ;
 }

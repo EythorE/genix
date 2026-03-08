@@ -7,6 +7,7 @@
  *   0xF10000 - 0xF10003  Timer (count + control)
  *   0xF20000 - 0xF20003  Disk control (command + block + status)
  *   0xF20004 - 0xF203FF  Disk data buffer (1024 bytes)
+ *   0xF30000             Power-off (write any value to quit)
  *
  * Usage: ./emu68k kernel.bin [disk.img]
  */
@@ -36,6 +37,7 @@
 #define DISK_BLOCK      0xF20004    /* 32-bit block number */
 #define DISK_STATUS     0xF20008
 #define DISK_BUFFER     0xF20010
+#define POWER_OFF       0xF30000
 
 /* UART status bits */
 #define UART_RX_READY   0x01
@@ -241,6 +243,10 @@ void m68k_write_memory_8(unsigned int addr, unsigned int val)
         fflush(stdout);
         return;
     }
+    if (addr == POWER_OFF || addr == POWER_OFF + 1) {
+        g_quit = 1;
+        return;
+    }
     if (addr >= DISK_BUFFER && addr < DISK_BUFFER + BLOCK_SIZE) {
         g_disk_buf[addr - DISK_BUFFER] = val;
         return;
@@ -263,6 +269,10 @@ void m68k_write_memory_16(unsigned int addr, unsigned int val)
     }
     if (addr == TIMER_CONTROL) {
         g_timer_enabled = val & 1;
+        return;
+    }
+    if (addr == POWER_OFF) {
+        g_quit = 1;
         return;
     }
     if (addr == DISK_CMD) {
