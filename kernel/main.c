@@ -107,6 +107,11 @@ void kmain(void)
 
 #ifdef AUTOTEST
     autotest();
+    /* Spin with interrupts enabled so VBlank keeps firing.
+     * If we call pal_halt() (STOP #0x2700), some BlastEm versions
+     * exit immediately, causing the headless test to report failure. */
+    for (;;)
+        __asm__ volatile("nop");
 #else
     builtin_shell();
 #endif
