@@ -9,6 +9,7 @@ while reusing proven Mega Drive drivers.
 - `gcc` (host, for emulator and tests)
 - `m68k-elf-gcc` built with `--with-cpu=68000` (cross compiler for kernel/apps)
 - `make`
+- `blastem` (optional, for `make test-md` and Mega Drive ROM testing)
 
 ### Recommended: Build `m68k-elf-gcc` from source
 
@@ -79,11 +80,70 @@ make disk      # Create a minifs disk image
 
 To exit the emulator, type `halt` at the shell prompt or press **Ctrl+]**.
 
+## Running on Mega Drive (BlastEm)
+
+[BlastEm](https://www.retrodev.com/blastem/) is the most accurate open-source
+Mega Drive emulator. Genix requires a Saturn keyboard, which BlastEm emulates.
+
+```bash
+make megadrive
+blastem pal/megadrive/genix-md.bin
+```
+
+### Keyboard setup (one-time)
+
+Genix reads keyboard input from controller port 2 via the Saturn keyboard protocol.
+
+1. Launch BlastEm with any ROM
+2. Press **Escape** → **Settings** → **System**
+3. Set **IO Port 2** to **Saturn Keyboard**
+4. Exit settings (saved automatically to `~/.config/blastem/blastem.cfg`)
+
+Or edit the config file directly:
+```
+io {
+    devices {
+        1 gamepad6.1
+        2 saturn keyboard
+    }
+}
+```
+
+**Important:** Press **Right Ctrl** to toggle keyboard capture. When captured,
+your keypresses go to the emulated Saturn keyboard. Press Right Ctrl again to
+release back to BlastEm hotkeys.
+
+### Automated smoke test
+
+```bash
+make test-md    # Boots ROM for ~5-10s, exits — catches crashes
+```
+
+### GDB debugging
+
+```bash
+m68k-linux-gnu-gdb -q --tui \
+    -ex "target remote | blastem -D pal/megadrive/genix-md.bin" \
+    pal/megadrive/genix-md.elf
+```
+
+## Running on Real Hardware
+
+Copy `pal/megadrive/genix-md.bin` to a flash cartridge SD card and boot.
+Connect a Saturn keyboard to controller port 2.
+
+Tested flash carts: **Open EverDrive**, **Mega EverDrive Pro**. See
+[docs/megadrive.md](docs/megadrive.md) for cartridge-specific SRAM
+configuration and mapper differences.
+
 ## Testing
 
 ```bash
 # Run host unit tests (no cross-compiler needed)
 make test
+
+# Mega Drive smoke test (BlastEm required)
+make test-md
 ```
 
 Tests cover `kernel/string.c`, `kernel/mem.c`, and `kernel/exec.c` — pure logic that runs natively on the host.
