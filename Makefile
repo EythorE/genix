@@ -54,6 +54,7 @@ test:
 
 # Scripted emulator test — pipe commands, check stdout
 # Rebuilds apps + disk to ensure workbench linker script is used.
+# Always restores the normal (non-AUTOTEST) kernel when done, even on failure.
 test-emu: emu libc tools
 	@$(MAKE) -C apps clean
 	@$(MAKE) -C apps
@@ -61,18 +62,20 @@ test-emu: emu libc tools
 	@$(MAKE) -C kernel clean
 	@$(MAKE) -C kernel EXTRA_CFLAGS=-DAUTOTEST
 	@echo "=== test-emu: workbench autotest ==="
-	@output=$$(timeout 30 emu/emu68k kernel/kernel.bin disk.img 2>&1); \
+	@test_rc=0; \
+	output=$$(timeout 30 emu/emu68k kernel/kernel.bin disk.img 2>&1); \
 	echo "$$output"; \
 	if echo "$$output" | grep -q "AUTOTEST PASSED"; then \
 		echo "=== test-emu: PASS ==="; \
 	else \
-		echo "=== test-emu: FAIL ==="; exit 1; \
-	fi
-	@$(MAKE) -C kernel clean
-	@$(MAKE) -C kernel
+		echo "=== test-emu: FAIL ==="; test_rc=1; \
+	fi; \
+	$(MAKE) -C kernel clean; \
+	$(MAKE) -C kernel; \
+	exit $$test_rc
 
 # Mega Drive autotest — build with AUTOTEST, run headless in BlastEm
-# Restores apps to workbench linker script when done.
+# Always restores the normal (non-AUTOTEST) ROM when done, even on failure.
 test-md-auto: libc tools
 	@$(MAKE) -C apps clean
 	@$(MAKE) -C apps LDSCRIPT=user-md.ld
@@ -80,18 +83,20 @@ test-md-auto: libc tools
 	@$(MAKE) -C pal/megadrive clean
 	@$(MAKE) -C pal/megadrive DISK_IMG=../../disk-md.img EXTRA_CFLAGS=-DAUTOTEST
 	@echo "=== test-md-auto: BlastEm autotest ==="
-	@Xvfb :57 -screen 0 640x480x24 >/dev/null 2>&1 & xvfb_pid=$$!; \
+	@test_rc=0; \
+	Xvfb :57 -screen 0 640x480x24 >/dev/null 2>&1 & xvfb_pid=$$!; \
 	sleep 1; \
 	DISPLAY=:57 LIBGL_ALWAYS_SOFTWARE=1 SDL_AUDIODRIVER=dummy \
 		timeout 10 $(BLASTEM) -g pal/megadrive/genix-md.bin >/dev/null 2>&1; \
 	rc=$$?; kill $$xvfb_pid 2>/dev/null; wait $$xvfb_pid 2>/dev/null; \
 	if [ $$rc -eq 124 ]; then echo "=== test-md-auto: OK (ran 10s without crash) ==="; \
 	elif [ $$rc -eq 0 ]; then echo "=== test-md-auto: OK ==="; \
-	else echo "=== test-md-auto: FAIL (exit code $$rc) ==="; exit 1; fi
-	@$(MAKE) -C pal/megadrive clean
-	@$(MAKE) -C pal/megadrive DISK_IMG=../../disk-md.img
-	@$(MAKE) -C apps clean
-	@$(MAKE) -C apps
+	else echo "=== test-md-auto: FAIL (exit code $$rc) ==="; test_rc=1; fi; \
+	$(MAKE) -C pal/megadrive clean; \
+	$(MAKE) -C pal/megadrive DISK_IMG=../../disk-md.img; \
+	$(MAKE) -C apps clean; \
+	$(MAKE) -C apps; \
+	exit $$test_rc
 
 # Boot Mega Drive ROM headless in BlastEm (~5s smoke test)
 # Runs BlastEm under Xvfb with OpenGL disabled. A timeout exit (rc=124)
