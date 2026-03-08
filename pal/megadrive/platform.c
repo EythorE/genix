@@ -203,6 +203,14 @@ uint32_t pal_timer_ticks(void)
     return md_ticks;
 }
 
+void pal_halt(void)
+{
+    /* On real hardware, just stop the CPU */
+    __asm__ volatile("stop #0x2700");
+    for (;;)
+        ;
+}
+
 /* Called from VBlank interrupt handler in crt0.S */
 void md_vblank_handler(void)
 {
