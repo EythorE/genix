@@ -53,7 +53,11 @@ test:
 	$(MAKE) -C tests check
 
 # Scripted emulator test — pipe commands, check stdout
-test-emu: emu disk
+# Rebuilds apps + disk to ensure workbench linker script is used.
+test-emu: emu libc tools
+	@$(MAKE) -C apps clean
+	@$(MAKE) -C apps
+	@tools/mkfs.minifs disk.img 512 $(APP_BINS)
 	@$(MAKE) -C kernel clean
 	@$(MAKE) -C kernel EXTRA_CFLAGS=-DAUTOTEST
 	@echo "=== test-emu: workbench autotest ==="
@@ -68,6 +72,7 @@ test-emu: emu disk
 	@$(MAKE) -C kernel
 
 # Mega Drive autotest — build with AUTOTEST, run headless in BlastEm
+# Restores apps to workbench linker script when done.
 test-md-auto: libc tools
 	@$(MAKE) -C apps clean
 	@$(MAKE) -C apps LDSCRIPT=user-md.ld
@@ -85,6 +90,8 @@ test-md-auto: libc tools
 	else echo "=== test-md-auto: FAIL (exit code $$rc) ==="; exit 1; fi
 	@$(MAKE) -C pal/megadrive clean
 	@$(MAKE) -C pal/megadrive DISK_IMG=../../disk-md.img
+	@$(MAKE) -C apps clean
+	@$(MAKE) -C apps
 
 # Boot Mega Drive ROM headless in BlastEm (~5s smoke test)
 # Runs BlastEm under Xvfb with OpenGL disabled. A timeout exit (rc=124)
