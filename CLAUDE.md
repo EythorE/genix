@@ -4,7 +4,13 @@
 
 Genix is a minimal, single-user, POSIX-enough operating system for the Motorola 68000,
 targeting the Sega Mega Drive. It replaces the FUZIX kernel with ~3000 lines of new code
-while reusing proven Mega Drive drivers.
+while reusing proven Mega Drive drivers from
+[EythorE/FUZIX](https://github.com/EythorE/FUZIX/tree/megadrive).
+
+**The Mega Drive is the primary target.** The workbench emulator exists only to
+accelerate development — every feature must ultimately run on real Mega Drive hardware.
+Design decisions should always consider the Mega Drive's constraints: 64 KB main RAM,
+7.67 MHz CPU, no MMU, optional cartridge SRAM.
 
 ## Build
 
@@ -53,12 +59,17 @@ Hardware / Emulator
 
 ## Key Design Decisions
 
+- **Mega Drive first** — real hardware is the target, emulators are for iteration
 - **No fork()** — vfork()+exec() only (no MMU required)
 - **No multi-user** — no UIDs, permissions, login
 - **Custom filesystem (minifs)** — classic Unix inode layout
 - **Single-tasking first** — then add multi-tasking
-- **Musashi** 68000 emulator for development
+- **Workbench emulator** for rapid development (Musashi 68000 SBC)
+- **BlastEm** for Mega Drive validation before real hardware
 - **Simple binary format** — flat binary with 32-byte header, relocatable later
+- **Modular memory layout** — supports different cartridge configurations
+- **SRAM is optional** — system runs on 64 KB main RAM alone; SRAM adds
+  persistent storage and extended RAM
 - **Design choices are cheap** — if a format/convention is hurting us, change it
 
 ## Directory Structure
@@ -76,7 +87,32 @@ genix/
 └── tests/        # Host unit tests
 ```
 
-## Memory Layout (Workbench, 1MB RAM)
+## Memory Layout
+
+### Mega Drive (64 KB RAM — primary target)
+
+```
+ROM (cartridge):
+0x000000  Vectors + Sega header + kernel .text + .rodata + .romdisk
+
+Main RAM (64 KB):
+0xFF0000  Kernel .data + .bss (~25 KB)
+~0xFF6300 Kernel heap (~1 KB)
+~0xFF6800 USER_BASE — user programs load here (~32 KB available)
+~0xFFFE00 USER_TOP — user stack starts here (grows down)
+0xFFFFFF  Top of RAM / kernel stack
+
+SRAM (optional, cartridge-dependent):
+0x200000  Read-write filesystem and/or extended user RAM
+```
+
+Kernel uses ~25 KB of the 64 KB main RAM, leaving ~40 KB for heap + user
+programs. User programs run entirely in main RAM without SRAM. SRAM provides
+persistent storage and optional extra RAM for larger programs.
+
+See `docs/megadrive.md` for cartridge configurations and SRAM details.
+
+### Workbench (1 MB RAM — development only)
 
 ```
 0x000000  Vectors + Kernel code + data + BSS
@@ -122,7 +158,30 @@ make run
 # In the emulator shell:
 #   exec /bin/hello
 #   exec /bin/echo hello world
+
+# Build Mega Drive ROM
+make megadrive
+
+# Test in BlastEm (Mega Drive emulator)
+blastem pal/megadrive/genix-md.bin
+
+# Debug with GDB via BlastEm
+m68k-linux-gnu-gdb -q --tui \
+    -ex "target remote | blastem -D pal/megadrive/genix-md.bin" \
+    pal/megadrive/genix-md.elf
 ```
+
+### Testing ladder
+
+1. **`make test`** — host unit tests (logic, no hardware)
+2. **`make kernel`** — cross-compilation check (catches ABI/declaration errors)
+3. **`make run`** — workbench emulator (interactive smoke test)
+4. **`make megadrive` + BlastEm** — Mega Drive ROM validation
+5. **Real hardware** — flash cartridge on a real Mega Drive
+
+Steps 1–3 are for rapid iteration. Step 4 catches VDP, keyboard, SRAM, and
+timing issues. Step 5 catches everything emulators miss (TMSS, mapper quirks,
+Z80 bus conflicts). See `docs/megadrive.md` for details.
 
 ---
 
@@ -143,6 +202,9 @@ These guidelines are critical for making this project succeed. Follow them stric
 - **Also run `make kernel`**: Host tests don't compile the full kernel, so they
   can't catch missing declarations, ABI mismatches, or cross-compilation errors.
   Always run `make kernel` (or `make run`) before considering a change done.
+- **Also run `make megadrive`**: The Mega Drive build links different files and
+  has a different memory layout. A change can build fine for workbench but fail
+  for megadrive (or vice versa). Always verify both.
 
 ### 2. Keep the kernel small and flat
 
@@ -206,6 +268,13 @@ These guidelines are critical for making this project succeed. Follow them stric
   for multitasking. The format is intentionally simple — changing it later is cheap.
 - **Load address**: USER_BASE is a compile-time constant for now. When we add
   relocation/multitasking, programs will load at dynamic addresses.
+- **Memory layout must be modular**: USER_BASE, USER_TOP, and SRAM configuration
+  must be platform-provided (via PAL), not hardcoded in the kernel. Different
+  cartridge configurations (no SRAM, small SRAM, large SRAM) require different
+  layouts. See `docs/megadrive.md` for cartridge configurations.
+- **SRAM is optional**: The system must boot and run user programs on 64 KB main
+  RAM alone. SRAM provides persistent writable storage and extended RAM for larger
+  programs, but is not required for basic operation.
 - **Libc**: Currently minimal stubs. Will grow as we port more programs. If we need
   stdio/printf in userspace, add it to libc, don't duplicate.
 - If a design decision is causing pain, change it. Document why in the commit message.
@@ -280,6 +349,7 @@ Detailed technical documentation is in `docs/`:
 
 | Document | Description |
 |----------|-------------|
+| `docs/megadrive.md` | Mega Drive target: memory, cartridges, testing |
 | `docs/architecture.md` | System architecture, memory maps, layers |
 | `docs/kernel.md` | Kernel subsystems |
 | `docs/syscalls.md` | Syscall interface and convention |
