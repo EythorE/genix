@@ -88,10 +88,12 @@ typedef int bool;
 #define SYS_SIGNAL      48
 #define SYS_SBRK        69
 
-/* User memory layout (single-tasking, fixed load address) */
-#define USER_BASE   0x040000    /* user programs load here */
-#define USER_TOP    0x0F0000    /* user stack starts here (grows down) */
-#define USER_SIZE   (USER_TOP - USER_BASE)
+/* User memory layout — platform-provided, set at boot by kmain().
+ * Workbench: 0x040000-0x0F0000 (704 KB in 1 MB RAM)
+ * Mega Drive: 0xFF8000-0xFFFE00 (~31 KB in 64 KB RAM)  */
+extern uint32_t USER_BASE;   /* user programs load here */
+extern uint32_t USER_TOP;    /* user stack starts here (grows down) */
+extern uint32_t USER_SIZE;   /* USER_TOP - USER_BASE */
 
 /* Default user stack size */
 #define USER_STACK_DEFAULT  4096

@@ -36,14 +36,17 @@ $(BINARY): $(TARGET)
 	$(OBJCOPY) -O binary $< $@
 	@echo "ROM size: $$(wc -c < $@) bytes"
 
-# Embed filesystem image as .romdisk section
+# Embed filesystem image as .romdisk section.
+# Copy to a fixed name so objcopy always generates predictable symbols.
 romdisk.o: $(DISK_IMG)
+	cp $< romdisk.bin
 	$(OBJCOPY) -I binary -O elf32-m68k -B m68k \
 		--rename-section .data=.romdisk \
-		--redefine-sym _binary_____disk_img_start=_rom_disk_start \
-		--redefine-sym _binary_____disk_img_end=_rom_disk_end \
-		--redefine-sym _binary_____disk_img_size=_rom_disk_size \
-		$< $@
+		--redefine-sym _binary_romdisk_bin_start=_rom_disk_start \
+		--redefine-sym _binary_romdisk_bin_end=_rom_disk_end \
+		--redefine-sym _binary_romdisk_bin_size=_rom_disk_size \
+		romdisk.bin $@
+	rm -f romdisk.bin
 
 $(TARGET): $(OBJS) romdisk.o megadrive.ld
 	$(LD) -T megadrive.ld -o $@ $(OBJS) romdisk.o $(LIBGCC)
