@@ -8,6 +8,9 @@ void builtin_shell(void);
 void shell_ls(const char *cmd);
 void shell_cat(const char *path);
 void shell_write(const char *arg);
+#ifdef AUTOTEST
+static void autotest(void);
+#endif
 
 /* Timer frequency */
 #define TIMER_HZ 100
@@ -101,11 +104,66 @@ void kmain(void)
     kputs("System ready.\n");
 
     kputs("Starting shell...\n");
+
+#ifdef AUTOTEST
+    autotest();
+#else
     builtin_shell();
+#endif
 
     kputs("System halted.\n");
     pal_halt();
 }
+
+#ifdef AUTOTEST
+/*
+ * Automated test sequence — runs predetermined commands without
+ * keyboard input. Used for headless testing in both the workbench
+ * emulator and BlastEm.
+ *
+ * Output is on the UART (workbench) or VDP (Mega Drive), so we
+ * can grep emulator stdout or inspect BlastEm screenshots/GDB.
+ */
+static void autotest(void)
+{
+    int rc, pass = 0, fail = 0;
+
+    kputs("=== AUTOTEST BEGIN ===\n");
+
+    /* Test 1: exec /bin/hello */
+    kputs("[test] exec /bin/hello: ");
+    rc = do_exec("/bin/hello", NULL);
+    if (rc < 0) { kputs("FAIL (exec returned error)\n"); fail++; }
+    else { kputs("PASS\n"); pass++; }
+
+    /* Test 2: exec /bin/echo with args */
+    {
+        const char *argv[] = { "/bin/echo", "autotest", "echo", "ok", NULL };
+        kputs("[test] exec /bin/echo: ");
+        rc = do_exec("/bin/echo", argv);
+        if (rc < 0) { kputs("FAIL\n"); fail++; }
+        else { kputs("PASS\n"); pass++; }
+    }
+
+    /* Test 3: exec nonexistent binary */
+    kputs("[test] exec /bin/nonexistent: ");
+    rc = do_exec("/bin/nonexistent", NULL);
+    if (rc < 0) { kputs("PASS (correctly failed)\n"); pass++; }
+    else { kputs("FAIL (should have failed)\n"); fail++; }
+
+    /* Test 4: ls /bin (just exercise the path, don't check output) */
+    kputs("[test] ls /bin:\n");
+    shell_ls("ls /bin");
+    pass++;  /* if we get here without crashing, it's a pass */
+
+    /* Summary */
+    kprintf("\n=== AUTOTEST DONE: %d passed, %d failed ===\n", pass, fail);
+    if (fail > 0)
+        kputs("AUTOTEST FAILED\n");
+    else
+        kputs("AUTOTEST PASSED\n");
+}
+#endif
 
 /* Built-in emergency shell when no filesystem */
 void builtin_shell(void)

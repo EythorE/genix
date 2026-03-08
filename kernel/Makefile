@@ -6,7 +6,8 @@ OBJCOPY = $(CROSS)objcopy
 LIBGCC = $(shell $(CC) -m68000 -print-libgcc-file-name)
 
 CFLAGS = -m68000 -nostdlib -nostartfiles -ffreestanding \
-         -Wall -Wextra -Wno-unused-function -O2 -I. -I../pal
+         -Wall -Wextra -Wno-unused-function -O2 -I. -I../pal \
+         $(EXTRA_CFLAGS)
 
 ASFLAGS = -m68000
 
