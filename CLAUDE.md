@@ -30,6 +30,9 @@ make run
 # Mega Drive ROM
 make megadrive
 
+# Boot Mega Drive ROM headless in BlastEm (~5s smoke test)
+make test-md
+
 # Run host unit tests
 make test
 ```
@@ -39,6 +42,7 @@ make test
 - `gcc` (host, for emulator)
 - `m68k-linux-gnu-gcc` (cross compiler for kernel/apps)
 - `make`
+- `blastem` (optional, for `make test-md` — headless Mega Drive smoke test)
 
 Install on Ubuntu/Debian:
 ```bash
@@ -176,12 +180,15 @@ m68k-linux-gnu-gdb -q --tui \
 1. **`make test`** — host unit tests (logic, no hardware)
 2. **`make kernel`** — cross-compilation check (catches ABI/declaration errors)
 3. **`make run`** — workbench emulator (interactive smoke test)
-4. **`make megadrive` + BlastEm** — Mega Drive ROM validation
-5. **Real hardware** — flash cartridge on a real Mega Drive
+4. **`make test-md`** — headless BlastEm boot (~5s, no display needed)
+5. **`make megadrive` + BlastEm** — interactive Mega Drive ROM validation
+6. **Real hardware** — flash cartridge on a real Mega Drive
 
-Steps 1–3 are for rapid iteration. Step 4 catches VDP, keyboard, SRAM, and
-timing issues. Step 5 catches everything emulators miss (TMSS, mapper quirks,
-Z80 bus conflicts). See `docs/megadrive.md` for details.
+Steps 1–3 are for rapid iteration. Step 4 is automated and catches address
+errors, illegal instructions, and bus faults in the Mega Drive build without
+a display. Step 5 adds interactive VDP, keyboard, and SRAM validation.
+Step 6 catches everything emulators miss (TMSS, mapper quirks, Z80 bus
+conflicts). See `docs/megadrive.md` for details.
 
 ---
 

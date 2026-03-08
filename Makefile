@@ -1,6 +1,6 @@
 # Genix top-level Makefile
 
-.PHONY: all emu kernel tools libc apps disk run test clean
+.PHONY: all emu kernel tools libc apps disk run test test-md megadrive clean
 
 all: emu kernel tools apps disk
 
@@ -42,6 +42,11 @@ megadrive: disk
 # Run host unit tests (no cross-compiler needed)
 test:
 	$(MAKE) -C tests check
+
+# Boot Mega Drive ROM headless in BlastEm (~5s smoke test)
+BLASTEM ?= blastem
+test-md: megadrive
+	timeout 30 $(BLASTEM) -b 300 pal/megadrive/genix-md.bin
 
 clean:
 	$(MAKE) -C emu clean
