@@ -1,0 +1,43 @@
+TOOLCHAIN = /opt/m68k/m68k-68xxx--uclibc--stable-2024.05-1
+CROSS = $(TOOLCHAIN)/bin/m68k-buildroot-linux-uclibc-
+CC = $(CROSS)gcc
+AS = $(CROSS)as
+LD = $(CROSS)ld
+OBJCOPY = $(CROSS)objcopy
+LIBGCC = $(shell $(CC) -m68000 -print-libgcc-file-name)
+
+CFLAGS = -m68000 -nostdlib -nostartfiles -ffreestanding \
+         -Wall -Wextra -Wno-unused-function -O2 -I. -I../pal
+
+ASFLAGS = -m68000
+
+# Kernel sources
+ASM_SRCS = crt0.S divmod.S
+C_SRCS = main.c kprintf.c mem.c buf.c fs.c dev.c proc.c string.c \
+         ../pal/workbench/platform.c
+
+ASM_OBJS = $(ASM_SRCS:.S=.o)
+C_OBJS = $(C_SRCS:.c=.o)
+OBJS = $(ASM_OBJS) $(C_OBJS)
+
+TARGET = kernel.elf
+BINARY = kernel.bin
+
+all: $(BINARY)
+
+$(BINARY): $(TARGET)
+	$(OBJCOPY) -O binary $< $@
+
+$(TARGET): $(OBJS) kernel.ld
+	$(LD) -T kernel.ld -o $@ $(OBJS) $(LIBGCC)
+
+%.o: %.S
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+%.o: %.c
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+clean:
+	rm -f $(OBJS) $(TARGET) $(BINARY)
+
+.PHONY: all clean

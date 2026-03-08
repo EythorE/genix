@@ -1,0 +1,9 @@
+*.o
+*.elf
+*.bin
+*.img
+emu/emu68k
+emu/musashi/m68kmake
+emu/musashi/m68kops.c
+emu/musashi/m68kops.h
+tools/mkfs.minifs
