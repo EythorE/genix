@@ -122,9 +122,33 @@ SRAM: User programs + read-write filesystem
 - More room for larger programs
 - SRAM filesystem can hold the full Unix directory tree
 
-### Configuration D: Mega Everdrive Pro
+### Configuration D: Open EverDrive
 
-The Mega Everdrive Pro uses the SSF mapper, which requires different
+The [Open EverDrive](https://github.com/krikzz/open-ed) is a budget,
+fully open-source (MIT) flash cartridge by Krikzz (~$30). No FPGA or
+CPU — just discrete 74HC logic, 8 MB NOR flash, 128 KB battery-backed
+SRAM, and an SD card slot.
+
+```
+ROM:  Up to 4 MB (kernel + read-only filesystem)
+RAM:  Kernel BSS + heap + user programs (64 KB main RAM)
+SRAM: 128 KB at 0x200000–0x3FFFFF (battery-backed, persistent)
+```
+
+- SRAM mapper: **standard Sega** (same as Config B/C)
+- Control register at `0xA130E0`, bit 0 (`SRM_ON`):
+  - `0` → ROM visible at 0x200000
+  - `1` → SRAM visible at 0x200000
+- 128 KB is enough for a small minifs filesystem
+- User programs run from 64 KB main RAM (no SRAM needed)
+- SD card slot available for future larger storage
+
+**Hardware reference:** Schematics, PCB layout, Gerbers, and firmware
+source are all in the open-ed repository.
+
+### Configuration E: Mega Everdrive Pro
+
+The Mega Everdrive Pro uses the SSF mapper, which requires a different
 SRAM unlock sequence:
 
 ```c
@@ -132,7 +156,7 @@ SRAM unlock sequence:
 *(volatile uint16_t *)0xA130F0 = 0x8000;
 ```
 
-Standard cartridges use:
+Standard cartridges (including Open EverDrive) use:
 ```c
 /* Standard SRAM enable */
 *(volatile uint8_t *)0xA130F1 = 0x03;
@@ -269,6 +293,37 @@ make megadrive
 blastem pal/megadrive/genix-md.bin
 ```
 
+**Headless testing (`make test-md`):**
+
+BlastEm has a built-in headless mode — no display, no Xvfb needed:
+
+```bash
+blastem -b FRAMES rom.bin    # run FRAMES frames, then exit (no window)
+```
+
+The top-level Makefile provides:
+
+```bash
+make test-md                 # build ROM + boot headless for ~5s
+```
+
+This runs `timeout 30 blastem -b 300 pal/megadrive/genix-md.bin`,
+which boots the ROM for ~5 seconds (300 frames at 60 fps NTSC) and
+exits. Catches address errors, illegal instructions, and bus faults
+that only appear in the Mega Drive build.
+
+Useful BlastEm flags for testing:
+
+| Flag | Purpose |
+|------|---------|
+| `-b N` | Headless: run N frames then exit (no display) |
+| `-D` | GDB remote debugging (pipe mode) |
+| `-d` | Enter integrated debugger |
+| `-g` | Disable OpenGL |
+| `-r (J\|U\|E)` | Force region (NTSC-J, NTSC-U, PAL) |
+| `-n` | Disable Z80 |
+| `-e FILE` | Write hardware event log |
+
 **BlastEm configuration** (`~/.config/blastem/blastem.cfg` or
 `/etc/blastem/default.cfg`):
 
@@ -279,7 +334,16 @@ video {
 }
 ```
 
-Disable GL if running headless or in a terminal-only environment.
+Disable GL if running in a terminal-only environment without `-b`.
+
+**Fallback (no `-b` support):** Older BlastEm versions may lack `-b`.
+Use Xvfb instead:
+
+```bash
+export DISPLAY=:99 LIBGL_ALWAYS_SOFTWARE=1 SDL_AUDIODRIVER=dummy
+Xvfb :99 -screen 0 1024x768x24 &
+timeout 30 blastem pal/megadrive/genix-md.bin
+```
 
 **BlastEm SRAM notes:**
 - BlastEm auto-detects SRAM from the ROM header
