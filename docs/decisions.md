@@ -291,6 +291,37 @@ expectations (a busy loop would hang the system).
 
 ---
 
+## Project Status (March 2026)
+
+For the full development plan with phase details, see [PLAN.md](../PLAN.md).
+
+| Phase | Description | Status |
+|-------|-------------|--------|
+| **Phase 1** | Workbench emulator (Musashi SBC) | **Complete** |
+| **Phase 2a** | Kernel core + binary loading + single-tasking exec | **Complete** |
+| **Phase 2b** | Multitasking (vfork, scheduler, waitpid) | **Next** |
+| **Phase 2c** | Pipes and I/O redirection | Planned |
+| **Phase 2d** | Signals and job control | Planned |
+| **Phase 2e** | TTY subsystem (port Fuzix tty.c) | Planned |
+| **Phase 2f** | Fuzix libc + utilities | Planned |
+| **Phase 3** | Mega Drive port (PAL drivers from Fuzix) | **Complete** |
+| **Phase 4** | Polish (interrupt keyboard, multi-TTY, /dev/null) | Planned |
+
+**What works today:**
+- Kernel boots on workbench emulator and Mega Drive (BlastEm + real hardware)
+- Filesystem (minifs) with read/write/create/delete/rename/mkdir/rmdir
+- exec() loads and runs user programs (hello, echo, cat) from disk
+- Built-in debug shell with ls, cat, echo, mkdir, mem, help, halt
+- 34 host tests passing, both workbench and Mega Drive builds clean
+- Saturn keyboard input on Mega Drive, UART on workbench
+- SRAM works with standard Sega mapper on all tested targets
+
+**What's next:** vfork() + waitpid() to enable a proper shell that can
+launch programs and wait for them to finish. Then preemptive scheduling,
+pipes, and signals to get a usable interactive Unix environment.
+
+---
+
 ## Open Questions
 
 These are decisions we haven't made yet:
