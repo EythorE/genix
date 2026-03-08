@@ -20,9 +20,14 @@ tools:
 libc:
 	$(MAKE) -C libc
 
-# Build user programs
+# Build user programs (workbench — linked at 0x040000)
 apps: libc tools
 	$(MAKE) -C apps
+
+# Build user programs for Mega Drive (linked at 0xFF8000)
+apps-md: libc tools
+	$(MAKE) -C apps clean
+	$(MAKE) -C apps LDSCRIPT=user-md.ld
 
 # Collect all user binaries
 APP_BINS = $(wildcard apps/hello apps/echo apps/cat)
@@ -31,38 +36,36 @@ APP_BINS = $(wildcard apps/hello apps/echo apps/cat)
 disk: tools apps
 	tools/mkfs.minifs disk.img 512 $(APP_BINS)
 
+# Create Mega Drive filesystem image (programs linked at 0xFF8000)
+disk-md: tools apps-md
+	tools/mkfs.minifs disk-md.img 512 $(APP_BINS)
+
 # Run the kernel in the emulator
 run: emu kernel disk
 	emu/emu68k kernel/kernel.bin disk.img
 
-# Build for Mega Drive
-megadrive: disk
-	$(MAKE) -C pal/megadrive
+# Build for Mega Drive (uses MD-specific disk image)
+megadrive: disk-md
+	$(MAKE) -C pal/megadrive DISK_IMG=../../disk-md.img
 
 # Run host unit tests (no cross-compiler needed)
 test:
 	$(MAKE) -C tests check
 
 # Boot Mega Drive ROM headless in BlastEm (~5s smoke test)
-# Uses -b (native headless) if available, otherwise falls back to Xvfb.
+# Runs BlastEm under Xvfb with OpenGL disabled. A timeout exit (rc=124)
+# means the ROM ran without crashing — that's a pass.
 BLASTEM ?= blastem
 test-md: megadrive
-	@if $(BLASTEM) -h 2>&1 | grep -q -- '-b'; then \
-		echo "blastem -b 300 pal/megadrive/genix-md.bin"; \
-		timeout 30 $(BLASTEM) -b 300 pal/megadrive/genix-md.bin; \
-	elif command -v Xvfb >/dev/null 2>&1; then \
-		echo "blastem via Xvfb (no -b support)"; \
-		Xvfb :57 -screen 0 640x480x24 >/dev/null 2>&1 & xvfb_pid=$$!; \
-		sleep 1; \
-		DISPLAY=:57 LIBGL_ALWAYS_SOFTWARE=1 SDL_AUDIODRIVER=dummy \
-			timeout 10 $(BLASTEM) -g pal/megadrive/genix-md.bin >/dev/null 2>&1; \
-		rc=$$?; kill $$xvfb_pid 2>/dev/null; \
-		if [ $$rc -eq 124 ]; then echo "OK (timeout — ROM ran 10s without crash)"; \
-		elif [ $$rc -eq 0 ]; then echo "OK"; \
-		else echo "FAIL (exit code $$rc)"; exit 1; fi; \
-	else \
-		echo "ERROR: neither blastem -b nor Xvfb available" >&2; exit 1; \
-	fi
+	@echo "=== test-md: headless BlastEm boot ==="
+	@Xvfb :57 -screen 0 640x480x24 >/dev/null 2>&1 & xvfb_pid=$$!; \
+	sleep 1; \
+	DISPLAY=:57 LIBGL_ALWAYS_SOFTWARE=1 SDL_AUDIODRIVER=dummy \
+		timeout 5 $(BLASTEM) -g pal/megadrive/genix-md.bin >/dev/null 2>&1; \
+	rc=$$?; kill $$xvfb_pid 2>/dev/null; wait $$xvfb_pid 2>/dev/null; \
+	if [ $$rc -eq 124 ]; then echo "OK (ROM ran 5s without crash)"; \
+	elif [ $$rc -eq 0 ]; then echo "OK"; \
+	else echo "FAIL (exit code $$rc)"; exit 1; fi
 
 clean:
 	$(MAKE) -C emu clean
@@ -71,4 +74,4 @@ clean:
 	$(MAKE) -C libc clean
 	$(MAKE) -C apps clean
 	$(MAKE) -C tests clean
-	rm -f disk.img
+	rm -f disk.img disk-md.img

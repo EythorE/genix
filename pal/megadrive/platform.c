@@ -192,6 +192,16 @@ uint32_t pal_mem_end(void)
     return 0xFFFFF0;
 }
 
+uint32_t pal_user_base(void)
+{
+    return 0xFF8000;  /* ~32 KB for kernel .data+.bss+heap below */
+}
+
+uint32_t pal_user_top(void)
+{
+    return 0xFFFE00;  /* 512 bytes reserved for kernel stack at top */
+}
+
 void pal_timer_init(int hz)
 {
     (void)hz;

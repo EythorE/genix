@@ -17,6 +17,11 @@ struct proc proctab[MAXPROC];
 struct proc *curproc = NULL;
 int nproc = 0;
 
+/* User memory layout — set from PAL at boot */
+uint32_t USER_BASE;
+uint32_t USER_TOP;
+uint32_t USER_SIZE;
+
 static volatile uint32_t ticks = 0;
 
 void timer_interrupt(void)
@@ -67,6 +72,11 @@ void kmain(void)
     pal_init();
 
     kputs("\nGenix v0.1 starting...\n");
+
+    /* Set up user memory layout from platform */
+    USER_BASE = pal_user_base();
+    USER_TOP = pal_user_top();
+    USER_SIZE = USER_TOP - USER_BASE;
 
     /* Initialize subsystems.
      * Kernel heap goes from end of BSS to USER_BASE.

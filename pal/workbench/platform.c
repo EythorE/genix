@@ -98,6 +98,16 @@ uint32_t pal_mem_end(void)
     return 0x100000 - 0x1000;  /* Leave 4K at top for stack */
 }
 
+uint32_t pal_user_base(void)
+{
+    return 0x040000;
+}
+
+uint32_t pal_user_top(void)
+{
+    return 0x0F0000;
+}
+
 void pal_timer_init(int hz)
 {
     (void)hz;

@@ -1,6 +1,6 @@
 # Tests Makefile
 CC = gcc
-CFLAGS = -Wall -Wextra -g -O0 -Wno-builtin-declaration-mismatch
+CFLAGS = -Wall -Wextra -g -O0 -Wno-builtin-declaration-mismatch -I../pal
 
 TESTS = test_string test_mem test_exec
 
