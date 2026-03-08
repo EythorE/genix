@@ -132,17 +132,7 @@ struct genix_header {
 
 /* ======== PAL (Platform Abstraction Layer) ======== */
 
-void     pal_init(void);
-void     pal_console_putc(char c);
-int      pal_console_getc(void);     /* blocking */
-int      pal_console_ready(void);    /* char available? */
-void     pal_disk_read(int dev, uint32_t block, void *buf);
-void     pal_disk_write(int dev, uint32_t block, void *buf);
-uint32_t pal_mem_start(void);
-uint32_t pal_mem_end(void);
-void     pal_timer_init(int hz);
-uint32_t pal_timer_ticks(void);
-void     pal_halt(void);
+#include "pal.h"
 
 /* ======== Console I/O ======== */
 
