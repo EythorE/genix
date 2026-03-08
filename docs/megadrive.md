@@ -135,32 +135,70 @@ RAM:  Kernel BSS + heap + user programs (64 KB main RAM)
 SRAM: 128 KB at 0x200000–0x3FFFFF (battery-backed, persistent)
 ```
 
-- SRAM mapper: **standard Sega** (same as Config B/C)
-- Control register at `0xA130E0`, bit 0 (`SRM_ON`):
-  - `0` → ROM visible at 0x200000
-  - `1` → SRAM visible at 0x200000
-- 128 KB is enough for a small minifs filesystem
-- User programs run from 64 KB main RAM (no SRAM needed)
+- **Mapper: NOT standard Sega.** The Open EverDrive has its own mapper
+  with a 16-bit control register at `0xA13000` (see
+  [open-ed-mapper.txt](https://github.com/krikzz/open-ed/blob/master/open-ed-mapper.txt)).
+- CTRL_REG at `0xA13000` (16-bit write):
+  - Bit 0 (`SRM_ON`): `0` → ROM visible at 0x200000, `1` → SRAM visible
+  - Bit 2: `ROM_BANK` (flash bank select)
+  - Bit 3: LED, Bits 4-7: SPI/SD card interface
+- Three mapper modes (selected by the open-ed menu firmware):
+  - `ROM_4M`: No SRAM, SRM_ON=0, no register management needed
+  - `ROM_2M+RAM`: SRAM always on at 0x200000, no register management needed
+  - `ROM_4M+RAM`: Software-controlled via CTRL_REG (Beyond Oasis, Sonic 3 style)
+- **16-bit SRAM** — the Open EverDrive wires SRAM to both data bus halves,
+  so full word/long access works. No odd-byte quirk.
+- 128 KB physical = 128 KB usable (unlike 8-bit SRAM where half is wasted)
+- This is the same SRAM wiring FUZIX targets (ROM header type `0xE020`,
+  range `0x200000-0x3FFFFF`)
 - SD card slot available for future larger storage
 
-**Hardware reference:** Schematics, PCB layout, Gerbers, and firmware
-source are all in the open-ed repository.
-
-### Configuration E: Mega Everdrive Pro
-
-The Mega Everdrive Pro uses the SSF mapper, which requires a different
-SRAM unlock sequence:
-
+**SRAM enable for Genix on Open EverDrive:**
 ```c
-/* SSF mapper unlock (Mega Everdrive Pro) */
+/* Open EverDrive: set SRM_ON bit in CTRL_REG */
+*(volatile uint16_t *)0xA13000 = 0x0001;
+```
+
+**Hardware reference:** Schematics, PCB layout, Gerbers, and firmware
+source are all in the [open-ed repository](https://github.com/krikzz/open-ed).
+
+### Configuration E: Mega EverDrive Pro
+
+The [Mega EverDrive Pro](https://krikzz.com/our-products/cartridges/mega-everdrive-pro.html)
+is an FPGA-based flash cartridge with extensive mapper emulation. It uses the
+SSF mapper for SRAM, which is different from both standard Sega and Open EverDrive.
+
+```
+ROM:  Up to 4 MB (loaded from SD card into FPGA RAM)
+RAM:  Kernel BSS + heap + user programs (64 KB main RAM)
+SRAM: Up to 2 MB at 0x200000–0x3FFFFF (FPGA-backed, saved to SD)
+```
+
+- **Mapper: SSF** (not standard Sega, not Open EverDrive)
+- SRAM is FPGA-emulated RAM, saved to SD card on power-off
+- The Pro can emulate various mapper types, but homebrew ROMs
+  typically use the SSF unlock sequence
+
+**SRAM enable for Mega EverDrive Pro:**
+```c
+/* SSF mapper unlock (Mega EverDrive Pro) */
 *(volatile uint16_t *)0xA130F0 = 0x8000;
 ```
 
-Standard cartridges (including Open EverDrive) use:
-```c
-/* Standard SRAM enable */
-*(volatile uint8_t *)0xA130F1 = 0x03;
-```
+### SRAM Enable Summary
+
+Each cartridge type requires a different enable sequence:
+
+| Target | Register | Write | Notes |
+|--------|----------|-------|-------|
+| **Standard cart** | `0xA130F1` (8-bit) | `0x03` | Bit 0=mapped, bit 1=write-enable |
+| **Open EverDrive** | `0xA13000` (16-bit) | `0x0001` | Bit 0=SRM_ON |
+| **Mega EverDrive Pro** | `0xA130F0` (16-bit) | `0x8000` | SSF mapper unlock |
+| **BlastEm** | Any / none | — | Auto-detects from ROM header |
+
+**Current code** (`platform.c`) uses the standard cart sequence. To support
+other cartridges, the SRAM enable must be selectable at build time or
+auto-detected at runtime.
 
 ## Platform Constants
 
@@ -193,11 +231,16 @@ USER_TOP  = 0x200000 + SRAM_SIZE
 
 ## SRAM Hardware Details
 
-### Byte Access Quirk
+### 8-bit vs 16-bit SRAM
 
-On the Mega Drive, cartridge SRAM is wired to the data bus such that
-only odd byte addresses are accessible. To read/write N bytes of data,
-you must access 2N addresses:
+Cartridge SRAM comes in two wiring configurations that fundamentally
+change how the CPU accesses data:
+
+**8-bit SRAM (standard game cartridges):**
+
+The SRAM chip connects to only one half of the 68000's 16-bit data bus
+(typically the low byte, accessible at odd addresses). To read/write N
+bytes of data, you must access 2N addresses:
 
 ```c
 volatile uint8_t *sram = (volatile uint8_t *)SRAM_BASE;
@@ -211,20 +254,46 @@ for (int i = 0; i < len; i++)
     sram[i * 2 + 1] = src[i];
 ```
 
-This means 64 KB of physical SRAM provides 32 KB of usable storage.
-A cartridge advertised as "256 KB SRAM" provides 128 KB usable.
+This means 64 KB of address space provides only 32 KB of usable storage.
+The ROM header declares this as type `0xF820` (battery-backed, 8-bit, odd
+addresses). This is what the current Genix code uses.
 
-**Exception:** If user programs are loaded into SRAM and execute from
-there, the CPU accesses full words/longs normally. The odd-byte quirk
-only applies to 8-bit SRAM chips. Some cartridges wire SRAM as 16-bit,
-which provides full-width access. The code must handle both cases.
+**16-bit SRAM (Open EverDrive, FUZIX target):**
 
-### SRAM Enable Sequence
-
-SRAM must be explicitly enabled via the mapper register:
+The SRAM chip connects to both halves of the data bus. Full word and long
+access works normally — no odd-byte dance needed. `memcpy()` works directly.
 
 ```c
-/* Standard mapper */
+/* 16-bit SRAM: direct access, no byte skipping */
+memcpy(dst, (void *)SRAM_BASE + offset, len);
+```
+
+128 KB of physical SRAM = 128 KB usable. The ROM header declares this
+as type `0xE020` (battery-backed, 16-bit). This is what FUZIX uses for
+the Open EverDrive.
+
+**Summary:**
+
+| Property | 8-bit SRAM | 16-bit SRAM |
+|----------|-----------|------------|
+| ROM header type | `0xF820` | `0xE020` |
+| ROM header range | `0x200001-0x20FFFF` | `0x200000-0x3FFFFF` |
+| Access pattern | Odd bytes only | Normal word/long |
+| 64 KB address space yields | 32 KB usable | 64 KB usable |
+| Cartridge examples | Standard game carts | Open EverDrive |
+| Genix code | `platform.c` (current) | Needs separate path |
+
+**The code must handle both cases.** The current `pal_disk_read()`/
+`pal_disk_write()` in `platform.c` use 8-bit odd-byte access. Supporting
+16-bit SRAM (Open EverDrive) requires a build-time or runtime switch.
+
+### SRAM Enable Sequences
+
+See the [SRAM Enable Summary](#sram-enable-summary) table above for
+per-cartridge register writes. The standard mapper sequence:
+
+```c
+/* Standard mapper (0xA130F1) */
 volatile uint8_t *sram_reg = (volatile uint8_t *)0xA130F1;
 *sram_reg = 0x03;  /* bit 0: SRAM mapped, bit 1: write-enable */
 
@@ -293,9 +362,35 @@ make megadrive
 blastem pal/megadrive/genix-md.bin
 ```
 
-**Headless testing (`make test-md`):**
+#### Saturn Keyboard Setup
 
-BlastEm has a built-in headless mode — no display, no Xvfb needed:
+Genix requires a Saturn keyboard on controller port 2. BlastEm emulates
+this — host keypresses are forwarded as Saturn keyboard scancodes.
+
+**One-time setup (BlastEm GUI):**
+1. Launch BlastEm with any ROM
+2. Press **Escape** to open the menu
+3. Go to **Settings → System**
+4. Set **IO Port 2** to **Saturn Keyboard**
+5. Exit settings (saved automatically)
+
+**Or edit the config file directly** (`~/.config/blastem/blastem.cfg`):
+```
+io {
+    devices {
+        1 gamepad6.1
+        2 saturn keyboard
+    }
+}
+```
+
+**Using the keyboard:** Press **Right Ctrl** to toggle keyboard capture.
+When captured, all keypresses go to the emulated Saturn keyboard instead
+of BlastEm's own hotkeys. Press Right Ctrl again to release.
+
+#### Headless Testing (`make test-md`)
+
+BlastEm 0.6.3+ has a built-in headless mode:
 
 ```bash
 blastem -b FRAMES rom.bin    # run FRAMES frames, then exit (no window)
@@ -307,12 +402,12 @@ The top-level Makefile provides:
 make test-md                 # build ROM + boot headless for ~5s
 ```
 
-This runs `timeout 30 blastem -b 300 pal/megadrive/genix-md.bin`,
-which boots the ROM for ~5 seconds (300 frames at 60 fps NTSC) and
-exits. Catches address errors, illegal instructions, and bus faults
-that only appear in the Mega Drive build.
+The `test-md` target auto-detects BlastEm capabilities: uses `-b 300`
+(~5 seconds at 60 fps) if available, otherwise falls back to Xvfb.
+Catches address errors, illegal instructions, and bus faults that only
+appear in the Mega Drive build.
 
-Useful BlastEm flags for testing:
+Useful BlastEm flags:
 
 | Flag | Purpose |
 |------|---------|
@@ -324,10 +419,19 @@ Useful BlastEm flags for testing:
 | `-n` | Disable Z80 |
 | `-e FILE` | Write hardware event log |
 
-**BlastEm configuration** (`~/.config/blastem/blastem.cfg` or
-`/etc/blastem/default.cfg`):
+#### BlastEm Configuration
+
+Config file location: `~/.config/blastem/blastem.cfg` (or
+`/etc/blastem/default.cfg` for system-wide defaults).
 
 ```
+io {
+    devices {
+        1 gamepad6.1
+        2 saturn keyboard
+    }
+}
+
 video {
     gl off
     vsync off
@@ -336,24 +440,27 @@ video {
 
 Disable GL if running in a terminal-only environment without `-b`.
 
-**Fallback (no `-b` support):** Older BlastEm versions may lack `-b`.
-Use Xvfb instead:
+#### BlastEm SRAM Handling
 
-```bash
-export DISPLAY=:99 LIBGL_ALWAYS_SOFTWARE=1 SDL_AUDIODRIVER=dummy
-Xvfb :99 -screen 0 1024x768x24 &
-timeout 30 blastem pal/megadrive/genix-md.bin
-```
+BlastEm reads the ROM header SRAM fields at offset `0x1B0` to
+auto-detect SRAM presence, type, and address range. No explicit SRAM
+enable register write is needed — BlastEm maps SRAM automatically
+(unlike real hardware where `0xA130F1` must be written).
 
-**BlastEm SRAM notes:**
-- BlastEm auto-detects SRAM from the ROM header
-- SRAM save files may be byte-swapped depending on version:
-  - v0.6.2: byte-swaps SRAM on load/save
-  - v0.6.3+: does NOT byte-swap
-- To pre-populate SRAM with a filesystem image, use `dd conv=swab`
-  for v0.6.2, or copy the image directly for v0.6.3+
+**Save file location:**
+`~/.local/share/blastem/<ROMNAME>/save.sram`
 
-**BlastEm GDB debugging:**
+**Format:** Raw binary dump of the full SRAM address range. BlastEm
+saves both even and odd bytes (word-wide), even for 8-bit SRAM ROMs.
+This differs from most other emulators and flash carts which only save
+the accessible bytes.
+
+**Cross-compatibility:** BlastEm `.sram` files may not transfer
+directly to EverDrive or other emulators. For 8-bit SRAM ROMs, other
+tools expect only the odd bytes. Use the `ucp -b` tool (from FUZIX) to
+create byte-reversed filesystem images for BlastEm if needed.
+
+#### BlastEm GDB Debugging
 
 ```bash
 m68k-linux-gnu-gdb -q --tui \
@@ -363,15 +470,42 @@ m68k-linux-gnu-gdb -q --tui \
 
 ### Real Hardware
 
-Test on real Mega Drive with a flash cartridge (e.g., Mega Everdrive Pro).
-Copy `genix-md.bin` to the flash cartridge SD card and boot.
+#### Open EverDrive
 
-Things to verify on real hardware that emulators miss:
-- TMSS handshake works (no black screen)
-- Z80 halt/release sequence is correct
+1. Copy `pal/megadrive/genix-md.bin` to the SD card
+2. Insert SD card into the Open EverDrive cartridge
+3. Boot — the open-ed menu loads, select the ROM
+4. The menu selects the mapper mode based on ROM header. For Genix
+   (ROM < 2 MB + SRAM declared), it should select `ROM_2M+RAM` mode
+   which makes SRAM always visible at 0x200000.
+5. Connect a Saturn keyboard to controller port 2
+
+**Note:** The current Genix SRAM enable code writes to `0xA130F1`
+(standard Sega mapper), which is a different register than the Open
+EverDrive's `0xA13000`. In `ROM_2M+RAM` mode SRAM is always on, so the
+standard write is harmless (it hits an unrelated address). But for
+`ROM_4M+RAM` mode, the code would need to write to `0xA13000` instead.
+
+#### Mega EverDrive Pro
+
+1. Copy `pal/megadrive/genix-md.bin` to the SD card
+2. Insert SD card into the Mega EverDrive Pro
+3. Boot and select the ROM from the menu
+4. Connect a Saturn keyboard to controller port 2
+
+**Note:** The Pro's FPGA mapper may handle the standard `0xA130F1` write
+transparently. If SRAM doesn't work, the SSF unlock (`0xA130F0 = 0x8000`)
+may be needed. SRAM contents are saved to the SD card on power-off.
+
+#### What to Verify on Real Hardware
+
+Things that emulators forgive but real hardware does not:
+- TMSS handshake works (no black screen on Model 1+)
+- Z80 halt/release sequence is correct (bus conflicts crash)
 - SRAM enable works with the specific cartridge mapper
-- Keyboard reads work at hardware timing
+- Saturn keyboard reads work at hardware timing
 - VBlank timing is correct for NTSC vs PAL
+- ROM checksum (currently 0 — some consoles may reject)
 
 ## ROM Header
 
@@ -385,8 +519,43 @@ The ROM header at offset 0x100 identifies the cartridge:
 0x180: "GM 00000000-00"    (serial number)
 0x190: checksum
 0x1A0: I/O support, ROM/RAM addresses
+0x1B0: SRAM declaration (see below)
 0x1F0: "JUE"               (region: Japan, USA, Europe)
 ```
+
+### SRAM Header Fields (offset 0x1B0–0x1BB)
+
+```
+0x1B0: "RA"          Magic (2 bytes) — external RAM present
+0x1B2: type byte     Persistence + bus width (see table)
+0x1B3: 0x20          Always 0x20
+0x1B4: start addr    SRAM start (4 bytes, big-endian)
+0x1B8: end addr      SRAM end (4 bytes, big-endian)
+```
+
+**Type byte at 0x1B2:**
+
+| Value | Persistent | Access | Use case |
+|-------|-----------|--------|----------|
+| `0xF8` | Yes (battery) | 8-bit, odd addresses | Standard game carts |
+| `0xF0` | Yes (battery) | 8-bit, even addresses | Rare |
+| `0xE0` | Yes (battery) | 16-bit (word-wide) | Open EverDrive, FUZIX |
+| `0xB8` | No | 8-bit, odd | Volatile scratch RAM |
+| `0xA0` | No | 16-bit | Volatile scratch RAM |
+
+**Current Genix ROM header** (in `crt0.S`):
+```
+"RA", 0xF820, start=0x200000, end=0x20FFFF
+```
+This declares 8-bit odd-byte battery-backed SRAM, 64 KB address space
+(32 KB usable). Correct for standard cartridges and BlastEm auto-detection.
+
+**FUZIX ROM header** (for Open EverDrive):
+```
+"RA", 0xE020, start=0x200000, end=0x3FFFFF
+```
+This declares 16-bit word-wide battery-backed SRAM, 2 MB address space.
+BlastEm and the Open EverDrive both honor this.
 
 ## Files
 
