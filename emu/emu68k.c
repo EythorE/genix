@@ -114,8 +114,13 @@ static int uart_read_char(void)
 {
     unsigned char c;
     ssize_t n = read(STDIN_FILENO, &c, 1);
-    if (n == 1)
+    if (n == 1) {
+        if (c == 0x03) {  /* Ctrl+C — quit emulator */
+            g_quit = 1;
+            return -1;
+        }
         return c;
+    }
     if (n == 0) {
         /* EOF on stdin — signal quit so piped sessions terminate */
         g_stdin_eof = 1;
