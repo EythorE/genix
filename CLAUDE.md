@@ -79,13 +79,14 @@ from a Saturn keyboard connected to controller port 2.
 ```bash
 make test          # Host unit tests (no cross-compiler needed)
 make test-emu      # Workbench autotest (exec, syscalls, STRICT_ALIGN)
-make test-md       # Headless BlastEm boot (~5s smoke test)
-make test-md-auto  # BlastEm AUTOTEST ROM (PRIMARY QUALITY GATE)
+make test-md       # Headless BlastEm -b 300 (~5s, no Xvfb needed)
+make test-md-auto  # BlastEm -b 600 AUTOTEST ROM (PRIMARY QUALITY GATE)
 make test-all      # Full testing ladder (all of the above in order)
 ```
 
-BlastEm tests require `Xvfb` (for headless display). The screenshot
-test (`make test-md-screenshot`) also needs `xdotool` and `scrot`.
+BlastEm headless tests (`test-md`, `test-md-auto`) use `-b N` and need
+no display. The screenshot test (`make test-md-screenshot`) needs
+`Xvfb` and `xdotool`; `scrot` is an optional fallback.
 
 ### All Build Targets
 
@@ -105,8 +106,8 @@ make megadrive       # Build Mega Drive ROM
 # Testing ladder (see "Testing" section below)
 make test            # 1. Host unit tests
 make test-emu        # 3. Workbench autotest (STRICT_ALIGN + AUTOTEST)
-make test-md         # 5. Headless BlastEm boot (~5s smoke test)
-make test-md-auto    # 6. BlastEm AUTOTEST ROM (PRIMARY QUALITY GATE)
+make test-md         # 5. Headless BlastEm -b 300 (~5s, no Xvfb)
+make test-md-auto    # 6. BlastEm -b 600 AUTOTEST (PRIMARY QUALITY GATE)
 make test-all        # Full ladder: test → kernel → test-emu → megadrive → test-md → test-md-auto
 make test-md-screenshot  # Visual VDP test (saves test-md-screenshot.png)
 make clean           # Remove all build artifacts

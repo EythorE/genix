@@ -440,10 +440,11 @@ The top-level Makefile provides:
 make test-md                 # build ROM + boot headless for ~5s
 ```
 
-The `test-md` target auto-detects BlastEm capabilities: uses `-b 300`
-(~5 seconds at 60 fps) if available, otherwise falls back to Xvfb.
-Catches address errors, illegal instructions, and bus faults that only
-appear in the Mega Drive build.
+The `test-md` target uses `blastem -b 300` (~5 seconds at 60 fps) for
+truly headless operation — no Xvfb or display needed. Exit code 0 means
+the ROM ran without crashing; nonzero means crash. `test-md-auto` uses
+`-b 600` (~10 seconds). Catches address errors, illegal instructions,
+and bus faults that only appear in the Mega Drive build.
 
 Useful BlastEm flags:
 
