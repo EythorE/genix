@@ -40,6 +40,12 @@ SECTIONS
         _rom_disk_end = .;
     } > rom
 
+    /* Align so _data_load is even — the 68000 faults on move.l
+     * from an odd address, and the boot code copies .data with
+     * move.l (%a0)+. Without this, code/rodata size changes
+     * (e.g., adding AUTOTEST) can shift _data_load to an odd
+     * offset, causing an address error before VDP init. */
+    . = ALIGN(4);
     _rom_end = .;
 
     /* Data section: stored in ROM, copied to RAM at boot */
