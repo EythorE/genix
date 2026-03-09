@@ -1,2 +1,5 @@
 test_string
 test_mem
+test_exec
+test_proc
+test_libc
