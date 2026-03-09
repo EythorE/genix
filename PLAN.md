@@ -621,8 +621,12 @@ See [docs/emulator.md](docs/emulator.md) for architecture and usage.
 - Binary loader (Genix flat binary, 32-byte header)
 - User crt0.S + minimal libc stubs (15 syscalls)
 - exec() with single-tasking semantics
-- User programs: hello, echo, cat
-- 34 host tests, all passing
+- User programs: hello, echo, cat, wc, head, true, false
+- 249 host tests (string, mem, exec), 7 automated guest tests
+- Automated testing: `make test-emu` (workbench autotest with STRICT_ALIGN)
+- Automated testing: `make test-md` / `make test-md-auto` (BlastEm headless)
+- libgcc division routines replaced with safe 68000 divmod.S in libc
+- Workbench emulator alignment checking (STRICT_ALIGN=1)
 - Mega Drive ROM boots in BlastEm and on real hardware
 
 **Status: COMPLETE.** See [docs/binary-format.md](docs/binary-format.md).

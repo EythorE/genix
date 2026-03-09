@@ -64,8 +64,29 @@ static uint8_t g_disk_status = 0;   /* 0=idle, 1=done, 0x80=error */
 static uint32_t g_timer_count = 0;
 static uint8_t g_timer_enabled = 0;
 
-
 static int g_quit = 0;
+
+/* Alignment checking — real 68000 faults on word/long at odd addresses.
+ * Set STRICT_ALIGN=1 environment variable to catch these in the emulator.
+ * Without this, Musashi silently handles unaligned access, hiding bugs
+ * that crash on real hardware or BlastEm. */
+static int g_strict_align = 0;
+static int g_align_faults = 0;
+
+static void check_align(unsigned int addr, int size, const char *op)
+{
+    if (g_strict_align && (addr & 1)) {
+        unsigned int pc = m68k_get_reg(NULL, M68K_REG_PC);
+        fprintf(stderr, "[emu] *** ADDRESS ERROR: %s.%c at odd address 0x%06X "
+                "(PC=0x%06X) ***\n",
+                op, (size == 4) ? 'L' : 'W', addr, pc);
+        g_align_faults++;
+        /* Like the real 68000: halt on address error */
+        fprintf(stderr, "[emu] This would crash on real 68000 hardware.\n");
+        fprintf(stderr, "[emu] Total alignment faults: %d\n", g_align_faults);
+        g_quit = 1;
+    }
+}
 static struct termios g_orig_term;
 static int g_term_setup = 0;
 
@@ -192,6 +213,7 @@ unsigned int m68k_read_memory_8(unsigned int addr)
 unsigned int m68k_read_memory_16(unsigned int addr)
 {
     addr &= 0xFFFFFF;
+    check_align(addr, 2, "read");
     if (addr < RAM_SIZE - 1)
         return (g_ram[addr] << 8) | g_ram[addr + 1];
     if (addr == UART_DATA) {
@@ -220,6 +242,7 @@ unsigned int m68k_read_memory_16(unsigned int addr)
 unsigned int m68k_read_memory_32(unsigned int addr)
 {
     addr &= 0xFFFFFF;
+    check_align(addr, 4, "read");
     if (addr < RAM_SIZE - 3)
         return (g_ram[addr] << 24) | (g_ram[addr+1] << 16) |
                (g_ram[addr+2] << 8) | g_ram[addr+3];
@@ -256,6 +279,7 @@ void m68k_write_memory_8(unsigned int addr, unsigned int val)
 void m68k_write_memory_16(unsigned int addr, unsigned int val)
 {
     addr &= 0xFFFFFF;
+    check_align(addr, 2, "write");
     val &= 0xFFFF;
     if (addr < RAM_SIZE - 1) {
         g_ram[addr] = (val >> 8) & 0xFF;
@@ -300,6 +324,7 @@ void m68k_write_memory_16(unsigned int addr, unsigned int val)
 void m68k_write_memory_32(unsigned int addr, unsigned int val)
 {
     addr &= 0xFFFFFF;
+    check_align(addr, 4, "write");
     if (addr < RAM_SIZE - 3) {
         g_ram[addr]   = (val >> 24) & 0xFF;
         g_ram[addr+1] = (val >> 16) & 0xFF;
@@ -343,6 +368,14 @@ int main(int argc, char *argv[])
     if (argc < 2) {
         fprintf(stderr, "Usage: emu68k <kernel.bin> [disk.img]\n");
         return 1;
+    }
+
+    /* Enable strict alignment checking if STRICT_ALIGN=1 */
+    const char *sa = getenv("STRICT_ALIGN");
+    if (sa && sa[0] == '1') {
+        g_strict_align = 1;
+        fprintf(stderr, "[emu] Strict alignment checking ENABLED "
+                "(matches real 68000 behavior)\n");
     }
 
     memset(g_ram, 0, RAM_SIZE);

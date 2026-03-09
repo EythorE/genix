@@ -150,13 +150,34 @@ static void autotest(void)
         else { kputs("PASS\n"); pass++; }
     }
 
-    /* Test 3: exec nonexistent binary */
+    /* Test 3: exec /bin/true (should exit 0) */
+    kputs("[test] exec /bin/true: ");
+    rc = do_exec("/bin/true", NULL);
+    if (rc == 0) { kputs("PASS\n"); pass++; }
+    else { kprintf("FAIL (exit %d, expected 0)\n", rc); fail++; }
+
+    /* Test 4: exec /bin/false (should exit 1) */
+    kputs("[test] exec /bin/false: ");
+    rc = do_exec("/bin/false", NULL);
+    if (rc == 1) { kputs("PASS (exit 1 as expected)\n"); pass++; }
+    else { kprintf("FAIL (exit %d, expected 1)\n", rc); fail++; }
+
+    /* Test 5: exec /bin/wc on a known file */
+    {
+        const char *argv[] = { "/bin/wc", "/bin/hello", NULL };
+        kputs("[test] exec /bin/wc: ");
+        rc = do_exec("/bin/wc", argv);
+        if (rc < 0) { kputs("FAIL\n"); fail++; }
+        else { kputs("PASS\n"); pass++; }
+    }
+
+    /* Test 6: exec nonexistent binary */
     kputs("[test] exec /bin/nonexistent: ");
     rc = do_exec("/bin/nonexistent", NULL);
     if (rc < 0) { kputs("PASS (correctly failed)\n"); pass++; }
     else { kputs("FAIL (should have failed)\n"); fail++; }
 
-    /* Test 4: ls /bin (just exercise the path, don't check output) */
+    /* Test 7: ls /bin (exercise the path, don't check output) */
     kputs("[test] ls /bin:\n");
     shell_ls("ls /bin");
     pass++;  /* if we get here without crashing, it's a pass */
