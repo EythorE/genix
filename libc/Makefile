@@ -4,7 +4,7 @@ AS = $(CROSS)as
 AR = $(CROSS)ar
 
 CFLAGS = -m68000 -nostdlib -nostartfiles -ffreestanding \
-         -Wall -Wextra -O2
+         -Wall -Wextra -O2 -Iinclude
 
 # divmod.o provides __udivsi3/__umodsi3/__divsi3/__modsi3 with pure
 # 68000 instructions. The system libgcc may contain 68020-only BSR.L
