@@ -74,6 +74,7 @@ from a Saturn keyboard connected to controller port 2.
 
 ```bash
 make test          # Host unit tests (no cross-compiler needed)
+make test-emu      # Workbench autotest (exec, syscalls, STRICT_ALIGN)
 make test-md       # Headless BlastEm boot (~5s smoke test, needs blastem)
 ```
 
@@ -87,7 +88,9 @@ make disk          # Create filesystem image
 make run           # Build all + run in emulator
 make megadrive     # Build Mega Drive ROM
 make test          # Host unit tests
+make test-emu      # Workbench autotest (STRICT_ALIGN enabled)
 make test-md       # Headless BlastEm smoke test
+make test-md-auto  # BlastEm AUTOTEST ROM (exercises exec)
 make clean         # Remove all build artifacts
 ```
 

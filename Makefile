@@ -1,6 +1,6 @@
 # Genix top-level Makefile
 
-.PHONY: all emu kernel tools libc apps disk run test test-emu test-md test-md-auto test-md-screenshot megadrive clean
+.PHONY: all emu kernel tools libc apps disk run test test-emu test-emu-strict test-md test-md-auto test-md-screenshot megadrive clean
 
 all: emu kernel tools apps disk
 
@@ -30,7 +30,7 @@ apps-md: libc tools
 	$(MAKE) -C apps LDSCRIPT=user-md.ld
 
 # Collect all user binaries
-APP_BINS = $(wildcard apps/hello apps/echo apps/cat)
+APP_BINS = $(wildcard apps/hello apps/echo apps/cat apps/wc apps/head apps/true apps/false)
 
 # Create a filesystem image with user programs
 disk: tools apps
@@ -63,7 +63,7 @@ test-emu: emu libc tools
 	@$(MAKE) -C kernel EXTRA_CFLAGS=-DAUTOTEST
 	@echo "=== test-emu: workbench autotest ==="
 	@test_rc=0; \
-	output=$$(timeout 30 emu/emu68k kernel/kernel.bin disk.img 2>&1); \
+	output=$$(STRICT_ALIGN=1 timeout 30 emu/emu68k kernel/kernel.bin disk.img 2>&1); \
 	echo "$$output"; \
 	if echo "$$output" | grep -q "AUTOTEST PASSED"; then \
 		echo "=== test-emu: PASS ==="; \
@@ -87,7 +87,7 @@ test-md-auto: libc tools
 	Xvfb :57 -screen 0 640x480x24 >/dev/null 2>&1 & xvfb_pid=$$!; \
 	sleep 1; \
 	DISPLAY=:57 LIBGL_ALWAYS_SOFTWARE=1 SDL_AUDIODRIVER=dummy \
-		timeout 10 $(BLASTEM) -g pal/megadrive/genix-md.bin >/dev/null 2>&1; \
+		timeout 10 $(BLASTEM) pal/megadrive/genix-md.bin >/dev/null 2>&1; \
 	rc=$$?; kill $$xvfb_pid 2>/dev/null; wait $$xvfb_pid 2>/dev/null; \
 	if [ $$rc -eq 124 ]; then echo "=== test-md-auto: OK (ran 10s without crash) ==="; \
 	elif [ $$rc -eq 0 ]; then echo "=== test-md-auto: OK ==="; \
@@ -111,7 +111,7 @@ test-md-screenshot: libc tools
 	@Xvfb :58 -screen 0 640x480x24 >/dev/null 2>&1 & xvfb_pid=$$!; \
 	sleep 1; \
 	DISPLAY=:58 LIBGL_ALWAYS_SOFTWARE=1 SDL_AUDIODRIVER=dummy \
-		timeout 10 $(BLASTEM) -g pal/megadrive/genix-md.bin >/dev/null 2>&1 & blastem_pid=$$!; \
+		timeout 10 $(BLASTEM) pal/megadrive/genix-md.bin >/dev/null 2>&1 & blastem_pid=$$!; \
 	sleep 7; \
 	wid=$$(DISPLAY=:58 xdotool search --name "" 2>/dev/null | tail -1); \
 	if [ -n "$$wid" ]; then \
@@ -137,7 +137,7 @@ test-md: megadrive
 	@Xvfb :57 -screen 0 640x480x24 >/dev/null 2>&1 & xvfb_pid=$$!; \
 	sleep 1; \
 	DISPLAY=:57 LIBGL_ALWAYS_SOFTWARE=1 SDL_AUDIODRIVER=dummy \
-		timeout 5 $(BLASTEM) -g pal/megadrive/genix-md.bin >/dev/null 2>&1; \
+		timeout 5 $(BLASTEM) pal/megadrive/genix-md.bin >/dev/null 2>&1; \
 	rc=$$?; kill $$xvfb_pid 2>/dev/null; wait $$xvfb_pid 2>/dev/null; \
 	if [ $$rc -eq 124 ]; then echo "OK (ROM ran 5s without crash)"; \
 	elif [ $$rc -eq 0 ]; then echo "OK"; \

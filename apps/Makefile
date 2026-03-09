@@ -14,7 +14,7 @@ LDSCRIPT = user.ld
 MKBIN = ../tools/mkbin
 
 # Programs to build
-PROGRAMS = hello echo cat
+PROGRAMS = hello echo cat wc head true false
 
 # Cancel make's built-in rule that compiles .c directly to executable
 %: %.c

@@ -117,6 +117,20 @@ Or manually:
 emu/emu68k kernel/kernel.bin disk.img
 ```
 
+### Strict Alignment Mode
+
+The real 68000 faults on word/long access at odd addresses, but Musashi
+silently handles them. Set `STRICT_ALIGN=1` to catch these bugs in the
+emulator:
+
+```bash
+STRICT_ALIGN=1 emu/emu68k kernel/kernel.bin disk.img
+```
+
+When an unaligned access is detected, the emulator prints the address,
+access type, and current PC, then halts — just like real 68000 hardware.
+The `make test-emu` target enables this automatically.
+
 The emulator prints startup messages to stderr:
 ```
 [emu] Loaded 28672 bytes from kernel/kernel.bin

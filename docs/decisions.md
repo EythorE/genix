@@ -312,7 +312,8 @@ For the full development plan with phase details, see [PLAN.md](../PLAN.md).
 - Filesystem (minifs) with read/write/create/delete/rename/mkdir/rmdir
 - exec() loads and runs user programs (hello, echo, cat) from disk
 - Built-in debug shell with ls, cat, echo, mkdir, mem, help, halt
-- 34 host tests passing, both workbench and Mega Drive builds clean
+- 249 host tests passing (string, mem, exec), plus automated guest tests
+- Both workbench and Mega Drive builds clean
 - Saturn keyboard input on Mega Drive, UART on workbench
 - SRAM works with standard Sega mapper on all tested targets
 
@@ -322,9 +323,133 @@ pipes, and signals to get a usable interactive Unix environment.
 
 ---
 
-## Open Questions
+## Bugs and Lessons Learned
 
-These are decisions we haven't made yet:
+A catalog of bugs that cost significant debugging time. Each entry
+explains the root cause and how to avoid recurrence.
+
+### Bug: JSR Corrupts User Stack Layout (March 2026)
+
+**Symptom:** `exec /bin/hello` crashed with address error on Mega Drive.
+Hello worked once, then the system hung on subsequent exec() calls.
+
+**Root cause:** `exec_asm.S` used `JSR (%a0)` to enter the user program.
+JSR pushes a return address onto the user stack, but crt0.S expects the
+first value on the stack to be `argc`. The return address overwrites argc,
+corrupting the entire argv/envp layout.
+
+**Fix:** Use `JMP (%a0)` instead of `JSR`. The user program never
+"returns" — it calls `_exit()` via TRAP #0, which reaches `exec_leave()`
+to restore kernel context.
+
+**Lesson:** On the 68000, understand the difference between JMP (pure
+jump) and JSR (pushes return address). When transitioning to user mode,
+the stack layout is a contract — any extra pushes break it.
+
+### Bug: Unaligned Stack Array on 68000 (March 2026)
+
+**Symptom:** `hello` crashed with address error when accessing a local
+`char buf[]` array that happened to end up at an odd address.
+
+**Root cause:** A `char buf[13]` on the stack followed by a `write()`
+call. The compiler placed `buf` at an odd stack offset. When `write()`
+tried to read from it as a word-aligned address, the 68000 faulted.
+
+**Fix:** Changed the buffer size to an even number (`char buf[14]`)
+and added a comment. More generally: always make local buffers
+even-sized on the 68000.
+
+**Lesson:** The 68000 faults on word/long access at odd addresses.
+This includes compiler-generated code that copies structs or buffers
+using word moves. Local arrays should always be even-sized.
+
+### Bug: USER_BASE/USER_TOP Hardcoded (March 2026)
+
+**Symptom:** User programs loaded at workbench addresses (0x040000) on
+the Mega Drive, writing to addresses outside the 64 KB main RAM. This
+caused silent memory corruption (no bus error because the ROM was mapped
+there).
+
+**Root cause:** USER_BASE and USER_TOP were compile-time constants in
+`kernel.h`, not platform-provided values. The Mega Drive needs different
+addresses (0xFF8000-0xFFFE00) than the workbench (0x040000-0x0F0000).
+
+**Fix:** Made USER_BASE/USER_TOP global variables set from PAL functions
+at boot: `pal_user_base()` and `pal_user_top()`.
+
+**Lesson:** Memory layout must be platform-provided, not hardcoded.
+Different targets (workbench, Mega Drive, different cartridge configs)
+have different address maps. This is what the PAL layer is for.
+
+### Pain Point: BlastEm Version Differences (March 2026)
+
+**Symptom:** `make test-md` passes on some machines but fails with exit
+code 1 on others, even when the ROM is correct.
+
+**Root cause:** The `-g` flag passed to BlastEm behaves differently
+across versions. Some versions don't support it at all and exit with
+error. The test target interprets any non-0/non-124 exit code as failure.
+
+**Fix:** Remove the `-g` flag from test-md (it was unnecessary for
+headless testing). Also: when a test fails, the first thing to check
+is whether it's BlastEm failing vs. the ROM failing. Adding `2>&1`
+capture or checking BlastEm stderr helps distinguish.
+
+**Lesson:** Headless test targets that depend on emulator CLI flags
+must be tested across BlastEm versions. Keep the flags minimal.
+Document which BlastEm version was tested.
+
+### Bug: libgcc BSR.L in User Programs (March 2026)
+
+**Symptom:** `wc` (which uses `/` and `%` operators) crashed with an
+illegal instruction exception. Other programs (hello, echo, true) worked
+fine because they don't use division.
+
+**Root cause:** The toolchain's `libgcc.a` contains `__umodsi3` (modulo)
+implemented with `BSR.L` (opcode `61FF`) — a **68020-only instruction**.
+The kernel had its own safe `divmod.S` with pure 68000 shift-and-subtract
+division, but user programs were linking against the system's libgcc.
+
+**Fix:** Added `divmod.S` to `libc/libc.a` via a symlink to
+`kernel/divmod.S`. Since libc is linked before libgcc
+(`libc.a $(LIBGCC)`), the libc versions of `__udivsi3`, `__umodsi3`,
+`__divsi3`, `__modsi3` take priority over the buggy libgcc versions.
+
+**Lesson:** On a 68000 system, **every library** that might contain
+division must be checked for 68020 instructions. The `-m68000` flag only
+affects code *you* compile — it does NOT fix pre-built libraries like
+libgcc. Either provide your own division routines (like divmod.S) or
+build the entire toolchain with `--with-cpu=68000`.
+
+**Detection:** The STRICT_ALIGN emulator mode caught the unaligned
+accesses, but not the illegal instruction. The crash manifested as
+"KERNEL PANIC: exception" with a garbage PC address. When you see
+an exception with a PC outside valid memory, suspect:
+1. 68020 instructions in libgcc (check with `objdump -d`)
+2. Stack corruption (check alignment, buffer sizes)
+3. Dangling function pointers
+
+### Meta-Lesson: Workbench vs. Mega Drive Divergence
+
+The workbench emulator (Musashi) and the Mega Drive (BlastEm/real HW)
+differ in critical ways:
+
+| Behavior | Workbench (Musashi) | Mega Drive (68000) |
+|----------|--------------------|--------------------|
+| Unaligned access | Silently works | Address error fault |
+| Jump to odd address | Silently works | Address error fault |
+| Access unmapped memory | Returns 0 / silently writes | Bus error or ROM/RAM overlay |
+| Stack at odd address | Silently works | Address error on push/pop |
+
+**Rule:** Always verify `make megadrive` and `make test-md` alongside
+workbench testing. The workbench catches logic bugs; the Mega Drive
+catches alignment and address bugs that Musashi silently ignores.
+
+**Future improvement:** Add alignment checking to the workbench
+emulator (Musashi hooks) so it catches the same bugs the real 68000
+does.
+
+---
 
 1. **Fuzix a.out 32-bit sizes?** The 16-byte header has 16-bit size
    fields (max 64 KB per segment). Fine for 64 KB main RAM, but if we
