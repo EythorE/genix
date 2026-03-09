@@ -1,5 +1,10 @@
 # Toolchain
 
+> **Recommended quick-start:** Run `./scripts/fetch-toolchain.sh` to
+> download the pre-built toolchain and BlastEm from GitHub Releases.
+> See `CLAUDE.md` for usage. The rest of this document explains why
+> `--with-cpu=68000` matters and how to build from source.
+
 ## Quick Start
 
 There are two options for the cross-compiler:

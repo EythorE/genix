@@ -1,0 +1,50 @@
+name: Build m68k-elf toolchain
+
+on:
+  push:
+    paths:
+      - 'scripts/build-toolchain.sh'
+    branches: [main]
+  workflow_dispatch:  # allow manual trigger
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write  # needed to create/update releases
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build toolchain
+        run: bash scripts/build-toolchain.sh
+
+      - name: Package
+        run: |
+          tar czf m68k-elf-toolchain-x86_64-linux.tar.gz \
+            -C "$HOME" buildtools-m68k-elf/
+          ls -lh m68k-elf-toolchain-x86_64-linux.tar.gz
+
+      - name: Create/update release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: toolchain-latest
+          name: "m68k-elf toolchain (latest)"
+          body: |
+            Pre-built `m68k-elf-gcc` cross-compiler for 68000.
+
+            - GCC 14.2.0 with `--with-cpu=68000`
+            - binutils 2.43
+            - Target: `m68k-elf` (bare metal)
+            - Host: x86_64 Linux (Ubuntu)
+
+            Built from `scripts/build-toolchain.sh` at commit ${{ github.sha }}.
+
+            ## Usage
+            ```bash
+            ./scripts/fetch-toolchain.sh
+            export PATH=~/buildtools-m68k-elf/bin:$PATH
+            make kernel CROSS=m68k-elf-
+            ```
+          files: m68k-elf-toolchain-x86_64-linux.tar.gz
+          make_latest: true
