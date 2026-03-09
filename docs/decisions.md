@@ -495,13 +495,26 @@ exit code interpretation (124=timeout, 137=SIGKILL, both treated as pass).
 **Screenshot limitation:** The `-b` flag is truly headless (no window, no
 renderer). BlastEm's native screenshot feature (`p` key → `ui.screenshot`
 → `render_save_screenshot()`) requires an SDL window because it captures
-the framebuffer during `process_framebuffer()`. We investigated injecting
-key events via XTest (Python ctypes + libXtst), but SDL2 doesn't pick up
-XTest synthetic events reliably under Xvfb with software rendering.
+the framebuffer during `process_framebuffer()`. We investigated every
+approach to trigger it programmatically under Xvfb:
 
-**Screenshot test strategy:** `test-md-screenshot` still uses Xvfb and
-tries `xdotool key p` to trigger BlastEm's native PNG screenshot (320×224,
-no window chrome). Falls back to `scrot` if native screenshot fails.
+- **XTest** (Python ctypes + libXtst): SDL2 doesn't receive XTest events
+- **xdotool** (key, keydown/keyup, type, --window, --clearmodifiers): same
+- **LD_PRELOAD shim** to disable XInput2 (force core X11 events): no effect
+- **GL on vs off**: no difference
+- **BlastEm debugger** (`-d`/`-D`): no screenshot command exists
+- **GDB remote** (`-D`): no `qRcmd`/monitor command support
+
+**Root cause:** SDL2 uses XInput2 (`XI_RawKeyPress`) for keyboard input on
+X11. XTest and xdotool inject events into the core X11 protocol, which
+XInput2's raw event delivery bypasses entirely. This is a well-known SDL2
+limitation under Xvfb — there's no way to simulate keypresses from outside.
+
+**Screenshot test strategy:** `test-md-screenshot` uses Xvfb + `scrot`
+(X11 screen capture tool) to capture the BlastEm window. This captures
+the rendered VDP output at the window's display resolution (not the native
+320×224). It works reliably but requires `Xvfb`, `xdotool` (for window
+focus), and `scrot`.
 
 **Tested combinations:**
 - `blastem -b 300` with good ROM: exit 0
