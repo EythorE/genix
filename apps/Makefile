@@ -45,6 +45,6 @@ $(MKBIN):
 	$(MAKE) -C ../tools mkbin
 
 clean:
-	rm -f *.o *.elf $(BINARIES)
+	rm -f *.o *.elf $(PROGRAMS)
 
 .PHONY: all clean
