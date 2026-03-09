@@ -1,6 +1,6 @@
 # Genix top-level Makefile
 
-.PHONY: all emu kernel tools libc apps disk run test test-emu test-md test-md-auto megadrive clean
+.PHONY: all emu kernel tools libc apps disk run test test-emu test-md test-md-auto test-md-screenshot megadrive clean
 
 all: emu kernel tools apps disk
 
@@ -97,6 +97,36 @@ test-md-auto: libc tools
 	$(MAKE) -C apps clean; \
 	$(MAKE) -C apps; \
 	exit $$test_rc
+
+# Visual Mega Drive test — boot AUTOTEST ROM under Xvfb, capture screenshot
+# Produces test-md-screenshot.png for visual inspection.
+# Always restores the normal (non-AUTOTEST) ROM when done, even on failure.
+test-md-screenshot: libc tools
+	@$(MAKE) -C apps clean
+	@$(MAKE) -C apps LDSCRIPT=user-md.ld
+	@tools/mkfs.minifs disk-md.img 512 $(APP_BINS)
+	@$(MAKE) -C pal/megadrive clean
+	@$(MAKE) -C pal/megadrive DISK_IMG=../../disk-md.img EXTRA_CFLAGS=-DAUTOTEST
+	@echo "=== test-md-screenshot: booting ROM under Xvfb ==="
+	@Xvfb :58 -screen 0 640x480x24 >/dev/null 2>&1 & xvfb_pid=$$!; \
+	sleep 1; \
+	DISPLAY=:58 LIBGL_ALWAYS_SOFTWARE=1 SDL_AUDIODRIVER=dummy \
+		timeout 10 $(BLASTEM) -g pal/megadrive/genix-md.bin >/dev/null 2>&1 & blastem_pid=$$!; \
+	sleep 7; \
+	wid=$$(DISPLAY=:58 xdotool search --name "" 2>/dev/null | tail -1); \
+	if [ -n "$$wid" ]; then \
+		DISPLAY=:58 xdotool windowfocus "$$wid" 2>/dev/null; sleep 0.5; \
+		DISPLAY=:58 scrot -u test-md-screenshot.png 2>/dev/null || true; \
+	else \
+		DISPLAY=:58 scrot test-md-screenshot.png 2>/dev/null || true; \
+	fi; \
+	kill $$blastem_pid 2>/dev/null; wait $$blastem_pid 2>/dev/null; \
+	kill $$xvfb_pid 2>/dev/null; wait $$xvfb_pid 2>/dev/null; \
+	echo "=== Screenshot saved to test-md-screenshot.png ==="
+	@$(MAKE) -C pal/megadrive clean
+	@$(MAKE) -C pal/megadrive DISK_IMG=../../disk-md.img
+	@$(MAKE) -C apps clean
+	@$(MAKE) -C apps
 
 # Boot Mega Drive ROM headless in BlastEm (~5s smoke test)
 # Runs BlastEm under Xvfb with OpenGL disabled. A timeout exit (rc=124)
