@@ -26,5 +26,7 @@ int    fgetc(FILE *f);
 int    puts(const char *s);
 int    printf(const char *fmt, ...);
 int    fprintf(FILE *f, const char *fmt, ...);
+int    sprintf(char *buf, const char *fmt, ...);
+int    snprintf(char *buf, unsigned int size, const char *fmt, ...);
 
 #endif
