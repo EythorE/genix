@@ -444,9 +444,9 @@ Detailed technical documentation is in `docs/`:
 |-------|-------------|--------|
 | Phase 1 | Workbench emulator (Musashi SBC) | **Complete** |
 | Phase 2a | Kernel core + binary loading + single-tasking exec | **Complete** |
-| Phase 2b | Multitasking (vfork, scheduler, waitpid) | **Next** |
-| Phase 2c | Pipes and I/O redirection | Planned |
-| Phase 2d | Signals and job control | Planned |
+| Phase 2b | Multitasking (spawn, waitpid, process table) | **Complete** |
+| Phase 2c | Pipes and I/O redirection | **Complete** (pipes done, redirection planned) |
+| Phase 2d | Signals and job control | **Next** |
 | Phase 2e | TTY subsystem (port Fuzix tty.c) | Planned |
 | Phase 2f | Fuzix libc + utilities | Planned |
 | Phase 3 | Mega Drive port (PAL drivers from Fuzix) | **Complete** |
@@ -454,10 +454,11 @@ Detailed technical documentation is in `docs/`:
 
 What works today: kernel boots on both workbench and Mega Drive, minifs
 filesystem with indirect blocks, exec() loads user programs (hello, echo,
-cat, wc, head, levee), built-in shell, termios raw mode, full libc
-(stdio/stdlib/string/ctype/termios), levee (vi clone) on workbench,
-249+ host tests, Saturn keyboard on Mega Drive, SRAM with standard Sega
-mapper. See `docs/decisions.md` for full history.
+cat, wc, head, levee), built-in shell with spawn/pipe commands, process
+table (16 slots) with spawn/waitpid/exit, pipes (512-byte circular buffer),
+termios raw mode, full libc (stdio/stdlib/string/ctype/termios), levee
+(vi clone) on workbench, 283+ host tests, Saturn keyboard on Mega Drive,
+SRAM with standard Sega mapper. See `docs/decisions.md` for full history.
 
 ## Common Pitfalls
 
