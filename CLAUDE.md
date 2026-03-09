@@ -27,7 +27,7 @@ export CROSS=m68k-elf-
 ```
 
 This downloads the correct `m68k-elf-gcc` (built with `--with-cpu=68000`)
-and BlastEm 0.6.2 from GitHub Releases. The toolchain is rebuilt
+and BlastEm 0.6.3-pre from retrodev.com nightlies. The toolchain is rebuilt
 automatically by CI whenever `scripts/build-toolchain.sh` changes.
 
 **Fallback:** If the pre-built toolchain doesn't work for your platform,
