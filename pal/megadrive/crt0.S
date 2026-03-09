@@ -163,16 +163,36 @@ _vec_vblank:
     movem.l (%sp)+, %d0-%d1/%a0-%a1
     rte
 
-/* Syscall entry (TRAP #0) */
+/* Syscall entry (TRAP #0)
+ *
+ * TRAP from user mode: 68000 switches to supervisor mode, A7=SSP
+ * (process kernel stack), SR+PC pushed on SSP automatically. */
     .globl _vec_syscall
 _vec_syscall:
-    movem.l %d1-%d7/%a0-%a6, -(%sp)
-    move.l  %d4, -(%sp)
-    move.l  %d3, -(%sp)
-    move.l  %d2, -(%sp)
-    move.l  %d1, -(%sp)
-    move.l  %d0, -(%sp)
+    /* Save all user registers on the kernel stack */
+    movem.l %d0-%d7/%a0-%a6, -(%sp)   /* 15 regs, 60 bytes */
+
+    /* Save user stack pointer */
+    move    %usp, %a0
+    move.l  %a0, -(%sp)               /* push USP, 4 bytes */
+
+    /* Push args for C: syscall_dispatch(num, a1, a2, a3, a4)
+     * Stack: SP+0=USP, SP+4=d0, SP+8=d1, SP+12=d2, SP+16=d3, SP+20=d4 */
+    move.l  20(%sp), -(%sp)     /* d4 = arg4 */
+    move.l  20(%sp), -(%sp)     /* d3 = arg3 */
+    move.l  20(%sp), -(%sp)     /* d2 = arg2 */
+    move.l  20(%sp), -(%sp)     /* d1 = arg1 */
+    move.l  20(%sp), -(%sp)     /* d0 = syscall# */
     jsr     syscall_dispatch
-    add.l   #20, %sp
-    movem.l (%sp)+, %d1-%d7/%a0-%a6
+    add.l   #20, %sp            /* pop 5 args */
+
+    /* Store return value in saved d0 slot */
+    move.l  %d0, 4(%sp)
+
+    /* Restore user stack pointer */
+    move.l  (%sp)+, %a0
+    move    %a0, %usp
+
+    /* Restore all user registers */
+    movem.l (%sp)+, %d0-%d7/%a0-%a6
     rte

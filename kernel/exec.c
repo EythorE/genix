@@ -177,10 +177,11 @@ int do_exec(const char *path, const char **argv)
             path, hdr.load_size, USER_BASE, hdr.entry);
 
     /* Transfer control to the user program.
-     * exec_enter saves kernel context and jumps to the entry point.
-     * It returns here when the program calls _exit() via exec_leave(). */
+     * exec_enter saves kernel context, switches to user mode, and jumps
+     * to the entry point. TRAP #0 uses curproc's kstack as the
+     * supervisor stack. Returns here when _exit() calls exec_leave(). */
     exec_active = 1;
-    int exitcode = exec_enter(hdr.entry, user_sp);
+    int exitcode = exec_enter(hdr.entry, user_sp, proc_kstack_top(curproc));
     exec_active = 0;
 
     kprintf("[exec] Program exited with code %d\n", exitcode);

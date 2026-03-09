@@ -113,22 +113,53 @@ _vec_timer_irq:
     movem.l (%sp)+, %d0-%d1/%a0-%a1
     rte
 
-/* Syscall entry (TRAP #0) */
+/* Syscall entry (TRAP #0)
+ *
+ * When TRAP #0 fires from user mode:
+ *   - 68000 switches to supervisor mode (S=1)
+ *   - A7 becomes SSP (process's kernel stack, set by exec_enter)
+ *   - SR and PC are pushed onto SSP automatically
+ *
+ * We save all user registers + USP on the kernel stack, dispatch
+ * the syscall, then restore and RTE back to user mode. */
     .globl _vec_syscall
 _vec_syscall:
-    /* On entry: d0=syscall#, d1-d4=args
-     * Save all regs, call C dispatcher, return value in d0 */
-    movem.l %d1-%d7/%a0-%a6, -(%sp)
+    /* Save all user registers on the kernel stack.
+     * d0 has the syscall number, d1-d4 have args. */
+    movem.l %d0-%d7/%a0-%a6, -(%sp)   /* 15 regs, 60 bytes */
+
+    /* Save user stack pointer */
+    move    %usp, %a0
+    move.l  %a0, -(%sp)               /* push USP, 4 bytes */
+
+    /* Stack layout from SP:
+     *   SP+0:  USP                 (4 bytes)
+     *   SP+4:  d0 (syscall#)       (4 bytes)
+     *   SP+8:  d1 (arg1)           (4 bytes)
+     *   SP+12: d2 (arg2)           (4 bytes)
+     *   SP+16: d3 (arg3)           (4 bytes)
+     *   SP+20: d4 (arg4)           (4 bytes)
+     *   ...
+     *   SP+60: a6                  (4 bytes)
+     *   SP+64: SR                  (2 bytes)
+     *   SP+66: PC                  (4 bytes) */
 
     /* Push args for C: syscall_dispatch(num, a1, a2, a3, a4) */
-    move.l  %d4, -(%sp)
-    move.l  %d3, -(%sp)
-    move.l  %d2, -(%sp)
-    move.l  %d1, -(%sp)
-    move.l  %d0, -(%sp)
+    move.l  20(%sp), -(%sp)     /* d4 = arg4 */
+    move.l  20(%sp), -(%sp)     /* d3 = arg3 (shifted by push above) */
+    move.l  20(%sp), -(%sp)     /* d2 = arg2 */
+    move.l  20(%sp), -(%sp)     /* d1 = arg1 */
+    move.l  20(%sp), -(%sp)     /* d0 = syscall# */
     jsr     syscall_dispatch
     add.l   #20, %sp            /* pop 5 args */
 
-    /* Return value is in d0 already */
-    movem.l (%sp)+, %d1-%d7/%a0-%a6
+    /* Store return value in saved d0 slot so user sees it after RTE */
+    move.l  %d0, 4(%sp)
+
+    /* Restore user stack pointer */
+    move.l  (%sp)+, %a0
+    move    %a0, %usp
+
+    /* Restore all user registers (d0 now has syscall return value) */
+    movem.l (%sp)+, %d0-%d7/%a0-%a6
     rte
