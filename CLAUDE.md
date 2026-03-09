@@ -12,6 +12,29 @@ accelerate development — every feature must ultimately run on real Mega Drive 
 Design decisions should always consider the Mega Drive's constraints: 64 KB main RAM,
 7.67 MHz CPU, no MMU, optional cartridge SRAM.
 
+## Temporary: apt is broken in this environment
+
+**Problem:** `apt-get install` hangs on package downloads in this
+environment (network/mirror issues). The runtime libraries (`libmpc3`,
+`libmpfr6`, `libgmp10`) are pre-installed but the `-dev` header packages
+are not, and `texinfo` is missing.
+
+**Workaround for the cross-compiler toolchain:** Build from source using
+the "Building Without apt" section in
+[docs/toolchain.md](docs/toolchain.md). This uses GCC's in-tree
+GMP/MPFR/MPC build (no `-dev` packages needed) and `MAKEINFO=true` to
+skip the texinfo requirement. Only `build-essential` is needed, which is
+already installed.
+
+**Pre-built toolchain location:** If the toolchain has already been
+built, it lives at `~/buildtools-m68k-elf/`. Use it with:
+```bash
+export PATH=~/buildtools-m68k-elf/bin:$PATH
+make kernel CROSS=m68k-elf-
+```
+
+Remove this section once apt is working again.
+
 ## Getting Started
 
 ### 1. Install Prerequisites

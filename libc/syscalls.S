@@ -153,3 +153,68 @@ unlink:
     moveq   #10, %d0           /* SYS_UNLINK */
     trap    #0
     rts
+
+/* int rename(const char *old, const char *new) */
+    .globl rename
+rename:
+    move.l  %d2, -(%sp)
+    move.l  8(%sp), %d1        /* old */
+    move.l  12(%sp), %d2       /* new */
+    move.l  #38, %d0           /* SYS_RENAME */
+    trap    #0
+    move.l  (%sp)+, %d2
+    rts
+
+/* int ioctl(int fd, int cmd, void *arg) */
+    .globl ioctl
+ioctl:
+    movem.l %d2-%d3, -(%sp)
+    move.l  12(%sp), %d1       /* fd */
+    move.l  16(%sp), %d2       /* cmd */
+    move.l  20(%sp), %d3       /* arg */
+    move.l  #54, %d0           /* SYS_IOCTL */
+    trap    #0
+    movem.l (%sp)+, %d2-%d3
+    rts
+
+/* void *sbrk(int incr) */
+    .globl sbrk
+sbrk:
+    move.l  4(%sp), %d1        /* incr */
+    move.l  #69, %d0           /* SYS_SBRK */
+    trap    #0
+    rts
+
+/* int signal(int sig, void *handler) */
+    .globl signal
+signal:
+    move.l  %d2, -(%sp)
+    move.l  8(%sp), %d1        /* sig */
+    move.l  12(%sp), %d2       /* handler */
+    move.l  #48, %d0           /* SYS_SIGNAL */
+    trap    #0
+    move.l  (%sp)+, %d2
+    rts
+
+/* int kill(int pid, int sig) */
+    .globl kill
+kill:
+    move.l  %d2, -(%sp)
+    move.l  8(%sp), %d1        /* pid */
+    move.l  12(%sp), %d2       /* sig */
+    move.l  #37, %d0           /* SYS_KILL */
+    trap    #0
+    move.l  (%sp)+, %d2
+    rts
+
+/* int fcntl(int fd, int cmd, ...) */
+    .globl fcntl
+fcntl:
+    movem.l %d2-%d3, -(%sp)
+    move.l  12(%sp), %d1       /* fd */
+    move.l  16(%sp), %d2       /* cmd */
+    move.l  20(%sp), %d3       /* arg */
+    move.l  #55, %d0           /* SYS_FCNTL */
+    trap    #0
+    movem.l (%sp)+, %d2-%d3
+    rts

@@ -23,14 +23,15 @@ libc:
 # Build user programs (workbench — linked at 0x040000)
 apps: libc tools
 	$(MAKE) -C apps
+	$(MAKE) -C apps/levee
 
 # Build user programs for Mega Drive (linked at 0xFF8000)
 apps-md: libc tools
 	$(MAKE) -C apps clean
 	$(MAKE) -C apps LDSCRIPT=user-md.ld
 
-# Collect all user binaries
-APP_BINS = $(wildcard apps/hello apps/echo apps/cat apps/wc apps/head apps/true apps/false)
+# Collect all user binaries (levee is workbench-only — too large for MD 31KB user space)
+APP_BINS = $(wildcard apps/hello apps/echo apps/cat apps/wc apps/head apps/true apps/false apps/levee/levee)
 
 # Create a filesystem image with user programs
 disk: tools apps
@@ -156,5 +157,6 @@ clean:
 	$(MAKE) -C tools clean
 	$(MAKE) -C libc clean
 	$(MAKE) -C apps clean
+	$(MAKE) -C apps/levee clean
 	$(MAKE) -C tests clean
 	rm -f disk.img disk-md.img
