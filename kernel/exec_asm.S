@@ -33,12 +33,12 @@ exec_enter:
     move.l  48(%sp), %a0        /* entry_point */
     move.l  52(%sp), %sp        /* switch to user stack */
 
-    /* Call the user program */
-    jsr     (%a0)
-
-    /* If the user program returns (crt0 should call _exit, but handle it) */
-    moveq   #0, %d0
-    bra     .Lexec_done
+    /* Jump to the user program — do NOT use JSR here.
+     * JSR would push a return address onto the user stack,
+     * corrupting the argc/argv layout that crt0 expects.
+     * crt0 calls _exit() via TRAP #0, which reaches exec_leave()
+     * to return control to our caller. */
+    jmp     (%a0)
 
 /*
  * void exec_leave(void)  __attribute__((noreturn))
