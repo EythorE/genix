@@ -2,7 +2,7 @@
 CC = gcc
 CFLAGS = -Wall -Wextra -g -O0 -Wno-builtin-declaration-mismatch -I../pal
 
-TESTS = test_string test_mem test_exec test_proc
+TESTS = test_string test_mem test_exec test_proc test_vdp
 
 all: $(TESTS)
 
@@ -17,6 +17,9 @@ test_exec: test_exec.c testutil.h
 
 test_proc: test_proc.c testutil.h
 	$(CC) $(CFLAGS) -o $@ test_proc.c
+
+test_vdp: test_vdp.c testutil.h ../kernel/dev_vdp.h
+	$(CC) $(CFLAGS) -o $@ test_vdp.c
 
 check: $(TESTS)
 	@fail=0; \
