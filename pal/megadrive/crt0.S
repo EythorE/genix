@@ -154,9 +154,37 @@ _vec_trap1:
 _vec_hblank:
     rte
 
-/* V-Blank interrupt — drives the system timer */
+/* V-Blank interrupt — drives the system timer and preemption.
+ *
+ * If we interrupted user mode (S=0), save full state for possible
+ * context switch. If supervisor mode (S=1), minimal save only.
+ * See kernel/crt0.S for detailed comments on the preemption design. */
     .globl _vec_vblank
 _vec_vblank:
+    btst    #5, (%sp)           /* test S bit in saved SR */
+    bne     .Lvbl_super         /* S=1: supervisor mode, no preemption */
+
+    /* Interrupted user mode */
+    movem.l %d0-%d7/%a0-%a6, -(%sp)
+    move    %usp, %a0
+    move.l  %a0, -(%sp)
+
+    jsr     md_vblank_handler
+    jsr     timer_interrupt
+
+    /* Save ksp, schedule, load (possibly new) ksp */
+    move.l  curproc, %a0
+    move.l  %sp, 4(%a0)
+    jsr     schedule
+    move.l  curproc, %a0
+    move.l  4(%a0), %sp
+
+    move.l  (%sp)+, %a0
+    move    %a0, %usp
+    movem.l (%sp)+, %d0-%d7/%a0-%a6
+    rte
+
+.Lvbl_super:
     movem.l %d0-%d1/%a0-%a1, -(%sp)
     jsr     md_vblank_handler
     jsr     timer_interrupt

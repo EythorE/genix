@@ -105,9 +105,48 @@ _vec_autovec7:
 _vec_trap1:
     rte
 
-/* Timer interrupt (Level 6) */
+/* Timer interrupt (Level 6)
+ *
+ * If we interrupted user mode (S=0 in saved SR), this is a preemption
+ * point: save full user state, call schedule, and possibly switch to
+ * a different process by swapping kernel stacks.
+ *
+ * If we interrupted supervisor mode (S=1), don't preempt — the kernel
+ * might be in the middle of a syscall with state on the kstack. Just
+ * advance the timer and return.
+ *
+ * 68000 exception frame on stack: SP+0 = SR (16-bit), SP+2 = PC (32-bit).
+ * SR bit 13 = S (supervisor bit). In the byte at SP+0, S is bit 5. */
     .globl _vec_timer_irq
 _vec_timer_irq:
+    btst    #5, (%sp)           /* test S bit in saved SR */
+    bne     .Ltimer_super       /* S=1: supervisor mode, no preemption */
+
+    /* Interrupted user mode — save full context for possible switch */
+    movem.l %d0-%d7/%a0-%a6, -(%sp)
+    move    %usp, %a0
+    move.l  %a0, -(%sp)
+
+    jsr     timer_interrupt
+
+    /* Save current ksp to curproc->ksp (offset 4 in struct proc) */
+    move.l  curproc, %a0
+    move.l  %sp, 4(%a0)
+
+    jsr     schedule
+
+    /* Load (possibly new) curproc->ksp */
+    move.l  curproc, %a0
+    move.l  4(%a0), %sp
+
+    /* Restore user state */
+    move.l  (%sp)+, %a0
+    move    %a0, %usp
+    movem.l (%sp)+, %d0-%d7/%a0-%a6
+    rte
+
+.Ltimer_super:
+    /* Interrupted supervisor mode — minimal save, no preemption */
     movem.l %d0-%d1/%a0-%a1, -(%sp)
     jsr     timer_interrupt
     movem.l (%sp)+, %d0-%d1/%a0-%a1
