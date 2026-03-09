@@ -204,9 +204,20 @@ static void add_file(uint16_t dir_inum, struct disk_inode *dir_di,
         if (blk_idx < 12) {
             di.direct[blk_idx] = blk;
         } else {
-            /* TODO: indirect blocks */
-            fprintf(stderr, "File too large for direct blocks: %s\n", hostpath);
-            break;
+            /* Indirect block: allocate on first use */
+            if (di.indirect == 0) {
+                di.indirect = alloc_block();
+                uint8_t zbuf[BLOCK_SIZE];
+                memset(zbuf, 0, BLOCK_SIZE);
+                write_block(di.indirect, zbuf);
+            }
+            /* Write block number into indirect block */
+            uint8_t ibuf[BLOCK_SIZE];
+            read_block(di.indirect, ibuf);
+            int off = (blk_idx - 12) * 2;  /* uint16_t per entry, big-endian */
+            ibuf[off]     = (blk >> 8) & 0xFF;
+            ibuf[off + 1] = blk & 0xFF;
+            write_block(di.indirect, ibuf);
         }
         write_block(blk, buf);
 

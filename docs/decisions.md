@@ -310,8 +310,12 @@ For the full development plan with phase details, see [PLAN.md](../PLAN.md).
 **What works today:**
 - Kernel boots on workbench emulator and Mega Drive (BlastEm + real hardware)
 - Filesystem (minifs) with read/write/create/delete/rename/mkdir/rmdir
-- exec() loads and runs user programs (hello, echo, cat) from disk
+- Indirect blocks in both kernel and mkfs (files > 12 KB work)
+- exec() loads and runs user programs (hello, echo, cat, wc, head, levee) from disk
 - Built-in debug shell with ls, cat, echo, mkdir, mem, help, halt
+- Terminal raw mode via termios (tcgetattr/tcsetattr → ioctl)
+- Full libc: stdio (FILE*), stdlib (malloc/free), string, ctype, termios
+- Levee (vi clone) runs on workbench emulator with ANSI terminal support
 - 249 host tests passing (string, mem, exec), plus automated guest tests
 - Both workbench and Mega Drive builds clean
 - Saturn keyboard input on Mega Drive, UART on workbench
@@ -429,6 +433,55 @@ an exception with a PC outside valid memory, suspect:
 2. Stack corruption (check alignment, buffer sizes)
 3. Dangling function pointers
 
+### Bug: Indirect Block bmap() on Big-Endian (March 2026)
+
+**Symptom:** Levee binary (44 KB) loaded only 28640 of 44720 bytes. The
+first 12 KB (direct blocks) loaded correctly, then garbage appeared.
+
+**Root cause:** `bmap()` in `kernel/fs.c` read indirect block entries
+using byte-level decomposition on a `uint16_t*`:
+```c
+/* BROKEN — double-indexed into uint16_t array */
+uint16_t *ptrs = (uint16_t *)ib->data;
+uint16_t blk = (ptrs[bn * 2] << 8) | ptrs[bn * 2 + 1];
+```
+This treated the `uint16_t*` as a `uint8_t*`, reading 4 bytes per entry
+instead of 2. On big-endian 68000, `uint16_t` values in memory are
+already in native byte order, so no decomposition is needed.
+
+**Fix:** Simply index the `uint16_t*` directly:
+```c
+uint16_t *ptrs = (uint16_t *)ib->data;
+uint16_t blk = ptrs[bn];
+```
+
+**Lesson:** On big-endian systems, don't manually byte-swap data that's
+already stored in native order. The byte-swap pattern `(p[0] << 8) | p[1]`
+is correct when reading from a `uint8_t*` buffer (as mkfs does on the
+little-endian host). But in the kernel, the buffer cache stores data in
+the CPU's native byte order (big-endian), so `uint16_t*` indexing works
+directly. This is a common trap when porting between host tools and
+target kernel code.
+
+### Bug: mkfs Lacked Indirect Block Support (March 2026)
+
+**Symptom:** Files larger than 12 KB (12 direct blocks × 1024 bytes)
+were silently truncated in the filesystem image.
+
+**Root cause:** `tools/mkfs.c` only wrote direct block pointers
+(`di.direct[0..11]`). There was no code to allocate or populate an
+indirect block for data beyond the 12th block.
+
+**Fix:** Added indirect block allocation and big-endian uint16_t
+writing to mkfs.c's `add_file()` function. The indirect block stores
+block numbers as big-endian uint16_t entries (matching the 68000 kernel's
+expectations).
+
+**Lesson:** Test with files larger than 12 KB early. The filesystem
+code path for indirect blocks is completely different from direct blocks,
+and if it's never exercised, bugs hide indefinitely. Levee (44 KB) was
+the first file large enough to trigger this.
+
 ### Meta-Lesson: Workbench vs. Mega Drive Divergence
 
 The workbench emulator (Musashi) and the Mega Drive (BlastEm/real HW)
@@ -463,3 +516,66 @@ does.
 3. **brk() vs mmap()?** In single-tasking, brk() works fine. In
    multitasking, it's problematic if another process is after ours.
    Plan: brk() with careful load ordering, revisit if it breaks.
+
+---
+
+## Levee (vi Clone) Port — Lessons Learned (March 2026)
+
+**Status:** Working on workbench emulator. Too large for Mega Drive
+(44 KB binary vs ~31 KB available user space).
+
+Successfully ported levee from
+[Fuzix](https://github.com/EythorE/FUZIX/tree/megadrive) to Genix.
+This was a significant integration test that exercised the full stack:
+libc (FILE*, malloc, termios, string, ctype), kernel (ioctl, sbrk,
+indirect blocks), and the binary loader.
+
+### What was needed to make it work
+
+1. **C library additions**: `ctype.c` (isalpha, isdigit, etc.),
+   `stdlib.c` (malloc/free via sbrk, atoi, getenv), `stdio.c`
+   (FILE*, fopen/fclose/fgets/fprintf), `termios.c` (tcgetattr/
+   tcsetattr wrapping ioctl).
+
+2. **Header files**: `<ctype.h>`, `<termios.h>`, `<fcntl.h>`,
+   `<sys/stat.h>` — all minimal stubs providing just enough for
+   levee's needs.
+
+3. **Kernel termios**: Console raw mode via `con_raw` flag in
+   `kernel/dev.c`, toggled by TCGETS/TCSETS ioctl.
+
+4. **Filesystem indirect blocks**: Both in mkfs (host tool) and
+   kernel bmap(). Levee at 44 KB needs ~32 indirect blocks.
+
+5. **Missing source file (ucsd.c)**: Not immediately obvious, but
+   levee depends on `moveleft()`, `moveright()`, `fillchar()`, and
+   `lvscan()` from `ucsd.c`. Missing symbol errors at link time are
+   the clue.
+
+### Pain points
+
+- **ucsd.c not obvious**: The Fuzix levee source tree has ucsd.c but
+  the Makefile doesn't list it in an obvious SRCS variable. You have
+  to trace undefined symbols to find it.
+
+- **Warning-heavy code**: Levee is K&R-style C from the 1980s. Needs
+  extensive `-Wno-*` flags to compile cleanly with modern GCC:
+  `-Wno-implicit-int`, `-Wno-return-type`, `-Wno-parentheses`,
+  `-Wno-implicit-function-declaration`, `-Wno-char-subscripts`.
+
+- **Mega Drive too small**: Levee produces a ~44 KB binary. The Mega
+  Drive has ~31 KB of user space (64 KB RAM minus ~25 KB kernel minus
+  stack). Levee is workbench-only unless we add SRAM-based program
+  loading or significantly reduce binary size.
+
+- **Conflicting open() declarations**: `fcntl.h` declared
+  `open(const char *, int, ...)` (variadic) while `unistd.h` had
+  `open(const char *, int)` (non-variadic). GCC errors on the
+  mismatch. Both must be variadic.
+
+### What this validates
+
+The levee port proves that Genix's libc, kernel, and filesystem are
+mature enough to run real Unix software — not just toy programs. The
+full stack (raw terminal I/O, file I/O, dynamic memory, ANSI escape
+codes) works correctly on the workbench emulator.
