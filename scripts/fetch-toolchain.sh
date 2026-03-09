@@ -10,7 +10,7 @@ ASSET="m68k-elf-toolchain-x86_64-linux.tar.gz"
 URL="https://github.com/${REPO}/releases/download/${TAG}/${ASSET}"
 
 BLASTEM_DIR="$HOME/blastem"
-BLASTEM_URL="https://www.retrodev.com/blastem/blastem64-0.6.2.tar.gz"
+BLASTEM_URL="https://www.retrodev.com/blastem/nightlies/blastem64-0.6.3-pre-884de5ef1263.tar.gz"
 
 # --- m68k-elf toolchain ---
 
@@ -31,7 +31,7 @@ fi
 if [ -x "$BLASTEM_DIR/blastem" ]; then
     echo "BlastEm already installed at $BLASTEM_DIR"
 else
-    echo "Fetching BlastEm 0.6.2..."
+    echo "Fetching BlastEm 0.6.3-pre (nightly 884de5ef1263)..."
     echo "URL: $BLASTEM_URL"
     mkdir -p "$BLASTEM_DIR"
     curl -fSL "$BLASTEM_URL" | tar xz --strip-components=1 -C "$BLASTEM_DIR"
