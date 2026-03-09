@@ -1,6 +1,6 @@
 # Genix top-level Makefile
 
-.PHONY: all emu kernel tools libc apps disk run test test-emu test-emu-strict test-md test-md-auto test-md-screenshot test-all megadrive clean
+.PHONY: all emu kernel tools libc apps apps-md disk disk-md run test test-emu test-md test-md-auto test-md-screenshot test-all megadrive clean
 
 all: emu kernel tools apps disk
 
