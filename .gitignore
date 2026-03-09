@@ -12,6 +12,10 @@ libc/libc.a
 apps/hello
 apps/echo
 apps/cat
+apps/wc
+apps/head
+apps/true
+apps/false
 tests/test_string
 tests/test_mem
 tests/test_exec
