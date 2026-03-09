@@ -293,7 +293,7 @@ expectations (a busy loop would hang the system).
 
 ## Project Status (March 2026)
 
-For the full development plan with phase details, see [PLAN.md](../PLAN.md).
+The project phases are tracked below and in the individual docs.
 
 | Phase | Description | Status |
 |-------|-------------|--------|

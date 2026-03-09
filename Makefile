@@ -1,6 +1,6 @@
 # Genix top-level Makefile
 
-.PHONY: all emu kernel tools libc apps disk run test test-emu test-emu-strict test-md test-md-auto test-md-screenshot test-all megadrive clean
+.PHONY: all emu kernel tools libc apps apps-md disk disk-md run test test-emu test-md test-md-auto test-md-screenshot test-all megadrive clean
 
 all: emu kernel tools apps disk
 
@@ -30,8 +30,11 @@ apps-md: libc tools
 	$(MAKE) -C apps clean
 	$(MAKE) -C apps LDSCRIPT=user-md.ld
 
-# Collect all user binaries (levee is workbench-only — too large for MD 31KB user space)
-APP_BINS = $(wildcard apps/hello apps/echo apps/cat apps/wc apps/head apps/true apps/false apps/levee/levee)
+# Core app binaries (built for both workbench and Mega Drive)
+CORE_BINS = apps/hello apps/echo apps/cat apps/wc apps/head apps/true apps/false
+
+# All app binaries (levee is workbench-only — too large for MD 31KB user space)
+APP_BINS = $(CORE_BINS) $(wildcard apps/levee/levee)
 
 # Create a filesystem image with user programs
 disk: tools apps
@@ -39,7 +42,7 @@ disk: tools apps
 
 # Create Mega Drive filesystem image (programs linked at 0xFF8000)
 disk-md: tools apps-md
-	tools/mkfs.minifs disk-md.img 512 $(APP_BINS)
+	tools/mkfs.minifs disk-md.img 512 $(CORE_BINS)
 
 # Run the kernel in the emulator
 run: emu kernel disk
@@ -59,7 +62,7 @@ test:
 test-emu: emu libc tools
 	@$(MAKE) -C apps clean
 	@$(MAKE) -C apps
-	@tools/mkfs.minifs disk.img 512 $(APP_BINS)
+	@tools/mkfs.minifs disk.img 512 $(CORE_BINS)
 	@$(MAKE) -C kernel clean
 	@$(MAKE) -C kernel EXTRA_CFLAGS=-DAUTOTEST
 	@echo "=== test-emu: workbench autotest ==="
@@ -80,7 +83,7 @@ test-emu: emu libc tools
 test-md-auto: libc tools
 	@$(MAKE) -C apps clean
 	@$(MAKE) -C apps LDSCRIPT=user-md.ld
-	@tools/mkfs.minifs disk-md.img 512 $(APP_BINS)
+	@tools/mkfs.minifs disk-md.img 512 $(CORE_BINS)
 	@$(MAKE) -C pal/megadrive clean
 	@$(MAKE) -C pal/megadrive DISK_IMG=../../disk-md.img EXTRA_CFLAGS=-DAUTOTEST
 	@echo "=== test-md-auto: BlastEm autotest ==="
@@ -105,7 +108,7 @@ test-md-auto: libc tools
 test-md-screenshot: libc tools
 	@$(MAKE) -C apps clean
 	@$(MAKE) -C apps LDSCRIPT=user-md.ld
-	@tools/mkfs.minifs disk-md.img 512 $(APP_BINS)
+	@tools/mkfs.minifs disk-md.img 512 $(CORE_BINS)
 	@$(MAKE) -C pal/megadrive clean
 	@$(MAKE) -C pal/megadrive DISK_IMG=../../disk-md.img EXTRA_CFLAGS=-DAUTOTEST
 	@echo "=== test-md-screenshot: booting ROM under Xvfb ==="
