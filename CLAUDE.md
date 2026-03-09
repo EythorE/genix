@@ -12,28 +12,20 @@ accelerate development — every feature must ultimately run on real Mega Drive 
 Design decisions should always consider the Mega Drive's constraints: 64 KB main RAM,
 7.67 MHz CPU, no MMU, optional cartridge SRAM.
 
-## Temporary: apt is broken in this environment
+## Toolchain Setup
 
-**Problem:** `apt-get install` hangs on package downloads in this
-environment (network/mirror issues). The runtime libraries (`libmpc3`,
-`libmpfr6`, `libgmp10`) are pre-installed but the `-dev` header packages
-are not, and `texinfo` is missing.
+The m68k-elf cross-compiler is available as a pre-built binary from
+GitHub Releases. Fetch and activate it before building the kernel:
 
-**Workaround for the cross-compiler toolchain:** Build from source using
-the "Building Without apt" section in
-[docs/toolchain.md](docs/toolchain.md). This uses GCC's in-tree
-GMP/MPFR/MPC build (no `-dev` packages needed) and `MAKEINFO=true` to
-skip the texinfo requirement. Only `build-essential` is needed, which is
-already installed.
-
-**Pre-built toolchain location:** If the toolchain has already been
-built, it lives at `~/buildtools-m68k-elf/`. Use it with:
 ```bash
-export PATH=~/buildtools-m68k-elf/bin:$PATH
-make kernel CROSS=m68k-elf-
+./scripts/fetch-toolchain.sh
+export PATH=~/buildtools-m68k-elf/bin:~/blastem:$PATH
+export CROSS=m68k-elf-
 ```
 
-Remove this section once apt is working again.
+The toolchain is rebuilt automatically by CI whenever
+`scripts/build-toolchain.sh` changes. To build it manually (e.g., on a
+new architecture), run `bash scripts/build-toolchain.sh` directly.
 
 ## Getting Started
 
