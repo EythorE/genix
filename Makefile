@@ -88,12 +88,14 @@ test-md-auto: libc tools
 	@$(MAKE) -C pal/megadrive DISK_IMG=../../disk-md.img EXTRA_CFLAGS=-DAUTOTEST
 	@echo "=== test-md-auto: BlastEm autotest ==="
 	@test_rc=0; \
+	mkdir -p $(BLASTEM_CFG_DIR); \
+	printf '$(BLASTEM_HEADLESS_CFG)' > $(BLASTEM_CFG_DIR)/blastem.cfg; \
 	Xvfb :57 -screen 0 640x480x24 >/dev/null 2>&1 & xvfb_pid=$$!; \
 	sleep 1; \
-	DISPLAY=:57 LIBGL_ALWAYS_SOFTWARE=1 SDL_AUDIODRIVER=dummy \
-		timeout 10 $(BLASTEM) pal/megadrive/genix-md.bin >/dev/null 2>&1; \
+	HOME=/tmp/blastem-test-home DISPLAY=:57 LIBGL_ALWAYS_SOFTWARE=1 SDL_AUDIODRIVER=dummy \
+		timeout -k 3 10 $(BLASTEM) pal/megadrive/genix-md.bin >/dev/null 2>&1; \
 	rc=$$?; kill $$xvfb_pid 2>/dev/null; wait $$xvfb_pid 2>/dev/null; \
-	if [ $$rc -eq 124 ]; then echo "=== test-md-auto: OK (ran 10s without crash) ==="; \
+	if [ $$rc -eq 124 ] || [ $$rc -eq 137 ]; then echo "=== test-md-auto: OK (ran 10s without crash) ==="; \
 	elif [ $$rc -eq 0 ]; then echo "=== test-md-auto: OK ==="; \
 	else echo "=== test-md-auto: FAIL (exit code $$rc) ==="; test_rc=1; fi; \
 	$(MAKE) -C pal/megadrive clean; \
@@ -112,19 +114,21 @@ test-md-screenshot: libc tools
 	@$(MAKE) -C pal/megadrive clean
 	@$(MAKE) -C pal/megadrive DISK_IMG=../../disk-md.img EXTRA_CFLAGS=-DAUTOTEST
 	@echo "=== test-md-screenshot: booting ROM under Xvfb ==="
-	@Xvfb :58 -screen 0 640x480x24 >/dev/null 2>&1 & xvfb_pid=$$!; \
+	@mkdir -p $(BLASTEM_CFG_DIR); \
+	printf '$(BLASTEM_HEADLESS_CFG)' > $(BLASTEM_CFG_DIR)/blastem.cfg; \
+	Xvfb :58 -screen 0 640x480x24 >/dev/null 2>&1 & xvfb_pid=$$!; \
 	sleep 1; \
-	DISPLAY=:58 LIBGL_ALWAYS_SOFTWARE=1 SDL_AUDIODRIVER=dummy \
-		timeout 10 $(BLASTEM) pal/megadrive/genix-md.bin >/dev/null 2>&1 & blastem_pid=$$!; \
+	HOME=/tmp/blastem-test-home DISPLAY=:58 LIBGL_ALWAYS_SOFTWARE=1 SDL_AUDIODRIVER=dummy \
+		timeout -k 3 15 $(BLASTEM) pal/megadrive/genix-md.bin >/dev/null 2>&1 & blastem_pid=$$!; \
 	sleep 7; \
-	wid=$$(DISPLAY=:58 xdotool search --name "" 2>/dev/null | tail -1); \
+	wid=$$(DISPLAY=:58 xdotool search --name "BlastEm" 2>/dev/null | tail -1); \
 	if [ -n "$$wid" ]; then \
 		DISPLAY=:58 xdotool windowfocus "$$wid" 2>/dev/null; sleep 0.5; \
 		DISPLAY=:58 scrot -u test-md-screenshot.png 2>/dev/null || true; \
 	else \
 		DISPLAY=:58 scrot test-md-screenshot.png 2>/dev/null || true; \
 	fi; \
-	kill $$blastem_pid 2>/dev/null; wait $$blastem_pid 2>/dev/null; \
+	kill $$blastem_pid 2>/dev/null; kill -9 $$blastem_pid 2>/dev/null; wait $$blastem_pid 2>/dev/null; \
 	kill $$xvfb_pid 2>/dev/null; wait $$xvfb_pid 2>/dev/null; \
 	echo "=== Screenshot saved to test-md-screenshot.png ==="
 	@$(MAKE) -C pal/megadrive clean
@@ -142,14 +146,25 @@ test-all: test kernel test-emu megadrive test-md test-md-auto
 # Runs BlastEm under Xvfb with OpenGL disabled. A timeout exit (rc=124)
 # means the ROM ran without crashing — that's a pass.
 BLASTEM ?= blastem
+
+# Helper: write a minimal BlastEm config for headless testing.
+# Disables OpenGL (avoids "Failed to set vsync" dialog under software rendering).
+# BlastEm reads user config from $HOME/.config/blastem/blastem.cfg (XDG path).
+define BLASTEM_HEADLESS_CFG
+video {\n\tgl off\n\tvsync off\n}\nsystem {\n\tram_init zero\n}
+endef
+BLASTEM_CFG_DIR = /tmp/blastem-test-home/.config/blastem
+
 test-md: megadrive
 	@echo "=== test-md: headless BlastEm boot ==="
-	@Xvfb :57 -screen 0 640x480x24 >/dev/null 2>&1 & xvfb_pid=$$!; \
+	@mkdir -p $(BLASTEM_CFG_DIR); \
+	printf '$(BLASTEM_HEADLESS_CFG)' > $(BLASTEM_CFG_DIR)/blastem.cfg; \
+	Xvfb :57 -screen 0 640x480x24 >/dev/null 2>&1 & xvfb_pid=$$!; \
 	sleep 1; \
-	DISPLAY=:57 LIBGL_ALWAYS_SOFTWARE=1 SDL_AUDIODRIVER=dummy \
-		timeout 5 $(BLASTEM) pal/megadrive/genix-md.bin >/dev/null 2>&1; \
+	HOME=/tmp/blastem-test-home DISPLAY=:57 LIBGL_ALWAYS_SOFTWARE=1 SDL_AUDIODRIVER=dummy \
+		timeout -k 3 5 $(BLASTEM) pal/megadrive/genix-md.bin >/dev/null 2>&1; \
 	rc=$$?; kill $$xvfb_pid 2>/dev/null; wait $$xvfb_pid 2>/dev/null; \
-	if [ $$rc -eq 124 ]; then echo "OK (ROM ran 5s without crash)"; \
+	if [ $$rc -eq 124 ] || [ $$rc -eq 137 ]; then echo "OK (ROM ran 5s without crash)"; \
 	elif [ $$rc -eq 0 ]; then echo "OK"; \
 	else echo "FAIL (exit code $$rc)"; exit 1; fi
 
