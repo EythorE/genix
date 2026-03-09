@@ -57,6 +57,10 @@ a compiler and libgcc that only emit base 68000 instructions.
 sudo apt-get install build-essential libmpc-dev texinfo
 ```
 
+If `apt` cannot download packages (e.g., network restrictions, broken
+mirrors), see [Building Without apt](#building-without-apt) below for a
+fully self-contained approach that only needs `build-essential`.
+
 ### Download Sources
 
 ```bash
@@ -180,6 +184,78 @@ hangs. Debugging this is painful because the code looks correct.
 | libgcc | Contains 68020 instructions | 68000 only |
 | BSR.L emitted? | Yes (causes hang) | No |
 | 32/32 divide | DIVS.L (68020 hardware) | Software loop |
+
+---
+
+## Building Without apt
+
+If `apt` is unavailable or broken (common in CI containers, restricted
+networks, or when mirrors are down), you can build the toolchain with
+**no apt dependencies beyond `build-essential`**. The trick is two-fold:
+
+1. **GMP/MPFR/MPC** — download from GNU mirrors and place them inside
+   the GCC source tree. GCC's build system detects them and builds them
+   in-tree, so system `-dev` packages are not needed.
+2. **texinfo** (`makeinfo`) — only needed for documentation. Pass
+   `MAKEINFO=true` to skip info page generation.
+
+```bash
+mkdir -p ~/buildtools-m68k-elf/{src,build}
+cd ~/buildtools-m68k-elf/src
+
+# Download all sources from ftp.gnu.org
+wget https://ftp.gnu.org/gnu/binutils/binutils-2.43.tar.gz
+wget https://ftp.gnu.org/gnu/gcc/gcc-14.2.0/gcc-14.2.0.tar.gz
+wget https://ftp.gnu.org/gnu/gmp/gmp-6.2.1.tar.xz
+wget https://ftp.gnu.org/gnu/mpfr/mpfr-4.2.1.tar.gz
+wget https://ftp.gnu.org/gnu/mpc/mpc-1.3.1.tar.gz
+
+# Extract everything
+tar -xzf binutils-2.43.tar.gz
+tar -xzf gcc-14.2.0.tar.gz
+tar -xf  gmp-6.2.1.tar.xz
+tar -xzf mpfr-4.2.1.tar.gz
+tar -xzf mpc-1.3.1.tar.gz
+
+# Symlink GMP/MPFR/MPC into the GCC source tree
+# (GCC's configure detects these and builds them in-tree)
+ln -sf ../gmp-6.2.1  gcc-14.2.0/gmp
+ln -sf ../mpfr-4.2.1 gcc-14.2.0/mpfr
+ln -sf ../mpc-1.3.1  gcc-14.2.0/mpc
+```
+
+Then follow the normal [Build](#build) steps above, but append
+`MAKEINFO=true` to every `configure` and `make` command:
+
+```bash
+export PATH=~/buildtools-m68k-elf/bin:$PATH
+
+# 1. binutils
+mkdir -p ~/buildtools-m68k-elf/build/binutils && cd $_
+~/buildtools-m68k-elf/src/binutils-2.43/configure \
+    --target=m68k-elf \
+    --prefix=$HOME/buildtools-m68k-elf \
+    --disable-nls --disable-werror MAKEINFO=true
+make -j$(nproc) MAKEINFO=true && make install MAKEINFO=true
+
+# 2. GCC + libgcc
+mkdir -p ~/buildtools-m68k-elf/build/gcc && cd $_
+~/buildtools-m68k-elf/src/gcc-14.2.0/configure \
+    --target=m68k-elf \
+    --prefix=$HOME/buildtools-m68k-elf \
+    --disable-threads \
+    --enable-languages=c \
+    --disable-shared \
+    --disable-libquadmath --disable-libssp --disable-libgcj \
+    --disable-gold --disable-libmpx --disable-libgomp --disable-libatomic \
+    --with-cpu=68000 MAKEINFO=true
+make -j$(nproc) all-gcc MAKEINFO=true
+make -j$(nproc) all-target-libgcc MAKEINFO=true
+make install-gcc MAKEINFO=true
+make install-target-libgcc MAKEINFO=true
+```
+
+This produces the exact same toolchain as the normal build.
 
 ---
 
