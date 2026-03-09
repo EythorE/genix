@@ -8,7 +8,9 @@ int main(int argc, char **argv)
     (void)argc;
     (void)argv;
 
-    const char msg[] = "Hello from userspace!\n";
+    /* Use pointer to string literal (in .rodata) — avoids unaligned
+     * move.l that m68k-linux-gnu-gcc generates for odd-length stack arrays */
+    static const char msg[] = "Hello from userspace!\n";
     write(1, msg, sizeof(msg) - 1);
     return 0;
 }
