@@ -276,6 +276,67 @@ linker scripts, different memory layout). Always run both.
 
 ---
 
+## Decision: spawn() Instead of vfork()+exec() (March 2026)
+
+**Date:** Phase 2b implementation
+**Status:** Current
+
+The original plan was vfork()+exec() — the standard no-MMU pattern where
+the child shares the parent's address space until exec(). We implemented
+`vfork_save`/`vfork_restore` (setjmp/longjmp-style assembly) but
+discovered a fundamental problem on the 68000:
+
+**The crash:** vfork() returns twice (once in parent, once in child).
+The child then calls do_exec(), which pushes stack frames. When
+exec_leave() fires (child exits), vfork_restore jumps back to the
+parent's saved SP — but the child's exec() stack frames have
+**overwritten** the parent's stack. The parent resumes into garbage.
+
+This is the same class of bug that made FUZIX's fork() unfindable.
+
+**Solution:** `do_spawn()` — a combined vfork+exec that never returns
+to the child. The parent calls `do_spawn(path, argv)`, which:
+1. Allocates a child process entry
+2. Copies parent state (FDs, cwd)
+3. Switches `curproc` to child
+4. Calls `do_exec()` directly (blocks until child exits)
+5. Makes child a zombie, switches back to parent
+6. Returns child PID (parent reaps with `do_waitpid()`)
+
+This is single-tasking: the parent blocks while the child runs. But it's
+safe because there's no "return twice" and no stack overlap. When we add
+preemptive scheduling later, spawn() becomes the entry point for creating
+new processes — we just won't block the parent.
+
+**Trade-off:** No POSIX vfork() semantics (child can't modify parent's
+address space before exec). In practice this doesn't matter — the only
+portable use of vfork() is vfork→exec anyway.
+
+---
+
+## Decision: Pipes — Circular Buffer, No Blocking (March 2026)
+
+**Date:** Phase 2c implementation
+**Status:** Current
+
+Pipes use a 512-byte circular buffer with `uint8_t` head/tail indices
+(natural wrap at 256 — wait, we use `uint16_t` indices with `% PIPE_SIZE`
+masking). Up to 4 pipes (`MAXPIPE`).
+
+**Current limitation:** Since the system is single-tasking, pipes can't
+block. `pipe_read()` returns 0 (EOF) when the buffer is empty and the
+write end is closed. `pipe_write()` fills up to available space.
+
+**Why 512 bytes:** Large enough for shell pipelines (`ls | wc`), small
+enough to not eat into the 64 KB main RAM. The pipe table (4 × ~520
+bytes) uses ~2 KB total.
+
+**When we add preemptive scheduling:** `pipe_read()` on an empty pipe
+with open write end will sleep (put process in P_WAIT). `pipe_write()`
+on a full pipe will sleep. This is the standard Unix pipe model.
+
+---
+
 ## Decision: Preemptive Round-Robin Scheduler (Planned)
 
 **Date:** Plan phase
@@ -289,6 +350,10 @@ Simple, fair, proven. ~50 lines of C + ~30 lines of assembly.
 requires every program to yield voluntarily, which breaks POSIX
 expectations (a busy loop would hang the system).
 
+**Prerequisite:** Process table and spawn/waitpid are done (Phase 2b).
+The scheduler needs per-process saved register state and a ready queue,
+both of which exist in the process table.
+
 ---
 
 ## Project Status (March 2026)
@@ -299,9 +364,9 @@ The project phases are tracked below and in the individual docs.
 |-------|-------------|--------|
 | **Phase 1** | Workbench emulator (Musashi SBC) | **Complete** |
 | **Phase 2a** | Kernel core + binary loading + single-tasking exec | **Complete** |
-| **Phase 2b** | Multitasking (vfork, scheduler, waitpid) | **Next** |
-| **Phase 2c** | Pipes and I/O redirection | Planned |
-| **Phase 2d** | Signals and job control | Planned |
+| **Phase 2b** | Multitasking (spawn, waitpid, process table) | **Complete** |
+| **Phase 2c** | Pipes and I/O redirection | **Complete** (pipes done, redirection planned) |
+| **Phase 2d** | Signals and job control | **Next** |
 | **Phase 2e** | TTY subsystem (port Fuzix tty.c) | Planned |
 | **Phase 2f** | Fuzix libc + utilities | Planned |
 | **Phase 3** | Mega Drive port (PAL drivers from Fuzix) | **Complete** |
@@ -313,17 +378,20 @@ The project phases are tracked below and in the individual docs.
 - Indirect blocks in both kernel and mkfs (files > 12 KB work)
 - exec() loads and runs user programs (hello, echo, cat, wc, head, levee) from disk
 - Built-in debug shell with ls, cat, echo, mkdir, mem, help, halt
+- Process table (16 slots) with spawn(), waitpid(), exit()
+- Pipes (512-byte circular buffer, up to 4 pipes)
+- Shell `spawn` and `pipe` commands for launching programs and piping output
 - Terminal raw mode via termios (tcgetattr/tcsetattr → ioctl)
 - Full libc: stdio (FILE*), stdlib (malloc/free), string, ctype, termios
 - Levee (vi clone) runs on workbench emulator with ANSI terminal support
-- 249 host tests passing (string, mem, exec), plus automated guest tests
+- 283 host tests passing (string, mem, exec, proc), plus automated guest tests
 - Both workbench and Mega Drive builds clean
 - Saturn keyboard input on Mega Drive, UART on workbench
 - SRAM works with standard Sega mapper on all tested targets
 
-**What's next:** vfork() + waitpid() to enable a proper shell that can
-launch programs and wait for them to finish. Then preemptive scheduling,
-pipes, and signals to get a usable interactive Unix environment.
+**What's next:** Preemptive scheduling (timer-driven context switch) to
+allow true multitasking. Then signals and job control, I/O redirection,
+and TTY subsystem to get a usable interactive Unix environment.
 
 ---
 
