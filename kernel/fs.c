@@ -235,12 +235,12 @@ static uint16_t bmap(struct inode *ip, uint32_t offset, int alloc)
             ip->dirty = 1;
         }
         struct buf *ib = bread(0, ip->indirect);
+        /* On 68000 (big-endian), uint16_t in data[] is already native order */
         uint16_t *ptrs = (uint16_t *)ib->data;
-        uint16_t blk = (ptrs[bn * 2] << 8) | ptrs[bn * 2 + 1];  /* big-endian */
+        uint16_t blk = ptrs[bn];
         if (blk == 0 && alloc) {
             blk = balloc();
-            ptrs[bn * 2] = (blk >> 8) & 0xFF;
-            ptrs[bn * 2 + 1] = blk & 0xFF;
+            ptrs[bn] = blk;
             ib->dirty = 1;
             bwrite(ib);
         }

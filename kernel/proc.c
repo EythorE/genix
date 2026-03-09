@@ -331,6 +331,47 @@ int32_t syscall_dispatch(uint32_t num, uint32_t a1, uint32_t a2,
         if (!of->inode) return -EBADF;
         return fs_stat(of->inode, (void *)a2);
     }
+    case SYS_IOCTL: {
+        if (a1 >= MAXFD || !curproc->fd[a1]) return -EBADF;
+        /* Console fds (0-2) without inode are console devices */
+        if (!curproc->fd[a1]->inode && a1 < 3)
+            return devtab[DEV_CONSOLE].ioctl(0, (int)a2, (void *)a3);
+        if (curproc->fd[a1]->inode &&
+            curproc->fd[a1]->inode->type == FT_DEV) {
+            int major = curproc->fd[a1]->inode->dev_major;
+            if (major < NDEV)
+                return devtab[major].ioctl(
+                    curproc->fd[a1]->inode->dev_minor, (int)a2, (void *)a3);
+        }
+        return -ENOTTY;
+    }
+    case SYS_SIGNAL:
+        /* Basic signal stub: store handler, return 0
+         * a1 = signal number, a2 = handler address */
+        (void)a1; (void)a2;
+        return 0;
+    case SYS_KILL:
+        /* Stub: just return 0 */
+        (void)a1; (void)a2;
+        return 0;
+    case SYS_FCNTL:
+        /* Stub: return 0 for F_GETFL, etc. */
+        return 0;
+    case SYS_GETDENTS:
+        if (a1 >= MAXFD || !curproc->fd[a1]) return -EBADF;
+        if (!curproc->fd[a1]->inode) return -EBADF;
+        return fs_getdents(curproc->fd[a1]->inode, (void *)a2,
+                          curproc->fd[a1]->offset, a3);
+    case SYS_GETCWD:
+        /* Simple getcwd stub - return "/" */
+        if (a1 && a2 >= 2) {
+            ((char *)a1)[0] = '/';
+            ((char *)a1)[1] = '\0';
+            return (int32_t)a1;
+        }
+        return -EINVAL;
+    case SYS_PIPE:
+        return -ENOSYS;  /* TODO: implement in Phase 2c */
     case SYS_TIME:
         return pal_timer_ticks();
     default:
