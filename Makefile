@@ -1,6 +1,6 @@
 # Genix top-level Makefile
 
-.PHONY: all emu kernel tools libc apps disk run test test-emu test-emu-strict test-md test-md-auto test-md-screenshot megadrive clean
+.PHONY: all emu kernel tools libc apps disk run test test-emu test-emu-strict test-md test-md-auto test-md-screenshot test-all megadrive clean
 
 all: emu kernel tools apps disk
 
@@ -127,6 +127,12 @@ test-md-screenshot: libc tools
 	@$(MAKE) -C pal/megadrive DISK_IMG=../../disk-md.img
 	@$(MAKE) -C apps clean
 	@$(MAKE) -C apps
+
+# Full testing ladder — runs all automated tests in order.
+# Levels 1-3 use host/emulator, levels 4-6 use BlastEm.
+# Level 6 (test-md-auto) is the primary quality gate.
+test-all: test kernel test-emu megadrive test-md test-md-auto
+	@echo "=== All tests passed ==="
 
 # Boot Mega Drive ROM headless in BlastEm (~5s smoke test)
 # Runs BlastEm under Xvfb with OpenGL disabled. A timeout exit (rc=124)

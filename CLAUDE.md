@@ -209,16 +209,26 @@ m68k-linux-gnu-gdb -q --tui \
 
 1. **`make test`** — host unit tests (logic, no hardware)
 2. **`make kernel`** — cross-compilation check (catches ABI/declaration errors)
-3. **`make run`** — workbench emulator (interactive smoke test)
-4. **`make test-md`** — headless BlastEm boot (~5s, no display needed)
-5. **`make megadrive` + BlastEm** — interactive Mega Drive ROM validation
-6. **Real hardware** — flash cartridge on a real Mega Drive
+3. **`make test-emu`** — workbench autotest (STRICT_ALIGN + AUTOTEST)
+4. **`make megadrive`** — Mega Drive build (link errors, memory layout)
+5. **`make test-md`** — headless BlastEm boot (~5s, crash detection)
+6. **`make test-md-auto`** — BlastEm autotest (**primary quality gate**)
+7. **Real hardware** — flash cartridge on a real Mega Drive
 
-Steps 1–3 are for rapid iteration. Step 4 is automated and catches address
-errors, illegal instructions, and bus faults in the Mega Drive build without
-a display. Step 5 adds interactive VDP, keyboard, and SRAM validation.
-Step 6 catches everything emulators miss (TMSS, mapper quirks, Z80 bus
-conflicts). See `docs/megadrive.md` for details.
+Or run the full ladder at once: **`make test-all`**
+
+Steps 1–3 are for rapid iteration. **Steps 4–6 must pass before
+considering any change done.** Step 6 (`test-md-auto`) is the primary
+quality gate — it exercises the real Mega Drive code path. Step 7
+catches hardware quirks that even BlastEm misses.
+
+### Emu/BlastEm discrepancy rule
+
+If a test passes in the workbench emulator but fails in BlastEm (or
+vice versa), this is a **bug to investigate**, not just a test failure.
+Root-cause the discrepancy and improve the emulator to match real 68000
+behavior more closely. See `docs/automated-testing.md` for the full
+investigation procedure.
 
 ---
 
@@ -242,6 +252,10 @@ These guidelines are critical for making this project succeed. Follow them stric
 - **Also run `make megadrive`**: The Mega Drive build links different files and
   has a different memory layout. A change can build fine for workbench but fail
   for megadrive (or vice versa). Always verify both.
+- **BlastEm is mandatory**: Run `make test-md-auto` (or `make test-all`) before
+  considering any change done. The workbench emulator is for iteration speed;
+  BlastEm validates real Mega Drive behavior. If a test passes in one but fails
+  in the other, investigate the discrepancy — see `docs/automated-testing.md`.
 
 ### 2. Keep the kernel small and flat
 
