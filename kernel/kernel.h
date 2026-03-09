@@ -292,6 +292,9 @@ struct buf {
     uint8_t  dev;
     uint8_t  dirty;
     uint8_t  valid;
+    uint8_t  _pad[3]; /* align data[] to offset 8 — fs code casts
+                       * data+offset to struct pointers with uint16/32
+                       * fields, and the 68000 faults on misaligned access */
     uint8_t  data[BLOCK_SIZE];
 };
 
