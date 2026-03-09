@@ -16,11 +16,13 @@ apps/wc
 apps/head
 apps/true
 apps/false
+apps/imshow
 apps/levee/levee
 tests/test_string
 tests/test_mem
 tests/test_exec
 tests/test_proc
+tests/test_vdp
 test-md-screenshot*.png
 _levee_source/
 apps/levee/levee
