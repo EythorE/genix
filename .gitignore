@@ -21,3 +21,5 @@ tests/test_string
 tests/test_mem
 tests/test_exec
 test-md-screenshot*.png
+_levee_source/
+apps/levee/levee
