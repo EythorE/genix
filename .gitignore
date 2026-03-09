@@ -20,6 +20,7 @@ apps/levee/levee
 tests/test_string
 tests/test_mem
 tests/test_exec
+tests/test_proc
 test-md-screenshot*.png
 _levee_source/
 apps/levee/levee
