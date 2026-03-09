@@ -100,9 +100,11 @@ test-md-auto: libc tools
 	exit $$test_rc
 
 # Visual Mega Drive test — boot AUTOTEST ROM under Xvfb, capture screenshot.
-# Tries BlastEm's native screenshot (p key → PNG) first, falls back to scrot.
+# Uses scrot to capture the BlastEm window. BlastEm's native screenshot (p key)
+# can't be triggered externally because SDL2 uses XInput2 for keyboard input,
+# which doesn't receive XTest/xdotool synthetic key events under Xvfb.
 # Produces test-md-screenshot.png for visual inspection.
-# Requires: Xvfb, xdotool. Optional: scrot (fallback).
+# Requires: Xvfb, xdotool, scrot.
 # Always restores the normal (non-AUTOTEST) ROM when done, even on failure.
 test-md-screenshot: libc tools
 	@$(MAKE) -C apps clean
@@ -112,7 +114,7 @@ test-md-screenshot: libc tools
 	@$(MAKE) -C pal/megadrive DISK_IMG=../../disk-md.img EXTRA_CFLAGS=-DAUTOTEST
 	@echo "=== test-md-screenshot: booting ROM under Xvfb ==="
 	@mkdir -p $(BLASTEM_CFG_DIR); \
-	printf '$(BLASTEM_SCREENSHOT_CFG)' > $(BLASTEM_CFG_DIR)/blastem.cfg; \
+	printf '$(BLASTEM_HEADLESS_CFG)' > $(BLASTEM_CFG_DIR)/blastem.cfg; \
 	Xvfb :58 -screen 0 640x480x24 >/dev/null 2>&1 & xvfb_pid=$$!; \
 	sleep 1; \
 	HOME=/tmp/blastem-test-home DISPLAY=:58 LIBGL_ALWAYS_SOFTWARE=1 SDL_AUDIODRIVER=dummy \
@@ -120,23 +122,12 @@ test-md-screenshot: libc tools
 	sleep 7; \
 	wid=$$(DISPLAY=:58 xdotool search --name "BlastEm" 2>/dev/null | tail -1); \
 	if [ -n "$$wid" ]; then \
-		DISPLAY=:58 xdotool windowfocus --sync "$$wid" 2>/dev/null; \
-		sleep 0.5; \
-		DISPLAY=:58 xdotool key --window "$$wid" p 2>/dev/null; \
-		sleep 1; \
-	fi; \
-	if [ -f $(BLASTEM_NATIVE_SCREENSHOT) ]; then \
-		cp $(BLASTEM_NATIVE_SCREENSHOT) test-md-screenshot.png; \
-		echo "  (native BlastEm screenshot)"; \
-	elif [ -n "$$wid" ]; then \
+		DISPLAY=:58 xdotool windowfocus --sync "$$wid" 2>/dev/null; sleep 0.5; \
 		DISPLAY=:58 scrot -u test-md-screenshot.png 2>/dev/null || \
 		DISPLAY=:58 scrot test-md-screenshot.png 2>/dev/null || true; \
-		echo "  (scrot fallback)"; \
 	else \
 		DISPLAY=:58 scrot test-md-screenshot.png 2>/dev/null || true; \
-		echo "  (scrot full-screen fallback)"; \
 	fi; \
-	rm -f $(BLASTEM_NATIVE_SCREENSHOT) 2>/dev/null; \
 	kill $$blastem_pid 2>/dev/null; kill -9 $$blastem_pid 2>/dev/null; wait $$blastem_pid 2>/dev/null; \
 	kill $$xvfb_pid 2>/dev/null; wait $$xvfb_pid 2>/dev/null; \
 	if [ -f test-md-screenshot.png ]; then \
@@ -162,12 +153,10 @@ BLASTEM ?= blastem
 
 # Helper: BlastEm config for screenshot test (needs Xvfb + a window).
 # Disables OpenGL (avoids "Failed to set vsync" dialog under software rendering).
-# Configures native screenshot path so 'p' key saves PNG directly.
-define BLASTEM_SCREENSHOT_CFG
-video {\n\tgl off\n\tvsync off\n}\nsystem {\n\tram_init zero\n}\nui {\n\tscreenshot_path /tmp/blastem-test-home\n\tscreenshot_template genix-native-screenshot.png\n}
+define BLASTEM_HEADLESS_CFG
+video {\n\tgl off\n\tvsync off\n}\nsystem {\n\tram_init zero\n}
 endef
 BLASTEM_CFG_DIR = /tmp/blastem-test-home/.config/blastem
-BLASTEM_NATIVE_SCREENSHOT = /tmp/blastem-test-home/genix-native-screenshot.png
 
 test-md: megadrive
 	@echo "=== test-md: headless BlastEm boot ==="
