@@ -510,264 +510,336 @@ detect which mode is available and adjust:
 
 ---
 
-## 10. VDP Graphics Driver — /dev/vdp
+## 10. VDP Graphics — A Thin, Fun API (Not SGDK)
 
-### Current state
+### Why not SGDK?
 
-Genix uses the VDP exclusively for text console output (40×28 tiles,
-8×8 font). The entire graphics stack is buried in assembly (vdp.S,
-devvt.S, dbg_output.S) with no userspace API. There's no /dev/vdp
-device.
+SGDK is a bare-metal game engine — it owns interrupts, memory, boot,
+and all hardware. Extracting its VDP functions into a userspace library
+under an OS means building a shim layer that fights SGDK's design at
+every turn: replacing its interrupt model, memory allocator, boot
+sequence, Z80 control, and timer system. That's weeks of adaptation
+work for questionable gain.
 
-The FUZIX Mega Drive branch has a working `devvdp.c` that exposes a
-minimal device driver (open/write/ioctl with VDPCLEAR and VDPRESET),
-plus a working `imshow` app that displays images using direct VDP
-register writes from userspace assembly routines.
+More importantly: **SGDK hides the hardware behind abstractions.** For a
+learning project, that defeats the purpose. We want to understand the
+VDP, not wrap it in someone else's engine.
 
-### Design goals
+The right approach is a thin API — ~10 functions, ~200 lines — where
+each function is 2-5 VDP register writes. You read the implementation
+and you **see** what the hardware does. This is how Fuzix handled
+graphics on the Mega Drive: a minimal `/dev/vdp` device with a few
+ioctls, and an `imshow` app that drove VDP registers directly.
 
-1. **POSIX-ish device interface** — programs open /dev/vdp, use
-   write() and ioctl() for VDP operations
-2. **Safe multiplexing** — kernel mediates VDP access so text console
-   and graphics programs don't step on each other
-3. **SGDK compatibility layer** — provide enough API surface that SGDK
-   demos can be ported with minimal changes
-4. **Framebuffer mode** — software framebuffer (like SGDK's BMP engine)
-   for pixel-level drawing
+### What Fuzix did (our starting point)
 
-### VDP hardware summary
+The FUZIX megadrive branch had:
 
-```
-Ports:
-  VDP_DATA    = 0xC00000  (read/write tile, palette, sprite data)
-  VDP_CONTROL = 0xC00004  (commands, register writes, status)
+- **`devvdp.c`** — a character device driver for `/dev/vdp` with two
+  ioctls: `VDPCLEAR` (reset the display) and `VDPRESET` (restore text
+  console). Minimal by design.
+- **`imshow`** — a userspace program that displayed tile-based images
+  by writing VDP register commands through assembly helper routines.
+  It loaded tile patterns into VRAM, set up palettes, and mapped tiles
+  to the nametable. No framebuffer, no abstractions — just the hardware.
+- **VDP text driver** (`devvt.S`, `vdp.S`) — the same assembly routines
+  Genix already uses, adapted directly from Fuzix. These handle
+  `plot_char`, `scroll_up`, `cursor_on/off`, `VDP_reinit`, etc.
 
-VRAM (64 KB video RAM):
-  0x0000–0xBFFF  Tile patterns (font + graphics tiles)
-  0xC000–0xDFFF  Plane A nametable (main console / game background)
-  0xE000–0xEFFF  Plane B nametable (debug overlay / parallax)
-  0xF000–0xF7FF  Sprite attribute table (SAT)
-  0xFC00–0xFDFF  H-scroll table
+Reference: <https://github.com/EythorE/FUZIX/tree/megadrive/Kernel/platform/platform-megadrive>
 
-CRAM (128 bytes): 4 palettes × 16 colors (9-bit RGB)
-VSRAM (80 bytes): per-column vertical scroll offsets
+Genix already has all the low-level VDP assembly from Fuzix. What's
+missing is the userspace interface.
 
-Display: 320×224 pixels (H40 mode), 40×28 tiles of 8×8 pixels
-Sprites: 80 max, 8×8 to 32×32 pixels, 4 palettes, priority, H/V flip
-DMA: bulk transfer from 68000 RAM/ROM → VRAM/CRAM/VSRAM
-```
+### The Genix graphics API: `<gfx.h>`
 
-### Proposed /dev/vdp interface
-
-**Device model:** /dev/vdp is a character device. Opening it switches
-the VDP from text console mode to graphics mode. Closing it restores
-the text console. Only one process can have /dev/vdp open at a time.
-
-**ioctl commands:**
+A fantasy-console-inspired API that maps directly to VDP hardware.
+Think TIC-80/PICO-8 simplicity, but each function is a real VDP
+operation you can read and understand.
 
 ```c
-/* Mode control */
-#define VDP_IOC_SETMODE     1  /* Switch text/tile/bitmap mode */
-#define VDP_IOC_GETMODE     2
+/* gfx.h — Genix graphics library (libc, ~200 lines) */
 
-/* Palette */
-#define VDP_IOC_SETPAL      10  /* Set palette: {pal_num, count, colors[]} */
-#define VDP_IOC_GETPAL      11
+/* Setup */
+int  gfx_open(void);                         /* open /dev/vdp, enter tile mode */
+void gfx_close(void);                        /* restore text console */
 
-/* Tiles */
-#define VDP_IOC_LOADTILES   20  /* Load tile data to VRAM: {dest, count, data} */
-#define VDP_IOC_SETMAP      21  /* Set nametable entries: {plane, x, y, w, h, data} */
-#define VDP_IOC_SCROLL      22  /* Set scroll position: {plane, hscroll, vscroll} */
+/* Tiles (maps to VRAM pattern + nametable writes) */
+void gfx_tiles(int id, const uint8_t *data, int count); /* upload tile patterns */
+void gfx_map(int x, int y, int tile);                   /* place tile on screen */
+void gfx_fill(int x, int y, int w, int h, int tile);    /* fill rect with tile */
 
-/* Sprites */
-#define VDP_IOC_SETSPRITE   30  /* Set sprite attributes: {id, x, y, tile, flags} */
-#define VDP_IOC_MOVESPRITE  31  /* Move sprite: {id, x, y} */
+/* Sprites (maps to Sprite Attribute Table writes) */
+void gfx_sprite(int id, int x, int y, int tile, int flags); /* set sprite */
+void gfx_sprite_move(int id, int x, int y);                  /* move sprite */
+void gfx_sprite_hide(int id);                                /* hide sprite */
 
-/* DMA */
-#define VDP_IOC_DMA         40  /* DMA transfer: {src, dst, len, type} */
+/* Color (maps to CRAM writes) */
+void gfx_palette(int pal, int idx, uint16_t color);    /* set one color */
+void gfx_palette_load(int pal, const uint16_t *colors, int count); /* bulk */
 
-/* Framebuffer (bitmap mode) */
-#define VDP_IOC_FLIP        50  /* Swap double buffers */
-#define VDP_IOC_CLEAR       51  /* Clear framebuffer */
+/* Scrolling (maps to VSRAM / VDP scroll registers) */
+void gfx_scroll(int plane, int sx, int sy);  /* scroll background plane */
 
-/* VBlank sync */
-#define VDP_IOC_WAITVBLANK  60  /* Block until next VBlank */
+/* Sync */
+void gfx_vsync(void);                        /* wait for VBlank */
 
-/* Raw register access (for advanced/SGDK use) */
-#define VDP_IOC_SETREG      70  /* Write VDP register: {reg, value} */
-#define VDP_IOC_GETREG      71
+/* Text (convenience — uses font tiles already in VRAM) */
+void gfx_print(int x, int y, const char *s); /* draw text at tile position */
+void gfx_cls(void);                          /* clear all tiles + sprites */
 ```
 
-**write() on /dev/vdp:** In bitmap mode, write pixel data directly to
-the software framebuffer. In tile mode, write nametable entries. This
-gives a simple `write(fd, pixels, size)` path for image display.
+**That's 15 functions.** Each one is a thin wrapper around a kernel
+ioctl or a direct VDP port write. No DMA queues, no sprite caches,
+no resource compilers. A student can read `gfx_sprite()` and see the
+exact bytes being written to the Sprite Attribute Table.
 
-**read() on /dev/vdp:** Read VDP status, current mode, screen dimensions.
+### How it maps to VDP hardware
 
-### Framebuffer / bitmap mode
+```
+gfx_tiles()        →  write tile patterns to VRAM 0x0000+
+gfx_map()          →  write nametable entry at VRAM 0xC000+ (Plane A)
+gfx_sprite()       →  write to SAT at VRAM 0xF000+
+gfx_palette()      →  write to CRAM (color RAM, 128 bytes)
+gfx_scroll()       →  write to VSRAM (vertical) / VDP reg (horizontal)
+gfx_vsync()        →  block on VBlank interrupt (VDP status register)
+gfx_print()        →  same as gfx_map() using font tile indices
+gfx_cls()          →  zero nametable + SAT (same as VDP_ClearVRAM partial)
+```
 
-SGDK's BMP engine proves this works: fake a 256×160 framebuffer using
-a 32×20 tile grid. Each frame, DMA the tile data from RAM to VRAM during
-VBlank. Double-buffered for flicker-free display.
+Each function is 2–5 register writes. No layers. No magic.
 
-**Memory cost:** ~41 KB (two 20 KB buffers + overhead). This only fits
-with SRAM — the framebuffer lives in SRAM while the kernel and DMA
-engine stay in main RAM.
+### Kernel side: /dev/vdp device
 
-**Without SRAM:** Single-buffered 256×160 = ~20 KB. Possible in main RAM
-if the program is small, but tight. Tile mode (no framebuffer) uses
-almost no extra RAM and is the better fit for most graphics programs.
-
-### Three VDP modes
-
-| Mode | Resolution | RAM cost | Best for |
-|------|-----------|----------|----------|
-| **Text** | 40×28 chars | 0 (uses font tiles) | Console, shell |
-| **Tile** | 320×224 (40×28 tiles) | ~2 KB nametable | Games, imshow |
-| **Bitmap** | 256×160 pixels | 20–41 KB | Drawing, demos |
-
-### SGDK integration strategy
-
-SGDK is a bare-metal framework — it owns the CPU, interrupts, and all
-hardware. We can't use it as-is under Genix. But we can extract its
-**VDP helper functions** as a userspace library:
-
-**What to extract from SGDK (pure VDP logic, no OS dependencies):**
-- `vdp.c` — register configuration, mode setup, scroll control
-- `vdp_bg.c` — background plane/tilemap management
-- `vdp_tile.c` / `vdp_tile_a.s` — tile loading and manipulation
-- `vdp_spr.c` — sprite engine (attribute table management)
-- `pal.c` — palette fade, cycling effects
-- `dma.c` / `dma_a.s` — DMA queue and transfer management
-- `bmp.c` / `bmp_a.s` — software framebuffer engine
-- `sprite_eng.c` — high-level sprite management
-
-**What we must replace (SGDK bare-metal assumptions):**
-- `sys.c` / `sys_a.s` — interrupt handlers, VDP init → use kernel
-- `memory.c` / `memory_a.s` — RAM allocator → use Genix malloc
-- `joy.c` — controller input → use Genix /dev/input or stdin
-- `z80_ctrl.c` — Z80 audio control → kernel manages Z80
-- `timer.c` — VBlank timing → use kernel VDP_IOC_WAITVBLANK
-- Boot code — Genix owns boot
-
-**The shim layer (libsgdk.a for Genix):**
+The kernel provides a character device with exclusive open (only one
+process can do graphics at a time) and a handful of ioctls:
 
 ```c
-/* sgdk_shim.h — Maps SGDK hardware access to Genix /dev/vdp ioctls */
-
-static int vdp_fd = -1;
-
-static inline void VDP_setReg(u16 reg, u8 value) {
-    struct vdp_reg r = { reg, value };
-    ioctl(vdp_fd, VDP_IOC_SETREG, &r);
-}
-
-static inline void VDP_waitVSync(void) {
-    ioctl(vdp_fd, VDP_IOC_WAITVBLANK, 0);
-}
-
-/* DMA queued through kernel to avoid race conditions */
-static inline void DMA_queueDma(u8 type, u32 from, u16 to, u16 len, u16 step) {
-    struct vdp_dma d = { from, to, len, type };
-    ioctl(vdp_fd, VDP_IOC_DMA, &d);
-}
+/* Kernel /dev/vdp ioctls — minimal set */
+#define VDP_IOC_LOADTILES   1  /* Upload tile patterns to VRAM */
+#define VDP_IOC_SETMAP      2  /* Set nametable entries */
+#define VDP_IOC_SETSPRITE   3  /* Set sprite attributes */
+#define VDP_IOC_SETPAL      4  /* Set palette entries */
+#define VDP_IOC_SCROLL      5  /* Set scroll position */
+#define VDP_IOC_WAITVBLANK  6  /* Block until VBlank (for vsync) */
+#define VDP_IOC_CLEAR       7  /* Clear screen (tiles + sprites) */
 ```
 
-This lets SGDK demo code compile against Genix with:
-1. `#include "sgdk_shim.h"` instead of `#include <genesis.h>`
-2. Link with `libsgdk.a` (extracted + adapted SGDK functions)
-3. Open /dev/vdp at program start, close on exit
+**Seven ioctls.** That's the whole kernel interface. The userspace
+`gfx.h` library wraps these into the friendly API above.
 
-### SGDK demos worth porting
+**Why ioctls instead of direct hardware access?** Because this is a
+multitasking OS with job control. The kernel needs to know who owns
+the VDP so it can save/restore state when processes are suspended.
+See Section 10a below.
 
-| Demo | Complexity | Exercises |
-|------|-----------|-----------|
-| Sprite demo | Low | Sprite engine, palette, VBlank sync |
-| Scroll demo | Low | Tile planes, H/V scroll |
-| BMP (3D wireframe) | Medium | Framebuffer mode, line drawing |
-| Image display | Low | Tile loading, palette (like FUZIX imshow) |
-| DMA stress test | Medium | DMA queue, timing |
+### VDP ownership and job control (the key insight)
 
-### Implementation phases
+The VDP is like a terminal — **the foreground process owns it.**
 
-**Phase A — Minimal /dev/vdp (kernel side):**
-1. Add DEV_VDP to device table (kernel/dev.c)
-2. Implement open (exclusive access, switch from text mode)
-3. Implement ioctl for SETPAL, LOADTILES, SETMAP, WAITVBLANK
-4. Implement close (restore text console)
-5. Port imshow from FUZIX as first graphics app
+When you press Ctrl+Z on a graphics program:
 
-**Phase B — Sprite and scroll support:**
-6. Add SETSPRITE, MOVESPRITE ioctls
-7. Add SCROLL ioctl (per-plane H/V scroll)
-8. Add DMA ioctl (queued, executed during VBlank)
-9. Write a simple sprite demo
+```
+1. Keyboard generates SIGTSTP → delivered to foreground process group
+2. Graphics program stops (P_STOPPED)
+3. Kernel saves VDP state:
+   - 24 VDP registers (24 bytes)
+   - CRAM palette (128 bytes)
+   - VSRAM scroll (80 bytes)
+   - Sprite Attribute Table (640 bytes, 80 sprites × 8 bytes)
+   Total: ~872 bytes — fits easily in the proc struct or a small alloc
+   (Nametable and tile pattern data stay in VRAM — only the graphics
+    process was writing to them, and text mode uses different VRAM regions)
+4. Kernel restores text console (VDP_reinit + redraw)
+5. Shell prompt appears — user can do other work
 
-**Phase C — Framebuffer mode (needs SRAM):**
-10. Implement bitmap mode (BMP engine adapted from SGDK)
-11. Software framebuffer in SRAM, DMA to VRAM on VBlank
-12. write() path for direct pixel data
-13. Port SGDK 3D wireframe demo
+When the user types `fg %1`:
+1. Kernel restores saved VDP state (registers, palette, sprites, scroll)
+2. Graphics program receives SIGCONT, resumes from where it stopped
+3. Display returns to the graphics program's last frame
+```
 
-**Phase D — SGDK compatibility library:**
-14. Extract SGDK VDP/sprite/palette/DMA functions
-15. Build libsgdk.a with Genix shim layer
-16. Port 2-3 SGDK sample programs
-17. Document the API for Genix graphics programming
+This is exactly how Unix manages terminal ownership — the foreground
+process group gets the terminal, background processes get SIGTTOU if
+they try to write. Same concept, just tiles instead of text.
+
+**What goes in the proc struct:**
+
+```c
+/* VDP state — saved on SIGTSTP, restored on SIGCONT */
+struct vdp_state {
+    uint8_t  regs[24];        /* VDP registers */
+    uint16_t cram[64];        /* Color RAM (4 palettes × 16 colors) */
+    uint16_t vsram[40];       /* Vertical scroll */
+    uint8_t  sat[640];        /* Sprite Attribute Table */
+    uint8_t  mode;            /* 0=text, 1=tile, 2=bitmap */
+};  /* Total: ~872 bytes */
+
+struct proc {
+    /* ... existing fields ... */
+    struct vdp_state *vdp;    /* NULL if process doesn't use graphics */
+};
+```
+
+The `vdp_state` is allocated from kernel heap only when a process
+opens `/dev/vdp`. Most processes don't use graphics and pay zero cost.
+
+### How Fuzix solved this (reference)
+
+Fuzix's approach on constrained platforms (Z80, 6809, 68000):
+
+- **Text console first, graphics optional.** Every platform starts with
+  a working text console. Graphics is a separate device (`/dev/vdp`),
+  never mixed into the TTY path.
+- **Assembly for VDP operations.** All per-platform I/O is in tight
+  assembly loops (16-bit writes, DBRA counters). Genix already has
+  these from Fuziz's `vdp.S` and `devvt.S`.
+- **Line discipline independent of display.** Fuzix's `tty.c` handles
+  cooked/raw mode, echo, signals — and calls down to platform-specific
+  `tty_putc()` for output. The TTY layer doesn't know about VDP tiles.
+- **Minimal /dev/vdp.** Fuzix's `devvdp.c` had two ioctls. That was
+  enough to build `imshow` and graphics demos. Start minimal, grow.
+
+### Implementation plan
+
+**Phase A — Kernel /dev/vdp + imshow (first graphics app):**
+1. Add DEV_VDP to device table (`kernel/dev.c`), exclusive open
+2. Implement LOADTILES, SETMAP, SETPAL, WAITVBLANK ioctls
+3. Implement close (restore text console via `VDP_reinit`)
+4. Write `gfx.h` userspace library (wraps ioctls)
+5. Port `imshow` from Fuzix — display a tile image from ROM
+6. Host test for gfx_* API (mock VDP, test tile math)
+
+**Phase B — Sprites, scrolling, demo apps:**
+7. Implement SETSPRITE, SCROLL ioctls
+8. Write a sprite demo (bouncing sprites with scrolling background)
+9. Write `gfx_print()` — text on graphics screen (uses existing font)
+
+**Phase C — VDP save/restore for job control:**
+10. Add `struct vdp_state` and save/restore on SIGTSTP/SIGCONT
+11. Ctrl+Z a graphics program → text console resumes
+12. `fg` → graphics state restored, program continues
+
+**Phase D — More apps (see Section 12):**
+13. Tiny BASIC with graphics commands
+14. Simple game port (sprite-based)
+15. MicroPython (stretch, needs large SRAM)
 
 ---
 
 ## 11. Updated Master Plan
 
-Incorporating VDP graphics, SRAM expansion, and app porting into the
-overall project timeline:
+This is a **multitasking OS with real job control.** You can run a
+graphics demo, press Ctrl+Z, do some work in the shell, and `fg` to
+resume the demo. That's the north star — everything below serves it.
+
+The phases are ordered by dependency, not by difficulty:
 
 ```
-PHASE 2d-LITE — Core kernel completion (prerequisite for everything):
-  1. Preemptive scheduling (timer/VBlank interrupt)
-  2. Real vfork() + exec()
-  3. Blocking pipes
-  4. Basic signals (SIGINT, SIGTERM, SIGKILL)
-  5. SYS_GETDENTS + opendir/readdir
+PHASE 2d — Signals & job control (THE critical path):
+  1. P_STOPPED state + SIGTSTP/SIGCONT handling
+  2. Process groups (pgrp field in proc struct)
+  3. Signal delivery mechanism (trampoline on user stack)
+  4. Basic signals: SIGINT(^C), SIGTSTP(^Z), SIGCONT, SIGKILL, SIGTERM
+  5. Preemptive scheduling (VBlank on MD, timer on workbench)
+  6. Blocking pipe I/O (readers/writers sleep instead of returning 0)
+  7. Real vfork() (parent freezes, child shares memory until exec)
 
-PHASE 2f — App porting wave 1 (simple filters):
-  6. Add getopt, strtol, perror, strerror to libc
-  7. Port Tier 0 utilities (tail, tee, grep, sort, cut, tr, etc.)
-  8. Port/write a real shell
-  9. Add ported apps to AUTOTEST
+  → After this: Ctrl+C kills, Ctrl+Z stops, `fg`/`bg`/`jobs` work
 
-PHASE 3b — SRAM expansion:
- 10. SRAM size detection at boot (probe write/readback)
- 11. USER_BASE/USER_TOP in SRAM when available
- 12. Detect 8-bit vs 16-bit SRAM access mode
- 13. Update PAL to expose SRAM config to kernel
- 14. Test levee on Mega Drive with SRAM
+PHASE 2e — TTY subsystem (connects keyboard to job control):
+  8. Port Fuzix tty.c line discipline (cooked/raw, echo, erase)
+  9. Signal generation in TTY layer (^C→SIGINT, ^Z→SIGTSTP to fg pgrp)
+ 10. Interrupt-driven keyboard via VBlank (not polling busy-loop)
+ 11. /dev/null, /dev/tty, isatty()
 
-PHASE 3c — VDP graphics driver:
- 15. /dev/vdp device with exclusive open + mode switch
- 16. Palette, tile loading, nametable ioctls
- 17. VBlank sync ioctl
- 18. Port imshow from FUZIX
- 19. Sprite and scroll ioctls
- 20. DMA ioctl (queued, VBlank-safe)
+  → After this: proper terminal behavior, programs can catch signals
 
-PHASE 3d — Framebuffer + SGDK (needs SRAM):
- 21. Software framebuffer in SRAM
- 22. BMP engine (adapted from SGDK)
- 23. Extract SGDK VDP functions → libsgdk.a
- 24. Port SGDK demos (sprites, scrolling, 3D wireframe)
+PHASE 2f — Libc + app porting wave 1:
+ 12. Add getopt, strtol, perror, strerror, opendir/readdir to libc
+ 13. Port Tier 0 utilities (tail, tee, cut, tr, uniq, etc.)
+ 14. Port/write a real shell with job control (fg, bg, jobs, &)
+ 15. Add ported apps to AUTOTEST
 
-PHASE 2e — TTY polish (as needed):
- 25. Ctrl+C → SIGINT delivery
- 26. /dev/null
- 27. isatty()
+PHASE 3b — VDP graphics + imshow:
+ 16. /dev/vdp device with exclusive open (kernel/dev.c)
+ 17. gfx.h userspace library (~15 functions, ~200 lines)
+ 18. imshow — first graphics app (tile image display from ROM)
+ 19. VDP save/restore on SIGTSTP/SIGCONT (job control for graphics)
+ 20. Sprites, scrolling, vsync — demo apps
 
-PHASE 4 — Stretch goals:
- 28. Interrupt-driven keyboard (not polling)
- 29. Multi-TTY (text + graphics coexistence)
- 30. Sound driver (Z80 + YM2612/PSG)
- 31. More SGDK integration (resource compiler, map engine)
+PHASE 3c — Fun apps (the reward):
+ 21. Tiny BASIC with GFX commands (SPRITE, TILE, PALETTE, SCROLL)
+ 22. Port a simple sprite-based game (see Section 12)
+ 23. MicroPython on large SRAM flash carts (stretch goal)
+
+PHASE 3d — SRAM expansion:
+ 24. SRAM size detection at boot (probe write/readback)
+ 25. USER_BASE/USER_TOP in SRAM when available
+ 26. Detect 8-bit vs 16-bit SRAM access mode
+ 27. Test levee + larger programs on Mega Drive with SRAM
+
+PHASE 4 — Polish:
+ 28. Multi-TTY (text + graphics on different planes)
+ 29. Sound driver (Z80 + YM2612/PSG, needs SRAM for sample storage)
+ 30. More app ports (ed, grep with regex, make)
 ```
+
+### The dependency chain
+
+```
+Signals (2d) → TTY (2e) → Shell with job control (2f)
+                              ↓
+                    VDP graphics (3b) → Fun apps (3c)
+                              ↓
+                    VDP save/restore (3b.19) depends on signals (2d)
+```
+
+Signals must come first because **everything depends on them**: job
+control needs SIGTSTP/SIGCONT, the TTY layer needs to generate
+SIGINT/SIGQUIT, pipes need SIGPIPE, and VDP save/restore needs
+signal delivery to work. This matches the Fuzix development order.
+
+### How Fuzix structured this (reference)
+
+Fuzix's development on the 68000 followed the same order:
+
+1. **Process management** (`process.c`) — fork/exec/wait/exit
+2. **Signals** (`signal.c`) — delivery, trampoline, sigreturn
+3. **TTY** (`tty.c`) — line discipline, signal generation, termios
+4. **Platform drivers** — VDP, keyboard, SRAM
+5. **Userspace** — shell, utilities, applications
+
+Source references for implementing each:
+- Context switch: `Kernel/cpu-68000/lowlevel-68000.S` (MOVEM.L save/restore, USP handling, RTE)
+- Signal delivery: `Kernel/cpu-68000/lowlevel-68000.S` (trampoline frame on user stack)
+- TTY: `Kernel/tty.c` (line discipline, ~500 lines of battle-tested code)
+- Process groups: `Kernel/process.c` (pgrp, session, setpgrp())
+- VDP graphics: `Kernel/platform/platform-megadrive/devvdp.c`
+
+See `docs/fuzix-heritage.md` for the full source reference map.
+
+### Job control: what it looks like when it's working
+
+```
+> exec /bin/demo        # Launch a sprite demo
+  [demo runs, sprites bounce around the screen]
+  ^Z                    # User presses Ctrl+Z
+[1] Stopped  /bin/demo
+> exec /bin/wc /etc/motd  # Do some other work
+  3  12  84 /etc/motd
+> jobs
+[1] Stopped  /bin/demo
+> fg %1                 # Resume the demo
+  [VDP state restored, demo continues exactly where it was]
+```
+
+Behind the scenes:
+1. ^Z → TTY layer generates SIGTSTP → delivered to demo's process group
+2. Kernel saves VDP state (872 bytes: registers + palette + sprites + scroll)
+3. Kernel calls `VDP_reinit()` + redraws text console
+4. Shell runs, accepts commands, launches other programs
+5. `fg %1` → kernel restores VDP state → delivers SIGCONT → demo resumes
 
 ### What the original plan got right
 
@@ -790,9 +862,222 @@ PHASE 4 — Stretch goals:
 
 ### What wasn't in the original plan but should have been
 
-- **VDP graphics driver** — The Mega Drive is a game console. Text-only
+- **Job control** — A multitasking OS without Ctrl+Z is frustrating.
+  This should have been in the plan from day one.
+- **VDP graphics API** — The Mega Drive is a game console. Text-only
   is useful but graphics unlock the platform's real potential.
+- **Fun apps** — Tiny BASIC, games, `imshow`. This is a learning
+  project and the fun applications are the reward for building the OS.
 - **SRAM as extended RAM** — The 64 KB limit is the #1 constraint.
   SRAM (especially Everdrive Pro's 64 KB) changes what's possible.
-- **SGDK integration** — Standing on the shoulders of the best Mega Drive
-  SDK makes graphical programs practical without reinventing everything.
+
+---
+
+## 12. Fun Apps — The Reason We're Building This
+
+This is a learning project. The kernel and OS infrastructure exist to
+make fun things possible. These are the apps that make it worth it.
+
+### imshow — Display images on the Mega Drive
+
+The simplest possible graphics program: load tile data and palette
+into VRAM, map tiles to the screen, done. This is what Fuzix's `imshow`
+did, and it's the first program we should port.
+
+```c
+/* imshow.c — display a tile image */
+#include <gfx.h>
+
+extern const uint8_t image_tiles[];   /* tile pattern data (in ROM) */
+extern const uint16_t image_pal[];    /* 16-color palette */
+
+int main(void) {
+    gfx_open();
+    gfx_palette_load(0, image_pal, 16);
+    gfx_tiles(0, image_tiles, 40 * 28);   /* 1120 tiles fill the screen */
+    for (int y = 0; y < 28; y++)
+        for (int x = 0; x < 40; x++)
+            gfx_map(x, y, y * 40 + x);
+    gfx_vsync();
+    /* wait for keypress */
+    getchar();
+    gfx_close();
+    return 0;
+}
+```
+
+That's 15 lines. A student can read it and understand exactly what
+the VDP is doing. The image data comes from a host tool that converts
+PNG → tile patterns + palette (4bpp, Mega Drive format).
+
+**Converter tool:** `tools/png2tiles` — takes a PNG image, quantizes
+to 16 colors, splits into 8×8 tiles, outputs C arrays. Simple Python
+script or small C program.
+
+### Tiny BASIC with graphics
+
+A BASIC interpreter that runs on the Mega Drive and can do graphics.
+This is the killer app — type BASIC commands on the Saturn keyboard
+and see sprites move on screen.
+
+**Target:** [TinyBASIC](https://en.wikipedia.org/wiki/Tiny_BASIC) is
+~2-3 KB of C code. Several public-domain implementations exist:
+- **Mike Field's Tiny BASIC** (~800 lines C, public domain)
+- **Scott Lawrence's TinyBASIC Plus** (~2000 lines, MIT license)
+- **Robin Edwards' Arduino BASIC** (~1500 lines, MIT license)
+
+All of these fit comfortably in 31 KB (Mega Drive user RAM without
+SRAM). The interpreter runs in ~4 KB, leaving ~24 KB for BASIC
+program text and variables.
+
+**Graphics extensions — map directly to gfx.h:**
+
+```basic
+CLS                          ' clear screen (gfx_cls)
+PALETTE 0, 1, 0x0E0          ' set color (gfx_palette)
+TILE 10, 5, 42               ' place tile (gfx_map)
+TILES 0, data, 16            ' upload tile data (gfx_tiles)
+SPRITE 1, 100, 80, 5, 0      ' set sprite (gfx_sprite)
+MOVE 1, 120, 90              ' move sprite (gfx_sprite_move)
+SCROLL 0, 2, 0               ' scroll plane (gfx_scroll)
+VSYNC                        ' wait for vblank (gfx_vsync)
+K = INKEY()                  ' read keyboard (non-blocking)
+```
+
+Each BASIC graphics command is one `gfx_*()` call. No translation
+layer needed. The BASIC interpreter dispatches to the same library
+user C programs link against.
+
+**Example — bouncing sprite in BASIC:**
+
+```basic
+10 SPRITE 0, 100, 100, 1, 0
+20 DX = 2: DY = 1
+30 X = 100: Y = 100
+40 X = X + DX: Y = Y + DY
+50 IF X > 300 OR X < 10 THEN DX = -DX
+60 IF Y > 200 OR Y < 10 THEN DY = -DY
+70 MOVE 0, X, Y
+80 VSYNC
+90 GOTO 40
+```
+
+This is fun. You type it in on the Saturn keyboard, hit RUN, and
+sprites bounce around the screen. Press Ctrl+Z, you're back in the
+Genix shell. Type `fg`, back to BASIC.
+
+**Implementation plan:**
+1. Pick a Tiny BASIC implementation (Mike Field's is smallest)
+2. Add it to `apps/basic.c`
+3. Add graphics commands that call `gfx_*()` functions
+4. Add SAVE/LOAD commands that write/read BASIC source to SRAM
+5. Total: ~1500 lines of C, fits in any Mega Drive config
+
+### Sprite-based game ports
+
+The `gfx.h` API maps directly to how old-school C sprite games work.
+Many public-domain or liberally-licensed games use exactly this pattern:
+
+```c
+while (running) {
+    read_input();
+    update_positions();
+    for (int i = 0; i < num_sprites; i++)
+        gfx_sprite(i, sprites[i].x, sprites[i].y, sprites[i].tile, 0);
+    gfx_scroll(0, bg_x++, 0);
+    gfx_vsync();
+}
+```
+
+**Candidate games to port (public domain / MIT / educational):**
+
+| Game | Size | Description | Exercises |
+|------|------|-------------|-----------|
+| Pong | ~200 lines | Classic, two sprites + ball | Sprites, input, collision |
+| Snake | ~300 lines | Tile-based movement | Tilemap, growth logic |
+| Breakout | ~400 lines | Ball + paddle + blocks | Sprites, tile collision |
+| Space Invaders | ~500 lines | Grid of enemies, player | Sprites, patterns |
+| Flappy Bird | ~300 lines | Scrolling pipes, gravity | Scroll, sprites, physics |
+
+All of these fit in 4-8 KB compiled. They run on any Mega Drive
+config (no SRAM needed). They're simple enough to type in or study,
+and they demonstrate the VDP doing what it was designed for: games.
+
+**Where to find source:** GBA homebrew tutorials (Tonc, GBDK examples),
+retro game jam entries, and DOS game tutorials all use this exact
+sprite+tile pattern. The `gfx.h` API is intentionally similar to
+what these communities use.
+
+### MicroPython (stretch goal — needs large SRAM)
+
+MicroPython's core interpreter is ~256 KB. This doesn't fit in 64 KB
+main RAM, but with a large SRAM flash cart (Everdrive Pro, Mega
+Everdrive Pro), it could run from SRAM:
+
+```
+ROM: MicroPython interpreter code + frozen modules
+SRAM (256 KB+): Heap, Python objects, GC arena
+Main RAM: Kernel + stack + I/O buffers
+```
+
+**Requirements:**
+- Flash cart with 256 KB+ SRAM (Everdrive Pro in 16-bit SRAM mode)
+- MicroPython compiled with `m68k-elf-gcc -m68000`
+- Custom `mphal` port (console I/O via Genix syscalls)
+- VDP bindings via `gfx` module wrapping `gfx.h`
+
+**Why it might work:** MicroPython targets microcontrollers with
+similar constraints (ESP32: 520 KB RAM, STM32: 256 KB). The 68000
+at 7.67 MHz is slower but has more RAM than many MCU targets.
+
+**Why it might not:** The 68000 lacks hardware multiply for 32-bit
+values (software `__mulsi3`), which Python uses heavily for object
+hashing and integer arithmetic. Performance may be too slow for
+interactive use. Worth trying, but set expectations accordingly.
+
+**If it works:**
+```python
+import gfx
+
+gfx.open()
+gfx.palette(0, 1, 0x0E0)  # green
+gfx.sprite(0, 160, 112, 1, 0)
+
+while True:
+    gfx.sprite_move(0, x, y)
+    x += dx
+    gfx.vsync()
+```
+
+Python on a Sega Mega Drive. That's a flex.
+
+### Old-school C graphics API comparison
+
+The `gfx.h` API is intentionally similar to popular retro sprite APIs.
+Here's how it maps to well-known frameworks:
+
+| Operation | Genix gfx.h | GBA (Tonc) | SGDK | TIC-80 |
+|-----------|-------------|------------|------|--------|
+| Load tiles | `gfx_tiles()` | `memcpy(tile_mem, ...)` | `VDP_loadTileData()` | built-in |
+| Place tile | `gfx_map()` | `se_mem[y][x] = tile` | `VDP_setTileMapXY()` | `mset()` |
+| Set sprite | `gfx_sprite()` | `obj_set_attr()` | `VDP_setSprite()` | `spr()` |
+| Move sprite | `gfx_sprite_move()` | `obj_set_pos()` | `VDP_setSpritePosition()` | `spr()` |
+| Set color | `gfx_palette()` | `pal_bg_mem[n]` | `PAL_setColor()` | `poke(0x3FC0+n)` |
+| Scroll | `gfx_scroll()` | `REG_BGxHOFS` | `VDP_setHorizontalScroll()` | `scroll()` |
+| VSync | `gfx_vsync()` | `vid_vsync()` | `SYS_doVBlankProcess()` | automatic |
+| Clear | `gfx_cls()` | custom | `VDP_clearPlane()` | `cls()` |
+
+Someone who's written GBA homebrew or TIC-80 games can pick up
+`gfx.h` immediately. That's the point — the API is the lingua franca
+of tile+sprite hardware.
+
+### Priority order
+
+```
+1. imshow          — proves /dev/vdp works, shows the hardware is fun
+2. Bouncing sprite — proves sprites + vsync work, first "animation"
+3. Tiny BASIC      — interactive, educational, the killer app
+4. Pong            — first real game, proves the API is practical
+5. Snake/Breakout  — builds confidence, good demos for show
+6. MicroPython     — stretch goal, needs SRAM, ultimate flex
+```
