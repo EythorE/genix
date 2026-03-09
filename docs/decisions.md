@@ -356,6 +356,37 @@ both of which exist in the process table.
 
 ---
 
+## Decision: Own VDP Driver, Not SGDK (March 2026)
+
+**Date:** March 2026
+**Status:** Decided
+
+We evaluated extracting VDP modules from SGDK (Sega Genesis Development
+Kit) to provide a userspace graphics library. SGDK is the most capable
+Mega Drive SDK, with sprite engines, DMA queues, palette fading, and
+a software framebuffer.
+
+**Why we rejected it:** SGDK is a bare-metal framework that assumes
+exclusive ownership of the CPU, interrupts, memory, and all hardware.
+Running it under an OS would require replacing its interrupt model,
+memory allocator, boot sequence, Z80 control, and timer system with
+shim layers. The result would be complex, fragile, and contrary to
+Genix's "small is beautiful" philosophy.
+
+**What we're doing instead:** A kernel VDP driver that exposes the
+hardware through the standard device interface (open/close/read/write/
+ioctl). Userspace programs access VDP capabilities through a small C
+library (`libgfx`) that wraps the kernel ioctls. This follows the same
+pattern Fuzix used: `devvdp.c` in the kernel, userspace apps on top.
+
+The kernel driver provides the minimum abstraction needed to safely
+multiplex VDP access between processes (exclusive open, state save/
+restore on context switch). The userspace library provides the
+programmer-friendly API. This separation keeps the kernel small and
+lets the graphics ABI evolve without kernel changes.
+
+---
+
 ## Project Status (March 2026)
 
 The project phases are tracked below and in the individual docs.
