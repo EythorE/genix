@@ -35,7 +35,7 @@ $(LIBC):
 
 # Pattern rule: .o -> .elf (link with crt0 + libc)
 %.elf: %.o $(CRT0) $(LIBC) $(LDSCRIPT)
-	$(LD) -T $(LDSCRIPT) -o $@ $(CRT0) $< $(LIBC) $(LIBGCC)
+	$(LD) -n -T $(LDSCRIPT) -o $@ $(CRT0) $< $(LIBC) $(LIBGCC)
 
 # Pattern rule: .elf -> genix binary (via mkbin)
 %: %.elf $(MKBIN)

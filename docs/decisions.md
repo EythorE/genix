@@ -728,3 +728,89 @@ The levee port proves that Genix's libc, kernel, and filesystem are
 mature enough to run real Unix software — not just toy programs. The
 full stack (raw terminal I/O, file I/O, dynamic memory, ANSI escape
 codes) works correctly on the workbench emulator.
+
+---
+
+## Decision: User Mode + Per-Process Kernel Stacks
+
+**Date:** 2026-03-09
+**Status:** Done, all tests pass
+
+User programs now run in 68000 user mode (S=0 in SR) with separated
+USP/SSP stacks. This is required infrastructure for preemptive
+scheduling — the timer ISR needs to know if it interrupted kernel or
+user code (by checking the S bit in the saved SR on the exception frame).
+
+### Architecture
+
+- Each process gets a 512-byte kernel stack (`kstack[]` in `struct proc`)
+- `exec_enter()` saves callee-saved regs on the main supervisor stack,
+  switches SSP to the process's `kstack_top`, sets USP from the argument,
+  then enters user mode via RTE with SR=0x0000
+- TRAP #0 handler saves all user registers (d0-d7/a0-a6) + USP on the
+  kstack, pushes syscall args, calls `syscall_dispatch`, restores USP
+  and regs, then RTEs back to user mode
+- `exec_leave()` abandons the kstack and longjmps back to `exec_enter`'s
+  caller via `saved_ksp`
+
+### Pain points discovered
+
+#### Kernel stack overflow corrupts proc struct (BEWARE)
+
+The kstack is at the END of the proc struct and grows downward. If a
+syscall's C call chain is too deep, the stack overflows into `fd[]`,
+`cwd`, `vfork_ctx`, etc. — silently corrupting process state.
+
+**Symptom:** `do_pipe()` returned -EMFILE (-24) even though only 3 fds
+were open. Debug output showed all 16 fd[] slots contained garbage
+values like `0xa4760000`.
+
+**Root cause:** 256 bytes was not enough for the deepest syscall path:
+TRAP frame (6 + 60 + 4 = 70 bytes) + syscall args (20) + JSR (4) +
+`syscall_dispatch` → `sys_write` → `con_write` → `kputc` →
+`pal_console_putc` (6 levels of C calls, ~120 bytes). Total ~214 bytes
+leaves only 42 bytes of headroom — not enough for GCC's callee-saved
+register saves.
+
+**Fix:** Increased KSTACK_SIZE from 256 to 512 bytes. This costs 4 KB
+more RAM for the 16-entry process table (8 KB total for kstacks).
+
+**Lesson:** When embedding a stack inside a struct, overflows corrupt
+adjacent fields silently. The 68000 has no stack guard pages. Consider
+adding a stack canary (magic word at kstack[0]) for debug builds.
+
+**Future concern:** With preemptive scheduling, a timer ISR can fire
+while a syscall is in progress on the kstack, nesting another exception
+frame + ISR register saves (~40 bytes). The "don't preempt kernel mode"
+rule prevents this. If we ever need to preempt kernel code, kstacks
+must grow larger.
+
+#### Mega Drive USER_BASE collision
+
+Adding 512-byte kstacks pushed kernel BSS from ~25 KB to ~35 KB,
+past the old USER_BASE of 0xFF8000 (32 KB from RAM start). User
+programs loaded at 0xFF8000 would overlay kernel data.
+
+**Fix:** Bumped Mega Drive USER_BASE to 0xFF9000 (36 KB from RAM
+start). Updated both `user-md.ld` and `pal_user_base()`. This leaves
+~27.5 KB for user programs (was ~31 KB). Also needed `-n` (nmagic)
+linker flag to prevent ELF segment page alignment from inflating
+binaries.
+
+**Lesson:** `user-md.ld` link address and `pal_user_base()` return
+value MUST match exactly. The binary format uses absolute entry points.
+Any mismatch causes `exec_validate_header` to reject the binary with
+-ENOEXEC. When we add relocation, entry points should become offsets.
+
+### What changed
+
+| File | Change |
+|------|--------|
+| `kernel/kernel.h` | Added `kstack[128]`, `ksp` to proc; KSTACK_SIZE=512 |
+| `kernel/exec_asm.S` | `exec_enter` enters user mode via RTE, sets USP, uses kstack |
+| `kernel/exec.c` | Passes `proc_kstack_top(curproc)` to `exec_enter` |
+| `kernel/crt0.S` | TRAP #0 saves d0-d7/a0-a6 + USP on kstack |
+| `pal/megadrive/crt0.S` | Same TRAP #0 changes as workbench |
+| `pal/megadrive/platform.c` | USER_BASE bumped to 0xFF9000 |
+| `apps/user-md.ld` | Link address bumped to 0xFF9000 |
+| `apps/Makefile` | Added `-n` linker flag to disable page alignment |

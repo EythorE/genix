@@ -164,9 +164,9 @@ ROM (cartridge):
 0x000000  Vectors + Sega header + kernel .text + .rodata + .romdisk
 
 Main RAM (64 KB):
-0xFF0000  Kernel .data + .bss (~25 KB)
-~0xFF6300 Kernel heap (~1 KB)
-~0xFF6800 USER_BASE — user programs load here (~32 KB available)
+0xFF0000  Kernel .data + .bss (~35 KB, includes per-process kstacks)
+~0xFF8A00 Kernel heap (~1.5 KB)
+0xFF9000  USER_BASE — user programs load here (~27.5 KB available)
 ~0xFFFE00 USER_TOP — user stack starts here (grows down)
 0xFFFFFF  Top of RAM / kernel stack
 
@@ -174,8 +174,9 @@ SRAM (optional, cartridge-dependent):
 0x200000  Read-write filesystem and/or extended user RAM
 ```
 
-Kernel uses ~25 KB of the 64 KB main RAM, leaving ~40 KB for heap + user
-programs. User programs run entirely in main RAM without SRAM. SRAM provides
+Kernel uses ~35 KB of the 64 KB main RAM (including 8 KB for 16
+per-process kernel stacks), leaving ~28 KB for heap + user programs.
+User programs run entirely in main RAM without SRAM. SRAM provides
 persistent storage and optional extra RAM for larger programs.
 
 See `docs/megadrive.md` for cartridge configurations and SRAM details.
