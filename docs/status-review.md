@@ -444,3 +444,355 @@ PROGRAMS = hello echo cat wc head true false tail tee grep ls ...
 # Programs too large for Mega Drive
 PROGRAMS_WB_ONLY = levee
 ```
+
+---
+
+## 9. SRAM as Extended RAM
+
+The Mega Drive's 64 KB main RAM is the single biggest constraint. With
+SRAM, we can dramatically expand what's possible.
+
+### Current SRAM state
+
+Genix already enables SRAM via the standard Sega mapper (write 0x03 to
+0xA130F1). The Everdrive Pro has **64 KB SRAM** at 0x200000–0x20FFFF
+(though only odd bytes are accessible on standard mappers, giving 32 KB
+usable). Some Everdrive configurations provide full 16-bit access.
+
+### SRAM usage plan
+
+**Tier 1 — Persistent filesystem (already partially working):**
+- minifs on SRAM for writable storage (config files, user data)
+- ROM disk stays read-only for /bin, /usr
+
+**Tier 2 — Extended user program memory:**
+- Move USER_BASE to SRAM: programs load at 0x200000 instead of 0xFF8000
+- This gives ~32–64 KB for user programs (vs. ~31 KB in main RAM)
+- Main RAM freed up for kernel heap, buffers, process tables
+- PAL already abstracts USER_BASE/USER_TOP — this is a config change
+
+**Tier 3 — SRAM as general-purpose heap extension:**
+- User malloc() allocates from SRAM when main RAM is exhausted
+- sbrk() can be taught to switch to SRAM region after main RAM fills
+- Allows programs like levee (44 KB) to run on Mega Drive
+
+### Implementation approach
+
+```
+Main RAM (64 KB):
+0xFF0000  Kernel .data + .bss (~25 KB)
+~0xFF6300 Kernel heap (~1 KB)
+~0xFF6800 Small scratch / stack area
+0xFFFFFF  Kernel stack
+
+SRAM (32–64 KB, Everdrive Pro):
+0x200000  USER_BASE — user programs load here
+~0x20F000 USER_TOP — stack starts here (grows down)
+```
+
+The PAL layer detects SRAM size at boot (probe write/readback) and
+sets USER_BASE/USER_TOP accordingly. If no SRAM, fall back to main RAM
+layout. This is fully backward-compatible.
+
+**SRAM access quirk:** On standard Sega mappers, SRAM is 8-bit (odd bytes
+only). The Everdrive Pro mapper can provide 16-bit access. Genix should
+detect which mode is available and adjust:
+- 8-bit mode: byte-at-a-time access, no word/long loads (slow but works)
+- 16-bit mode: normal access, full speed
+
+### Memory budget with SRAM
+
+| Config | User program space | Can run |
+|--------|-------------------|---------|
+| No SRAM (64 KB only) | ~31 KB | hello, cat, wc, small utils |
+| 32 KB SRAM (odd-byte) | ~28 KB usable | Same + medium utils |
+| 64 KB SRAM (16-bit) | ~56 KB usable | levee, grep, sed, ed |
+
+---
+
+## 10. VDP Graphics Driver — /dev/vdp
+
+### Current state
+
+Genix uses the VDP exclusively for text console output (40×28 tiles,
+8×8 font). The entire graphics stack is buried in assembly (vdp.S,
+devvt.S, dbg_output.S) with no userspace API. There's no /dev/vdp
+device.
+
+The FUZIX Mega Drive branch has a working `devvdp.c` that exposes a
+minimal device driver (open/write/ioctl with VDPCLEAR and VDPRESET),
+plus a working `imshow` app that displays images using direct VDP
+register writes from userspace assembly routines.
+
+### Design goals
+
+1. **POSIX-ish device interface** — programs open /dev/vdp, use
+   write() and ioctl() for VDP operations
+2. **Safe multiplexing** — kernel mediates VDP access so text console
+   and graphics programs don't step on each other
+3. **SGDK compatibility layer** — provide enough API surface that SGDK
+   demos can be ported with minimal changes
+4. **Framebuffer mode** — software framebuffer (like SGDK's BMP engine)
+   for pixel-level drawing
+
+### VDP hardware summary
+
+```
+Ports:
+  VDP_DATA    = 0xC00000  (read/write tile, palette, sprite data)
+  VDP_CONTROL = 0xC00004  (commands, register writes, status)
+
+VRAM (64 KB video RAM):
+  0x0000–0xBFFF  Tile patterns (font + graphics tiles)
+  0xC000–0xDFFF  Plane A nametable (main console / game background)
+  0xE000–0xEFFF  Plane B nametable (debug overlay / parallax)
+  0xF000–0xF7FF  Sprite attribute table (SAT)
+  0xFC00–0xFDFF  H-scroll table
+
+CRAM (128 bytes): 4 palettes × 16 colors (9-bit RGB)
+VSRAM (80 bytes): per-column vertical scroll offsets
+
+Display: 320×224 pixels (H40 mode), 40×28 tiles of 8×8 pixels
+Sprites: 80 max, 8×8 to 32×32 pixels, 4 palettes, priority, H/V flip
+DMA: bulk transfer from 68000 RAM/ROM → VRAM/CRAM/VSRAM
+```
+
+### Proposed /dev/vdp interface
+
+**Device model:** /dev/vdp is a character device. Opening it switches
+the VDP from text console mode to graphics mode. Closing it restores
+the text console. Only one process can have /dev/vdp open at a time.
+
+**ioctl commands:**
+
+```c
+/* Mode control */
+#define VDP_IOC_SETMODE     1  /* Switch text/tile/bitmap mode */
+#define VDP_IOC_GETMODE     2
+
+/* Palette */
+#define VDP_IOC_SETPAL      10  /* Set palette: {pal_num, count, colors[]} */
+#define VDP_IOC_GETPAL      11
+
+/* Tiles */
+#define VDP_IOC_LOADTILES   20  /* Load tile data to VRAM: {dest, count, data} */
+#define VDP_IOC_SETMAP      21  /* Set nametable entries: {plane, x, y, w, h, data} */
+#define VDP_IOC_SCROLL      22  /* Set scroll position: {plane, hscroll, vscroll} */
+
+/* Sprites */
+#define VDP_IOC_SETSPRITE   30  /* Set sprite attributes: {id, x, y, tile, flags} */
+#define VDP_IOC_MOVESPRITE  31  /* Move sprite: {id, x, y} */
+
+/* DMA */
+#define VDP_IOC_DMA         40  /* DMA transfer: {src, dst, len, type} */
+
+/* Framebuffer (bitmap mode) */
+#define VDP_IOC_FLIP        50  /* Swap double buffers */
+#define VDP_IOC_CLEAR       51  /* Clear framebuffer */
+
+/* VBlank sync */
+#define VDP_IOC_WAITVBLANK  60  /* Block until next VBlank */
+
+/* Raw register access (for advanced/SGDK use) */
+#define VDP_IOC_SETREG      70  /* Write VDP register: {reg, value} */
+#define VDP_IOC_GETREG      71
+```
+
+**write() on /dev/vdp:** In bitmap mode, write pixel data directly to
+the software framebuffer. In tile mode, write nametable entries. This
+gives a simple `write(fd, pixels, size)` path for image display.
+
+**read() on /dev/vdp:** Read VDP status, current mode, screen dimensions.
+
+### Framebuffer / bitmap mode
+
+SGDK's BMP engine proves this works: fake a 256×160 framebuffer using
+a 32×20 tile grid. Each frame, DMA the tile data from RAM to VRAM during
+VBlank. Double-buffered for flicker-free display.
+
+**Memory cost:** ~41 KB (two 20 KB buffers + overhead). This only fits
+with SRAM — the framebuffer lives in SRAM while the kernel and DMA
+engine stay in main RAM.
+
+**Without SRAM:** Single-buffered 256×160 = ~20 KB. Possible in main RAM
+if the program is small, but tight. Tile mode (no framebuffer) uses
+almost no extra RAM and is the better fit for most graphics programs.
+
+### Three VDP modes
+
+| Mode | Resolution | RAM cost | Best for |
+|------|-----------|----------|----------|
+| **Text** | 40×28 chars | 0 (uses font tiles) | Console, shell |
+| **Tile** | 320×224 (40×28 tiles) | ~2 KB nametable | Games, imshow |
+| **Bitmap** | 256×160 pixels | 20–41 KB | Drawing, demos |
+
+### SGDK integration strategy
+
+SGDK is a bare-metal framework — it owns the CPU, interrupts, and all
+hardware. We can't use it as-is under Genix. But we can extract its
+**VDP helper functions** as a userspace library:
+
+**What to extract from SGDK (pure VDP logic, no OS dependencies):**
+- `vdp.c` — register configuration, mode setup, scroll control
+- `vdp_bg.c` — background plane/tilemap management
+- `vdp_tile.c` / `vdp_tile_a.s` — tile loading and manipulation
+- `vdp_spr.c` — sprite engine (attribute table management)
+- `pal.c` — palette fade, cycling effects
+- `dma.c` / `dma_a.s` — DMA queue and transfer management
+- `bmp.c` / `bmp_a.s` — software framebuffer engine
+- `sprite_eng.c` — high-level sprite management
+
+**What we must replace (SGDK bare-metal assumptions):**
+- `sys.c` / `sys_a.s` — interrupt handlers, VDP init → use kernel
+- `memory.c` / `memory_a.s` — RAM allocator → use Genix malloc
+- `joy.c` — controller input → use Genix /dev/input or stdin
+- `z80_ctrl.c` — Z80 audio control → kernel manages Z80
+- `timer.c` — VBlank timing → use kernel VDP_IOC_WAITVBLANK
+- Boot code — Genix owns boot
+
+**The shim layer (libsgdk.a for Genix):**
+
+```c
+/* sgdk_shim.h — Maps SGDK hardware access to Genix /dev/vdp ioctls */
+
+static int vdp_fd = -1;
+
+static inline void VDP_setReg(u16 reg, u8 value) {
+    struct vdp_reg r = { reg, value };
+    ioctl(vdp_fd, VDP_IOC_SETREG, &r);
+}
+
+static inline void VDP_waitVSync(void) {
+    ioctl(vdp_fd, VDP_IOC_WAITVBLANK, 0);
+}
+
+/* DMA queued through kernel to avoid race conditions */
+static inline void DMA_queueDma(u8 type, u32 from, u16 to, u16 len, u16 step) {
+    struct vdp_dma d = { from, to, len, type };
+    ioctl(vdp_fd, VDP_IOC_DMA, &d);
+}
+```
+
+This lets SGDK demo code compile against Genix with:
+1. `#include "sgdk_shim.h"` instead of `#include <genesis.h>`
+2. Link with `libsgdk.a` (extracted + adapted SGDK functions)
+3. Open /dev/vdp at program start, close on exit
+
+### SGDK demos worth porting
+
+| Demo | Complexity | Exercises |
+|------|-----------|-----------|
+| Sprite demo | Low | Sprite engine, palette, VBlank sync |
+| Scroll demo | Low | Tile planes, H/V scroll |
+| BMP (3D wireframe) | Medium | Framebuffer mode, line drawing |
+| Image display | Low | Tile loading, palette (like FUZIX imshow) |
+| DMA stress test | Medium | DMA queue, timing |
+
+### Implementation phases
+
+**Phase A — Minimal /dev/vdp (kernel side):**
+1. Add DEV_VDP to device table (kernel/dev.c)
+2. Implement open (exclusive access, switch from text mode)
+3. Implement ioctl for SETPAL, LOADTILES, SETMAP, WAITVBLANK
+4. Implement close (restore text console)
+5. Port imshow from FUZIX as first graphics app
+
+**Phase B — Sprite and scroll support:**
+6. Add SETSPRITE, MOVESPRITE ioctls
+7. Add SCROLL ioctl (per-plane H/V scroll)
+8. Add DMA ioctl (queued, executed during VBlank)
+9. Write a simple sprite demo
+
+**Phase C — Framebuffer mode (needs SRAM):**
+10. Implement bitmap mode (BMP engine adapted from SGDK)
+11. Software framebuffer in SRAM, DMA to VRAM on VBlank
+12. write() path for direct pixel data
+13. Port SGDK 3D wireframe demo
+
+**Phase D — SGDK compatibility library:**
+14. Extract SGDK VDP/sprite/palette/DMA functions
+15. Build libsgdk.a with Genix shim layer
+16. Port 2-3 SGDK sample programs
+17. Document the API for Genix graphics programming
+
+---
+
+## 11. Updated Master Plan
+
+Incorporating VDP graphics, SRAM expansion, and app porting into the
+overall project timeline:
+
+```
+PHASE 2d-LITE — Core kernel completion (prerequisite for everything):
+  1. Preemptive scheduling (timer/VBlank interrupt)
+  2. Real vfork() + exec()
+  3. Blocking pipes
+  4. Basic signals (SIGINT, SIGTERM, SIGKILL)
+  5. SYS_GETDENTS + opendir/readdir
+
+PHASE 2f — App porting wave 1 (simple filters):
+  6. Add getopt, strtol, perror, strerror to libc
+  7. Port Tier 0 utilities (tail, tee, grep, sort, cut, tr, etc.)
+  8. Port/write a real shell
+  9. Add ported apps to AUTOTEST
+
+PHASE 3b — SRAM expansion:
+ 10. SRAM size detection at boot (probe write/readback)
+ 11. USER_BASE/USER_TOP in SRAM when available
+ 12. Detect 8-bit vs 16-bit SRAM access mode
+ 13. Update PAL to expose SRAM config to kernel
+ 14. Test levee on Mega Drive with SRAM
+
+PHASE 3c — VDP graphics driver:
+ 15. /dev/vdp device with exclusive open + mode switch
+ 16. Palette, tile loading, nametable ioctls
+ 17. VBlank sync ioctl
+ 18. Port imshow from FUZIX
+ 19. Sprite and scroll ioctls
+ 20. DMA ioctl (queued, VBlank-safe)
+
+PHASE 3d — Framebuffer + SGDK (needs SRAM):
+ 21. Software framebuffer in SRAM
+ 22. BMP engine (adapted from SGDK)
+ 23. Extract SGDK VDP functions → libsgdk.a
+ 24. Port SGDK demos (sprites, scrolling, 3D wireframe)
+
+PHASE 2e — TTY polish (as needed):
+ 25. Ctrl+C → SIGINT delivery
+ 26. /dev/null
+ 27. isatty()
+
+PHASE 4 — Stretch goals:
+ 28. Interrupt-driven keyboard (not polling)
+ 29. Multi-TTY (text + graphics coexistence)
+ 30. Sound driver (Z80 + YM2612/PSG)
+ 31. More SGDK integration (resource compiler, map engine)
+```
+
+### What the original plan got right
+
+- 3000-line kernel target — achieved (3023 lines)
+- Musashi workbench emulator — works exactly as planned
+- Mega Drive port reusing FUZIX drivers — done
+- minifs filesystem — done and working
+- No fork(), vfork-based model — right call (even if spawn() was needed)
+
+### What diverged and why it's OK
+
+- **spawn() instead of vfork()**: Pragmatic. vfork() can be added now
+  that the kernel is stable. spawn() proved the concept.
+- **Cooperative scheduling**: Got multitasking working fast. Preemptive
+  scheduling is the natural next step using VBlank interrupt.
+- **Custom libc instead of newlib**: Better for Mega Drive. Newlib is
+  too big. Growing the custom libc incrementally is the right approach.
+- **No PIC/bFLT binaries**: Fixed-address flat binaries work for
+  single-tasking. Relocation can be added when needed.
+
+### What wasn't in the original plan but should have been
+
+- **VDP graphics driver** — The Mega Drive is a game console. Text-only
+  is useful but graphics unlock the platform's real potential.
+- **SRAM as extended RAM** — The 64 KB limit is the #1 constraint.
+  SRAM (especially Everdrive Pro's 64 KB) changes what's possible.
+- **SGDK integration** — Standing on the shoulders of the best Mega Drive
+  SDK makes graphical programs practical without reinventing everything.
