@@ -59,12 +59,12 @@ a compiler and libgcc that only emit base 68000 instructions.
 
 ```bash
 # Build dependencies (Ubuntu/Debian)
-sudo apt-get install build-essential libmpc-dev texinfo
+sudo apt-get install build-essential
 ```
 
-If `apt` cannot download packages (e.g., network restrictions, broken
-mirrors), see [Building Without apt](#building-without-apt) below for a
-fully self-contained approach that only needs `build-essential`.
+Only `build-essential` is required. GMP, MPFR, and MPC are built
+in-tree (see [Building Without apt](#building-without-apt) below), and
+`MAKEINFO=true` is passed to skip texinfo generation.
 
 ### Download Sources
 

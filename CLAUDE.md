@@ -12,40 +12,29 @@ accelerate development — every feature must ultimately run on real Mega Drive 
 Design decisions should always consider the Mega Drive's constraints: 64 KB main RAM,
 7.67 MHz CPU, no MMU, optional cartridge SRAM.
 
-## Toolchain Setup
-
-The m68k-elf cross-compiler is available as a pre-built binary from
-GitHub Releases. Fetch and activate it before building the kernel:
-
-```bash
-./scripts/fetch-toolchain.sh
-export PATH=~/buildtools-m68k-elf/bin:~/blastem:$PATH
-export CROSS=m68k-elf-
-```
-
-The toolchain is rebuilt automatically by CI whenever
-`scripts/build-toolchain.sh` changes. To build it manually (e.g., on a
-new architecture), run `bash scripts/build-toolchain.sh` directly.
-
 ## Getting Started
 
-### 1. Install Prerequisites
-
-You need a host C compiler and a 68000 cross-compiler.
+### 1. Install Prerequisites and Toolchain
 
 ```bash
 # Host compiler + build tools (Ubuntu/Debian)
 sudo apt-get install build-essential
 
-# 68000 cross-compiler (quick start — works with Genix's workarounds)
-sudo apt-get install gcc-m68k-linux-gnu binutils-m68k-linux-gnu
+# Fetch pre-built m68k-elf cross-compiler + BlastEm (recommended)
+./scripts/fetch-toolchain.sh
+export PATH=~/buildtools-m68k-elf/bin:~/blastem:$PATH
+export CROSS=m68k-elf-
 ```
 
-The distro cross-compiler defaults to 68020, but Genix works around this
-by passing `-m68000` and providing its own division routines. For a fully
-correct 68000 toolchain, build from source — see
-[docs/toolchain.md](docs/toolchain.md) for download links and build
-instructions.
+This downloads the correct `m68k-elf-gcc` (built with `--with-cpu=68000`)
+and BlastEm 0.6.2 from GitHub Releases. The toolchain is rebuilt
+automatically by CI whenever `scripts/build-toolchain.sh` changes.
+
+**Fallback:** If the pre-built toolchain doesn't work for your platform,
+install the distro compiler (`sudo apt-get install gcc-m68k-linux-gnu
+binutils-m68k-linux-gnu`). It defaults to 68020 but Genix works around
+this with `-m68000` and its own `divmod.S`. See
+[docs/toolchain.md](docs/toolchain.md) for details and building from source.
 
 ### 2. Build and Run
 
@@ -90,23 +79,37 @@ from a Saturn keyboard connected to controller port 2.
 ```bash
 make test          # Host unit tests (no cross-compiler needed)
 make test-emu      # Workbench autotest (exec, syscalls, STRICT_ALIGN)
-make test-md       # Headless BlastEm boot (~5s smoke test, needs blastem)
+make test-md       # Headless BlastEm boot (~5s smoke test)
+make test-md-auto  # BlastEm AUTOTEST ROM (PRIMARY QUALITY GATE)
+make test-all      # Full testing ladder (all of the above in order)
 ```
+
+BlastEm tests require `Xvfb` (for headless display). The screenshot
+test (`make test-md-screenshot`) also needs `xdotool` and `scrot`.
 
 ### All Build Targets
 
 ```bash
-make emu           # Build workbench emulator only (host binary)
-make kernel        # Build kernel only (needs cross-compiler)
-make apps          # Build user programs (needs kernel built first)
-make disk          # Create filesystem image
-make run           # Build all + run in emulator
-make megadrive     # Build Mega Drive ROM
-make test          # Host unit tests
-make test-emu      # Workbench autotest (STRICT_ALIGN enabled)
-make test-md       # Headless BlastEm smoke test
-make test-md-auto  # BlastEm AUTOTEST ROM (exercises exec)
-make clean         # Remove all build artifacts
+# Build
+make emu             # Build workbench emulator only (host binary)
+make kernel          # Build kernel only (needs cross-compiler)
+make tools           # Build host tools (mkfs, mkbin)
+make libc            # Build C library for user programs
+make apps            # Build user programs (workbench, linked at 0x040000)
+make apps-md         # Build user programs (Mega Drive, linked at 0xFF8000)
+make disk            # Create filesystem image (workbench)
+make disk-md         # Create filesystem image (Mega Drive)
+make run             # Build all + run in emulator
+make megadrive       # Build Mega Drive ROM
+
+# Testing ladder (see "Testing" section below)
+make test            # 1. Host unit tests
+make test-emu        # 3. Workbench autotest (STRICT_ALIGN + AUTOTEST)
+make test-md         # 5. Headless BlastEm boot (~5s smoke test)
+make test-md-auto    # 6. BlastEm AUTOTEST ROM (PRIMARY QUALITY GATE)
+make test-all        # Full ladder: test → kernel → test-emu → megadrive → test-md → test-md-auto
+make test-md-screenshot  # Visual VDP test (saves test-md-screenshot.png)
+make clean           # Remove all build artifacts
 ```
 
 ## Architecture
@@ -201,7 +204,7 @@ struct genix_header {
 };
 ```
 
-Build flow: `.c → .o → .elf (m68k-linux-gnu-ld) → mkbin → genix binary`
+Build flow: `.c → .o → .elf (${CROSS}ld) → mkbin → genix binary`
 
 ## Syscall Convention
 
@@ -215,10 +218,12 @@ Build flow: `.c → .o → .elf (m68k-linux-gnu-ld) → mkbin → genix binary`
 ### Debugging with GDB via BlastEm
 
 ```bash
-m68k-linux-gnu-gdb -q --tui \
+m68k-elf-gdb -q --tui \
     -ex "target remote | blastem -D pal/megadrive/genix-md.bin" \
     pal/megadrive/genix-md.elf
 ```
+
+(Use `m68k-linux-gnu-gdb` if using the distro toolchain instead.)
 
 ### Testing ladder
 
@@ -307,9 +312,12 @@ These guidelines are critical for making this project succeed. Follow them stric
 ### 5. Build system rules
 
 - `make test` must always work with just the host `gcc` (no cross-compiler).
-- `make kernel` requires `m68k-linux-gnu-gcc`.
-- `make apps` requires the kernel to be built first (for shared headers).
+- `make kernel` requires `m68k-elf-gcc` (or `m68k-linux-gnu-gcc` fallback).
+  Set `CROSS=m68k-elf-` or `CROSS=m68k-linux-gnu-` as appropriate.
+- `make apps` depends on `libc` and `tools` (handled automatically).
 - `make run` builds everything and launches the emulator.
+- BlastEm tests (`test-md`, `test-md-auto`) require `Xvfb` for headless display.
+  Set `BLASTEM=/path/to/blastem` to override the BlastEm binary location.
 - Keep Makefiles simple. No recursive make nightmares. One level of `$(MAKE) -C`.
 
 ### 6. Adding new syscalls
@@ -426,5 +434,50 @@ Detailed technical documentation is in `docs/`:
 | `docs/binary-format.md` | Genix binary format and loader |
 | `docs/tty.md` | VDP console and planned TTY subsystem |
 | `docs/multitasking.md` | Process model, vfork/exec, scheduling |
+| `docs/automated-testing.md` | Testing ladder, AUTOTEST kernel, discrepancy procedures |
 | `docs/68000-programming.md` | ISA constraints, division, ABI |
 | `docs/fuzix-heritage.md` | What we took from Fuzix, what's different |
+
+## Project Status
+
+| Phase | Description | Status |
+|-------|-------------|--------|
+| Phase 1 | Workbench emulator (Musashi SBC) | **Complete** |
+| Phase 2a | Kernel core + binary loading + single-tasking exec | **Complete** |
+| Phase 2b | Multitasking (vfork, scheduler, waitpid) | **Next** |
+| Phase 2c | Pipes and I/O redirection | Planned |
+| Phase 2d | Signals and job control | Planned |
+| Phase 2e | TTY subsystem (port Fuzix tty.c) | Planned |
+| Phase 2f | Fuzix libc + utilities | Planned |
+| Phase 3 | Mega Drive port (PAL drivers from Fuzix) | **Complete** |
+| Phase 4 | Polish (interrupt keyboard, multi-TTY, /dev/null) | Planned |
+
+What works today: kernel boots on both workbench and Mega Drive, minifs
+filesystem with indirect blocks, exec() loads user programs (hello, echo,
+cat, wc, head, levee), built-in shell, termios raw mode, full libc
+(stdio/stdlib/string/ctype/termios), levee (vi clone) on workbench,
+249+ host tests, Saturn keyboard on Mega Drive, SRAM with standard Sega
+mapper. See `docs/decisions.md` for full history.
+
+## Common Pitfalls
+
+These are lessons learned from debugging sessions (documented in full in
+`docs/decisions.md`). Keep them in mind:
+
+- **68020 instructions in libgcc**: The distro `libgcc.a` contains `BSR.L`
+  and other 68020 opcodes. Programs using `/` or `%` will crash on real
+  68000 hardware. Fix: use `m68k-elf-gcc` (from `fetch-toolchain.sh`) or
+  ensure `divmod.S` symbols take priority over libgcc.
+- **Unaligned stack buffers**: `char buf[13]` on the stack may land at an
+  odd address. The 68000 faults on word/long access at odd addresses.
+  Always use even-sized local buffers.
+- **USER_BASE/USER_TOP are platform-specific**: Workbench uses
+  `0x040000-0x0F0000`, Mega Drive uses `0xFF8000-0xFFFE00`. These are set
+  by PAL functions at boot, never hardcoded in the kernel.
+- **JMP vs JSR for user entry**: `exec_asm.S` must use `JMP` (not `JSR`)
+  to enter user programs — `JSR` pushes a return address that corrupts the
+  argc/argv stack layout.
+- **Workbench passes, Mega Drive fails**: Different linker scripts, memory
+  layouts, and VDP vs UART output. Always verify both `make run` and
+  `make megadrive`. See `docs/automated-testing.md` for the investigation
+  procedure.

@@ -40,11 +40,28 @@ See the [main CLAUDE.md](../CLAUDE.md) for setup instructions and quick start.
 ## Quick Reference
 
 ```bash
-make emu        # Build workbench emulator (host)
-make kernel     # Build kernel (needs m68k cross-compiler)
-make apps       # Build user programs
-make run        # Full system: build + run in emulator
-make megadrive  # Build Mega Drive ROM
-make test       # Host unit tests (no cross-compiler needed)
-make test-md    # Headless BlastEm smoke test
+# Build
+make emu             # Build workbench emulator (host binary)
+make kernel          # Build kernel (needs m68k cross-compiler)
+make tools           # Build host tools (mkfs, mkbin)
+make libc            # Build C library for user programs
+make apps            # Build user programs (workbench)
+make apps-md         # Build user programs (Mega Drive)
+make disk            # Create filesystem image (workbench)
+make disk-md         # Create filesystem image (Mega Drive)
+make run             # Build all + run in emulator
+make megadrive       # Build Mega Drive ROM
+
+# Testing ladder (run in order, all must pass)
+make test            # 1. Host unit tests (no cross-compiler needed)
+make kernel          # 2. Cross-compilation check
+make test-emu        # 3. Workbench autotest (STRICT_ALIGN + AUTOTEST)
+make megadrive       # 4. Mega Drive build
+make test-md         # 5. Headless BlastEm boot (~5s smoke test)
+make test-md-auto    # 6. BlastEm autotest (PRIMARY QUALITY GATE)
+make test-all        # Run the full ladder at once
+
+# Extras
+make test-md-screenshot  # Visual VDP test (saves test-md-screenshot.png)
+make clean               # Remove all build artifacts
 ```
