@@ -471,6 +471,43 @@ capture or checking BlastEm stderr helps distinguish.
 must be tested across BlastEm versions. Keep the flags minimal.
 Document which BlastEm version was tested.
 
+### Decision: BlastEm 0.6.3-pre and Headless `-b` Mode (March 2026)
+
+**Date:** March 2026
+**Status:** Current
+
+Upgraded from BlastEm 0.6.2 stable to 0.6.3-pre nightly (`884de5ef1263`,
+Feb 26, 2026). The nightly adds VDP FIFO/CRAM accuracy fixes and a
+built-in PNG screenshot writer (`save_png` in `png.c`, no libpng dependency).
+
+**Key discovery: `-b N` flag.** BlastEm's `-b N` runs N frames then exits
+with no display at all — truly headless, no Xvfb needed. Exit code 0 means
+the ROM ran without crashing; nonzero means crash/error. This eliminated
+the entire Xvfb + timeout + SIGKILL dance from `test-md` and `test-md-auto`.
+
+**Before:** `Xvfb :57 ... & timeout -k 3 10 blastem rom.bin` — required
+Xvfb, headless BlastEm config (`gl off`), SIGTERM/SIGKILL workarounds,
+exit code interpretation (124=timeout, 137=SIGKILL, both treated as pass).
+
+**After:** `blastem -b 300 rom.bin` — no dependencies, clean exit code,
+~5 seconds at 60fps. Simpler, faster, more reliable.
+
+**Screenshot limitation:** The `-b` flag is truly headless (no window, no
+renderer). BlastEm's native screenshot feature (`p` key → `ui.screenshot`
+→ `render_save_screenshot()`) requires an SDL window because it captures
+the framebuffer during `process_framebuffer()`. We investigated injecting
+key events via XTest (Python ctypes + libXtst), but SDL2 doesn't pick up
+XTest synthetic events reliably under Xvfb with software rendering.
+
+**Screenshot test strategy:** `test-md-screenshot` still uses Xvfb and
+tries `xdotool key p` to trigger BlastEm's native PNG screenshot (320×224,
+no window chrome). Falls back to `scrot` if native screenshot fails.
+
+**Tested combinations:**
+- `blastem -b 300` with good ROM: exit 0
+- `blastem -b 60` with bad ROM (random bytes): exit 1
+- `blastem -b 600` with AUTOTEST ROM: exit 0
+
 ### Bug: libgcc BSR.L in User Programs (March 2026)
 
 **Symptom:** `wc` (which uses `/` and `%` operators) crashed with an
