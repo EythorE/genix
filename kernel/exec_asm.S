@@ -1,8 +1,8 @@
 /*
- * exec_asm.S — Assembly support for single-tasking exec
+ * exec_asm.S — Assembly support for exec and vfork
  *
- * exec_enter: save kernel context, switch to user stack, call entry point
- * exec_leave: restore kernel context, return to exec_enter's caller
+ * exec_enter/exec_leave: save/restore kernel context for running user programs
+ * vfork_save/vfork_restore: setjmp/longjmp for vfork parent/child
  */
 
     .text
@@ -57,6 +57,42 @@ exec_leave:
     move.l  %a0, %sp
     movem.l (%sp)+, %d2-%d7/%a2-%a6
     rts
+
+/*
+ * int vfork_save(uint32_t *regs)
+ *
+ * Saves callee-saved registers (d2-d7, a2-a6), stack pointer,
+ * and return address into regs[]. Returns 0.
+ *
+ * regs layout (13 longs = 52 bytes):
+ *   [0..5]   d2-d7         (6 regs, 24 bytes)
+ *   [6..10]  a2-a6         (5 regs, 20 bytes)
+ *   [11]     sp            (4 bytes)
+ *   [12]     return addr   (4 bytes)
+ */
+    .globl vfork_save
+vfork_save:
+    move.l  4(%sp), %a0         /* regs pointer */
+    movem.l %d2-%d7/%a2-%a6, (%a0) /* save 11 callee-saved regs */
+    move.l  %sp, 44(%a0)        /* save stack pointer */
+    move.l  (%sp), 48(%a0)      /* save return address */
+    moveq   #0, %d0
+    rts
+
+/*
+ * void vfork_restore(uint32_t *regs, int retval) __attribute__((noreturn))
+ *
+ * Restores context saved by vfork_save() and "returns" retval
+ * from the original vfork_save() call site. Like longjmp.
+ */
+    .globl vfork_restore
+vfork_restore:
+    move.l  4(%sp), %a0         /* regs pointer */
+    move.l  8(%sp), %d0         /* retval */
+    movem.l (%a0), %d2-%d7/%a2-%a6 /* restore 11 callee-saved regs */
+    move.l  44(%a0), %sp        /* restore stack pointer */
+    move.l  48(%a0), (%sp)      /* restore return address on stack */
+    rts                          /* "returns" to vfork_save's caller */
 
     .bss
     .align  4

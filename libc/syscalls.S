@@ -218,3 +218,52 @@ fcntl:
     trap    #0
     movem.l (%sp)+, %d2-%d3
     rts
+
+/*
+ * int vfork(void)
+ *
+ * Special stub: saves return address in a1 (not on stack) because
+ * the child shares the parent's stack. The child must call exec()
+ * or _exit() immediately.
+ *
+ * Returns 0 to child, child PID to parent.
+ */
+    .globl vfork
+vfork:
+    move.l  (%sp)+, %a1         /* save return address in a1 */
+    move.l  #190, %d0           /* SYS_VFORK */
+    trap    #0
+    move.l  %a1, -(%sp)         /* restore return address */
+    rts
+
+/* int waitpid(int pid, int *status, int options) */
+    .globl waitpid
+waitpid:
+    movem.l %d2-%d3, -(%sp)
+    move.l  12(%sp), %d1       /* pid */
+    move.l  16(%sp), %d2       /* status */
+    move.l  20(%sp), %d3       /* options (ignored for now) */
+    moveq   #7, %d0            /* SYS_WAITPID */
+    trap    #0
+    movem.l (%sp)+, %d2-%d3
+    rts
+
+/* int execve(const char *path, char *const argv[], char *const envp[]) */
+    .globl execve
+execve:
+    movem.l %d2-%d3, -(%sp)
+    move.l  12(%sp), %d1       /* path */
+    move.l  16(%sp), %d2       /* argv */
+    move.l  20(%sp), %d3       /* envp (ignored) */
+    moveq   #11, %d0           /* SYS_EXEC */
+    trap    #0
+    movem.l (%sp)+, %d2-%d3
+    rts
+
+/* int pipe(int pipefd[2]) */
+    .globl pipe
+pipe:
+    move.l  4(%sp), %d1        /* pipefd */
+    move.l  #42, %d0           /* SYS_PIPE */
+    trap    #0
+    rts
