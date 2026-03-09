@@ -239,6 +239,28 @@ struct device {
 extern struct device devtab[];
 void dev_init(void);
 
+/* ======== Pipes ======== */
+
+#define PIPE_SIZE   512
+
+struct pipe {
+    uint8_t  buf[PIPE_SIZE];
+    uint16_t read_pos;
+    uint16_t write_pos;
+    uint16_t count;
+    uint8_t  readers;
+    uint8_t  writers;
+};
+
+#define MAXPIPE     4
+extern struct pipe pipe_table[];
+
+int  do_pipe(int *fds);
+int  pipe_read(struct pipe *p, void *buf, int len);
+int  pipe_write(struct pipe *p, const void *buf, int len);
+void pipe_close_read(struct pipe *p);
+void pipe_close_write(struct pipe *p);
+
 /* ======== Process management ======== */
 
 #define P_FREE      0
@@ -260,6 +282,7 @@ struct proc {
     uint32_t mem_base;     /* start of process memory */
     uint32_t mem_size;     /* size of allocated memory */
     uint32_t brk;          /* current break (top of data) */
+    uint32_t vfork_ctx[13]; /* vfork_save context (d2-d7,a2-a6,sp,retaddr) */
     uint16_t cwd;          /* current working directory inode */
     struct ofile *fd[MAXFD];
 };
@@ -273,12 +296,18 @@ int  do_exec(const char *path, const char **argv);
 void do_exit(int code);
 int  do_waitpid(int pid, int *status);
 int  do_vfork(void);
+int  do_spawn(const char *path, const char **argv);
+void schedule(void);
 
 /* Exec support (assembly in exec_asm.S) */
 extern int exec_enter(uint32_t entry, uint32_t sp);
 extern void exec_leave(void);
 extern int exec_exit_code;
 extern int exec_active;
+
+/* vfork support (assembly in exec_asm.S) — setjmp/longjmp for kernel */
+extern int vfork_save(uint32_t *regs);
+extern void vfork_restore(uint32_t *regs, int retval);
 
 /* ======== Syscall dispatch ======== */
 

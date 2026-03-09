@@ -114,7 +114,13 @@ uint32_t exec_setup_stack(uint32_t stack_top, const char *path,
 
 /*
  * Load and execute a binary from the filesystem.
- * Single-tasking: blocks until the program calls _exit().
+ *
+ * Two modes of operation:
+ *  1. Single-tasking (process 0 / shell): uses exec_enter/exec_leave
+ *     to block until the program exits. Returns exit code.
+ *  2. After vfork(): wakes the parent and runs the binary in the
+ *     child's context via exec_enter. Returns exit code when done.
+ *
  * Returns the program's exit code (>= 0) or negative errno.
  */
 int do_exec(const char *path, const char **argv)
