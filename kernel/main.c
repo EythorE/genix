@@ -182,6 +182,78 @@ static void autotest(void)
     shell_ls("ls /bin");
     pass++;  /* if we get here without crashing, it's a pass */
 
+    /* Test 8: spawn + waitpid (exec /bin/true, exit 0) */
+    kputs("[test] spawn/waitpid/true: ");
+    {
+        int pid = do_spawn("/bin/true", NULL);
+        if (pid > 0) {
+            int status = -1;
+            int wpid = do_waitpid(pid, &status);
+            /* POSIX: exit status in bits 15-8 */
+            int exitcode = (status >> 8) & 0xFF;
+            if (wpid == pid && exitcode == 0) {
+                kputs("PASS\n");
+                pass++;
+            } else {
+                kprintf("FAIL (wpid=%d status=0x%x)\n", wpid, status);
+                fail++;
+            }
+        } else {
+            kprintf("FAIL (spawn returned %d)\n", pid);
+            fail++;
+        }
+    }
+
+    /* Test 9: spawn + waitpid (exec /bin/false, exit 1) */
+    kputs("[test] spawn/waitpid/false: ");
+    {
+        int pid = do_spawn("/bin/false", NULL);
+        if (pid > 0) {
+            int status = -1;
+            int wpid = do_waitpid(pid, &status);
+            int exitcode = (status >> 8) & 0xFF;
+            if (wpid == pid && exitcode == 1) {
+                kputs("PASS\n");
+                pass++;
+            } else {
+                kprintf("FAIL (wpid=%d exitcode=%d)\n", wpid, exitcode);
+                fail++;
+            }
+        } else {
+            kprintf("FAIL (spawn returned %d)\n", pid);
+            fail++;
+        }
+    }
+
+    /* Test 10: pipe() basic read/write */
+    kputs("[test] pipe: ");
+    {
+        int pfd[2];
+        rc = do_pipe(pfd);
+        if (rc < 0) {
+            kprintf("FAIL (pipe returned %d)\n", rc);
+            fail++;
+        } else {
+            char wbuf[] = "hello";
+            char rbuf[8];
+            /* Write through kernel-level pipe */
+            struct pipe *p = &pipe_table[0];
+            int nw = pipe_write(p, wbuf, 5);
+            int nr = pipe_read(p, rbuf, 8);
+            rbuf[nr] = '\0';
+            if (nw == 5 && nr == 5 && strcmp(rbuf, "hello") == 0) {
+                kputs("PASS\n");
+                pass++;
+            } else {
+                kprintf("FAIL (nw=%d nr=%d)\n", nw, nr);
+                fail++;
+            }
+            /* Clean up pipe */
+            pipe_close_read(p);
+            pipe_close_write(p);
+        }
+    }
+
     /* Summary */
     kprintf("\n=== AUTOTEST DONE: %d passed, %d failed ===\n", pass, fail);
     if (fail > 0)
@@ -246,8 +318,33 @@ void builtin_shell(void)
             kputs(line + 5);
             kputc('\n');
         } else if (strncmp(line, "exec ", 5) == 0) {
-            if (do_exec(line + 5, NULL) < 0)
-                kputs("exec failed\n");
+            /* Parse command into argv */
+            char *args[16];
+            int argc = 0;
+            char *p = line + 5;
+            while (*p && argc < 15) {
+                while (*p == ' ') p++;
+                if (!*p) break;
+                args[argc++] = p;
+                while (*p && *p != ' ') p++;
+                if (*p) *p++ = '\0';
+            }
+            args[argc] = NULL;
+            if (argc == 0) {
+                kputs("Usage: exec <program> [args...]\n");
+            } else {
+                /* Use spawn/waitpid pattern */
+                int pid = do_spawn(args[0], (const char **)args);
+                if (pid > 0) {
+                    int status;
+                    do_waitpid(pid, &status);
+                    int exitcode = (status >> 8) & 0xFF;
+                    if (exitcode != 0)
+                        kprintf("exit %d\n", exitcode);
+                } else {
+                    kprintf("exec failed: %d\n", pid);
+                }
+            }
         } else if (strncmp(line, "write ", 6) == 0) {
             shell_write(line + 6);
         } else if (strncmp(line, "mkdir ", 6) == 0) {
