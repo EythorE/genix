@@ -134,6 +134,7 @@ _vec_timer_irq:
 
     jsr     timer_interrupt
     jsr     schedule            /* may swtch to different process */
+    jsr     sig_deliver         /* deliver pending signals */
 
     /* Restore user state (same kstack if no switch, or after being
      * resumed later if we were switched out) */
@@ -191,6 +192,9 @@ _vec_syscall:
 
     /* Store return value in saved d0 slot so user sees it after RTE */
     move.l  %d0, 4(%sp)
+
+    /* Deliver pending signals before returning to user mode */
+    jsr     sig_deliver
 
     /* Restore user stack pointer */
     move.l  (%sp)+, %a0
