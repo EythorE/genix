@@ -1892,3 +1892,173 @@ All project phases are now **complete**:
 2. **Shell features** — no glob expansion, no environment variable
    substitution, no background jobs. The built-in shell is adequate for
    the current single-user, single-terminal use case.
+
+---
+
+## Bug: Saturn Keyboard Double-Read Race Condition
+
+**Date:** Phase 4 (interrupt keyboard)
+**Status:** Fixed
+
+### Symptom
+
+On the Mega Drive (BlastEm), typing fast in the shell produced ghost
+characters — especially spaces — that the user didn't press.
+
+### Root Cause
+
+Two independent code paths both called `keyboard_read()` →
+`ReadKeyboard()` simultaneously:
+
+1. **VBlank ISR** (60 Hz): `pal_keyboard_poll()` → `keyboard_read()`
+   → `tty_inproc()` (interrupt-driven input, the intended path).
+
+2. **tty_read() polling loop**: `pal_console_ready()` returned 1
+   unconditionally, so `tty_read()` called `pal_console_getc()` →
+   `keyboard_read()` in a busy loop (the legacy polling path).
+
+`ReadKeyboard()` reads a 12-nibble Saturn keyboard packet by toggling
+the TH line on controller port 2 and reading nibbles sequentially.
+If the VBlank ISR fires mid-read, the ISR's `ReadKeyboard()` consumes
+remaining nibbles from the in-progress packet.  Both callers get garbled
+partial scancodes.  A garbled scancode landing on 0x29 produces a
+spurious space.
+
+### Why This Is Subtle
+
+The workbench emulator doesn't have this bug: its `pal_console_ready()`
+checks the UART status register (actual hardware readiness), so the
+polling loop only calls `pal_console_getc()` when data is available.
+And the workbench has no interrupt-driven keyboard path — input is
+purely polling-based.  The race only appears on the Mega Drive where
+the VBlank ISR was added to provide interrupt-driven input alongside
+the legacy polling loop.
+
+### Fix
+
+Changed `pal_console_ready()` on the Mega Drive to return 0.  This
+disables the polling path in `tty_read()` entirely, so keyboard input
+flows exclusively through the VBlank ISR → `tty_inproc()`.  The process
+yields (or spins in single-task mode) until the ISR delivers a character
+to the TTY input queue.
+
+### Lesson
+
+When adding interrupt-driven I/O to a system that previously used
+polling, the old polling path must be disabled.  Having both paths
+active creates a race on the shared hardware resource (the keyboard
+controller port).  This is the kind of bug that only appears on
+real hardware (or BlastEm) and never on the workbench emulator.
+
+---
+
+## Bug: VDP Console Tab Character Displayed as Glyph
+
+**Date:** Phase 4
+**Status:** Fixed
+
+### Symptom
+
+`ls -l` on the Mega Drive displayed a strange symbol (circle/face)
+between the file size and filename.
+
+### Root Cause
+
+`pal_console_putc()` only handled `\n`, `\r`, and `\b`.  The tab
+character `\t` (0x09) fell through to the default `plot_char()` path,
+which drew the CP437 glyph at font index 9 — a visible circle character.
+
+`ls -l` uses `printf("%c %d\t%s\n", ...)` where `\t` separates the
+size from the filename.  The workbench emulator doesn't have this bug
+because its `pal_console_putc` sends raw bytes to the UART, and the
+host terminal handles tab expansion.
+
+### Fix
+
+Added `\t` handling to `pal_console_putc()`: advance cursor_x to
+the next 8-column tab stop via `cursor_x = (cursor_x + 8) & ~7`.
+
+### Lesson
+
+Every control character that user programs might print (tab, bell,
+form feed) must be explicitly handled in the VDP console driver.
+The host terminal hides these gaps during workbench testing.
+
+---
+
+## Bug: VDP User Tiles Overwrote Console Font VRAM
+
+**Date:** Phase 4
+**Status:** Fixed
+
+### Symptom
+
+Running `imshow` corrupted the console font.  If imshow crashed before
+`gfx_close()`, subsequent console text displayed garbage glyphs.
+
+### Root Cause
+
+`vdp_do_loadtiles()` computed the VRAM address as
+`start_id * VDP_TILE_SIZE` without adding the `VRAM_USER_TILES` offset.
+User tile 1 wrote to VRAM 0x0020 — right inside the console font area
+(VRAM 0x0000–0x0FFF, tiles 0–127).  The constant `VRAM_USER_TILES`
+(0x1000) was defined but never used.
+
+Similarly, `vdp_do_setmap()` wrote raw user tile IDs to the nametable.
+Nametable entry 1 → VDP tile 1 → VRAM 0x0020 (font area).  This
+happened to work for imshow because both load and map used the same
+unshifted IDs — but it stomped on the console font while doing so.
+
+### Fix
+
+- `vdp_do_loadtiles()`: VRAM address = `VRAM_USER_TILES + start_id * VDP_TILE_SIZE`.
+  User tile 1 → VRAM 0x1020 (outside font area).
+
+- `vdp_do_setmap()`: nametable entry = `tile_id + USER_TILE_OFFSET` (128).
+  User tile 1 → nametable entry 129 → VRAM 129 × 32 = 0x1020.  Matches.
+
+Both functions now consistently map user tile IDs to VDP tile IDs 128+,
+keeping the console font area (0–127) intact.
+
+### Lesson
+
+When two subsystems (text console and graphics API) share VRAM, their
+tile ranges must be explicitly partitioned.  A defined-but-unused
+constant (`VRAM_USER_TILES`) is a code smell — if it exists, something
+should be using it.  Add a test for the VRAM address calculation to
+catch regressions.
+
+---
+
+## Bug: levee putfile() Missing Return Statement
+
+**Date:** Phase 2f (Fuzix libc + utilities)
+**Status:** Fixed
+
+### Symptom
+
+`:w test.txt` in levee silently failed to report write errors and
+could delete the output file on error.
+
+### Root Cause
+
+`putfile()` in `apps/levee/blockio.c` was declared as returning `bool`
+but had no `return` statement.  On 68000, d0 after the `write()` syscall
+accidentally contained the byte count (non-zero for non-empty files),
+so the caller's `if (status)` check passed by luck.  But on write
+failure, d0 held a negative errno — still non-zero — so the caller
+thought the write succeeded, set `modified = NO`, and silently lost
+the user's changes.
+
+### Fix
+
+Added `return n == (endd - start);` so `putfile()` returns true only
+when all bytes were written successfully.
+
+### Lesson
+
+Missing return statements in non-void functions are undefined behavior
+in C.  On the 68000, the last function call's d0 value leaks through
+as the return value, which accidentally works for the success case but
+silently swallows errors.  The `-Wreturn-type` warning (enabled by
+`-Wall`) catches this — ensure it's enabled for all builds.

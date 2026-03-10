@@ -114,6 +114,9 @@ void pal_console_putc(char c)
         cursor_y++;
     } else if (c == '\r') {
         cursor_x = 0;
+    } else if (c == '\t') {
+        /* Advance to next 8-column tab stop */
+        cursor_x = (cursor_x + 8) & ~7;
     } else if (c == '\b') {
         if (cursor_x > 0) {
             cursor_x--;
@@ -154,11 +157,12 @@ int pal_console_getc(void)
 
 int pal_console_ready(void)
 {
-    /* keyboard_read() is non-blocking — returns 0 if no key.
-     * But we can't peek without consuming, so just report ready
-     * and let getc block. For proper readiness we'd need a
-     * one-key buffer, but this is sufficient for the PAL contract. */
-    return 1;
+    /* On Mega Drive, keyboard input is delivered via VBlank ISR
+     * (pal_keyboard_poll → tty_inproc).  Returning 0 prevents
+     * tty_read() from also polling keyboard_read() in its busy
+     * loop, which would race with the ISR and corrupt the Saturn
+     * keyboard protocol mid-read, producing ghost characters. */
+    return 0;
 }
 
 void pal_disk_read(int dev, uint32_t block, void *buf)
