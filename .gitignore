@@ -38,6 +38,7 @@ tests/test_proc
 tests/test_libc
 tests/test_vdp
 tests/test_signal
+tests/test_redir
 test-md-screenshot*.png
 test-md-imshow*.png
 _levee_source/
