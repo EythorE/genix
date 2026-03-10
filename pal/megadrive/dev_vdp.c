@@ -26,6 +26,8 @@
 #define VRAM_PLANE_B     0xE000  /* Plane B nametable (debug overlay) */
 #define VRAM_SPRITES     0xF000  /* Sprite attribute table */
 #define VRAM_USER_TILES  0x1000  /* User tile area (tile 128+) */
+/* User tile 0 maps to VDP tile 128 (VRAM_USER_TILES / VDP_TILE_SIZE) */
+#define USER_TILE_OFFSET (VRAM_USER_TILES / VDP_TILE_SIZE)
 
 /* Nametable row stride: 64 tiles * 2 bytes per entry = 128 bytes */
 #define NAMETABLE_STRIDE 128
@@ -101,8 +103,9 @@ static int vdp_do_loadtiles(void *arg)
     if (!a->data || a->count == 0)
         return -EINVAL;
 
-    /* Each tile is 32 bytes. VRAM address = tile_id * 32 */
-    uint16_t vram_addr = a->start_id * VDP_TILE_SIZE;  /* 32 bytes/tile */
+    /* Each tile is 32 bytes. Offset by VRAM_USER_TILES so user tiles
+     * don't overwrite the console font area (VRAM 0x0000-0x0FFF). */
+    uint16_t vram_addr = VRAM_USER_TILES + a->start_id * VDP_TILE_SIZE;
     VDP_CTRL_PORT = vdp_write_cmd(VDP_VRAM_WRITE, vram_addr);
 
     /* Write tile data as longwords for speed.
@@ -132,8 +135,12 @@ static int vdp_do_setmap(void *arg)
                         (uint16_t)(a->y + row) * NAMETABLE_STRIDE +
                         a->x * 2;
         VDP_CTRL_PORT = vdp_write_cmd(VDP_VRAM_WRITE, addr);
-        for (int col = 0; col < a->w; col++)
-            VDP_DATA_PORT = *src++;
+        for (int col = 0; col < a->w; col++) {
+            /* Offset user tile IDs into the user tile area (VDP tile 128+)
+             * so they don't collide with console font tiles (0-127). */
+            uint16_t entry = *src++;
+            VDP_DATA_PORT = entry + USER_TILE_OFFSET;
+        }
     }
     return 0;
 }
