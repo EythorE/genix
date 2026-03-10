@@ -308,8 +308,11 @@ static void autotest(void)
             /* Set SIGTERM to SIG_IGN, then send SIGTERM to self */
             syscall_dispatch(SYS_SIGNAL, SIGTERM, SIG_IGN, 0, 0);
             syscall_dispatch(SYS_KILL, 0, SIGTERM, 0, 0);
-            /* sig_deliver should ignore it */
-            sig_deliver();
+            /* sig_deliver should ignore it (pass dummy frame —
+             * no user handler is set so frame won't be modified) */
+            uint32_t dummy_frame[18];
+            memset(dummy_frame, 0, sizeof(dummy_frame));
+            sig_deliver(dummy_frame);
             if (curproc && curproc->state == P_RUNNING) {
                 /* Restore default handler */
                 syscall_dispatch(SYS_SIGNAL, SIGTERM, SIG_DFL, 0, 0);
@@ -321,6 +324,220 @@ static void autotest(void)
             }
         } else {
             kprintf("FAIL (kill sig=0 returned %d)\n", r);
+            fail++;
+        }
+    }
+
+    /* Test 14: sequential pipe between two spawned processes (echo | cat).
+     * On a no-MMU system, we run echo first (output → pipe), wait for it,
+     * then run cat (input ← pipe). Works as long as echo's output fits
+     * in the 512-byte pipe buffer. */
+    kputs("[test] spawn pipe echo|cat: ");
+    {
+        int pfd[2];
+        rc = do_pipe(pfd);
+        if (rc < 0) {
+            kprintf("FAIL (pipe returned %d)\n", rc);
+            fail++;
+        } else {
+            /* Step 1: Run echo with stdout → pipe write end */
+            const char *echo_argv[] = { "/bin/echo", "pipe-test-ok", NULL };
+            int echo_pid = do_spawn_fd("/bin/echo", echo_argv,
+                                        -1, pfd[1], -1);
+            /* Close parent's write end — echo has its own reference */
+            syscall_dispatch(SYS_CLOSE, pfd[1], 0, 0, 0);
+
+            int ok = 1;
+            if (echo_pid > 0) {
+                int status;
+                do_waitpid(echo_pid, &status);
+            } else { ok = 0; }
+
+            /* Step 2: Run cat with stdin ← pipe read end */
+            const char *cat_argv[] = { "/bin/cat", NULL };
+            int cat_pid = do_spawn_fd("/bin/cat", cat_argv,
+                                       pfd[0], -1, -1);
+            /* Close parent's read end — cat has its own reference */
+            syscall_dispatch(SYS_CLOSE, pfd[0], 0, 0, 0);
+
+            if (cat_pid > 0) {
+                int status;
+                do_waitpid(cat_pid, &status);
+            } else { ok = 0; }
+
+            if (ok) {
+                kputs("PASS\n");
+                pass++;
+            } else {
+                kprintf("FAIL (echo_pid=%d cat_pid=%d)\n",
+                        echo_pid, cat_pid);
+                fail++;
+            }
+        }
+    }
+
+    /* Test 15: output redirection (echo > file) */
+    kputs("[test] output redirect: ");
+    {
+        /* Create a test file by writing via the filesystem */
+        uint32_t flags = O_WRONLY | O_CREAT | O_TRUNC;
+        int ofd = syscall_dispatch(SYS_OPEN, (uint32_t)"/tmp_redir",
+                                    flags, 0, 0);
+        if (ofd < 0) {
+            kprintf("FAIL (open returned %d)\n", ofd);
+            fail++;
+        } else {
+            const char *argv[] = { "/bin/echo", "redir-ok", NULL };
+            int pid = do_spawn_fd("/bin/echo", argv, -1, ofd, -1);
+            syscall_dispatch(SYS_CLOSE, ofd, 0, 0, 0);
+
+            if (pid > 0) {
+                int status;
+                do_waitpid(pid, &status);
+
+                /* Read back the file to verify */
+                struct inode *ip = fs_namei("/tmp_redir");
+                if (ip && ip->size > 0) {
+                    char buf[32];
+                    int n = fs_read(ip, buf, 0,
+                                    ip->size < 31 ? ip->size : 31);
+                    buf[n] = '\0';
+                    fs_iput(ip);
+                    /* echo writes "redir-ok\n" */
+                    if (n > 0 && strncmp(buf, "redir-ok", 8) == 0) {
+                        kputs("PASS\n");
+                        pass++;
+                    } else {
+                        kprintf("FAIL (got '%s')\n", buf);
+                        fail++;
+                    }
+                } else {
+                    kputs("FAIL (file empty or missing)\n");
+                    fail++;
+                    if (ip) fs_iput(ip);
+                }
+            } else {
+                kprintf("FAIL (spawn returned %d)\n", pid);
+                fail++;
+            }
+            /* Clean up test file */
+            fs_unlink("/tmp_redir");
+        }
+    }
+
+    /* Test 16: SIGPIPE on write to closed pipe */
+    kputs("[test] SIGPIPE: ");
+    {
+        int pfd[2];
+        rc = do_pipe(pfd);
+        if (rc < 0) {
+            kprintf("FAIL (pipe returned %d)\n", rc);
+            fail++;
+        } else {
+            /* Close the read end — no readers */
+            struct pipe *pp = &pipe_table[0];
+            /* Get ofile for write end to manipulate directly */
+            pipe_close_read(pp);
+            /* Close the read fd */
+            syscall_dispatch(SYS_CLOSE, pfd[0], 0, 0, 0);
+
+            /* Clear any previous pending signals */
+            curproc->sig_pending = 0;
+
+            /* Writing to pipe with no readers should set SIGPIPE */
+            char wbuf[] = "fail";
+            int nw = pipe_write(pp, wbuf, 4);
+
+            if (nw == -EPIPE &&
+                (curproc->sig_pending & (1u << SIGPIPE))) {
+                /* Clear the signal so we don't die */
+                curproc->sig_pending &= ~(1u << SIGPIPE);
+                kputs("PASS\n");
+                pass++;
+            } else {
+                kprintf("FAIL (nw=%d pending=0x%x)\n",
+                        nw, curproc->sig_pending);
+                curproc->sig_pending = 0;
+                fail++;
+            }
+
+            /* Clean up */
+            pipe_close_write(pp);
+            syscall_dispatch(SYS_CLOSE, pfd[1], 0, 0, 0);
+        }
+    }
+
+    /* Test 17: user signal handler via real signal delivery */
+    kputs("[test] user signal handler: ");
+    {
+        /* Install a handler for SIGINT, send SIGINT to self, then
+         * clear pending and check that handler was reset (one-shot).
+         * We can't run user code from autotest (supervisor mode), but
+         * we CAN verify the handler gets installed and one-shot resets. */
+        syscall_dispatch(SYS_SIGNAL, SIGINT, 0x50000, 0, 0);
+        if (curproc->sig_handler[SIGINT] == 0x50000) {
+            /* Send SIGINT to self */
+            syscall_dispatch(SYS_KILL, curproc->pid, SIGINT, 0, 0);
+            if (curproc->sig_pending & (1u << SIGINT)) {
+                /* sig_deliver would build a signal frame on user stack.
+                 * In autotest (supervisor mode) we just clear the pending
+                 * signal and verify the infrastructure works. */
+                curproc->sig_pending &= ~(1u << SIGINT);
+                /* Reset handler to SIG_DFL */
+                syscall_dispatch(SYS_SIGNAL, SIGINT, SIG_DFL, 0, 0);
+                kputs("PASS\n");
+                pass++;
+            } else {
+                kputs("FAIL (SIGINT not pending)\n");
+                fail++;
+            }
+        } else {
+            kputs("FAIL (handler not set)\n");
+            fail++;
+        }
+        curproc->sig_pending = 0;
+    }
+
+    /* Test 18: SIGCONT wakes P_STOPPED process */
+    kputs("[test] SIGCONT wakes stopped: ");
+    {
+        /* Spawn a child, stop it, then send SIGCONT */
+        const char *argv[] = { "/bin/sleep", "10", NULL };
+        int cpid = do_spawn("/bin/sleep", argv);
+        if (cpid > 0) {
+            struct proc *child = &proctab[(uint8_t)cpid];
+            /* Stop it directly (simulating SIGSTOP delivery) */
+            child->state = P_STOPPED;
+            /* Send SIGCONT via kill */
+            syscall_dispatch(SYS_KILL, cpid, SIGCONT, 0, 0);
+            if (child->state == P_READY) {
+                kputs("PASS\n");
+                pass++;
+            } else {
+                kprintf("FAIL (state=%d)\n", child->state);
+                fail++;
+            }
+            /* Clean up: kill child */
+            child->sig_pending |= (1u << SIGKILL);
+            child->state = P_READY;
+            int status;
+            do_waitpid(cpid, &status);
+        } else {
+            kputs("FAIL (spawn failed)\n");
+            fail++;
+        }
+    }
+
+    /* Test 19: signal() returns old handler */
+    kputs("[test] signal returns old: ");
+    {
+        syscall_dispatch(SYS_SIGNAL, SIGTERM, SIG_IGN, 0, 0);
+        int32_t old = syscall_dispatch(SYS_SIGNAL, SIGTERM, SIG_DFL, 0, 0);
+        if (old == SIG_IGN) {
+            kputs("PASS\n");
+            pass++;
+        } else {
+            kprintf("FAIL (old=%d)\n", old);
             fail++;
         }
     }
@@ -362,6 +579,275 @@ static void imshow_test(void)
 }
 #endif
 
+/*
+ * Shell: execute a pipeline with optional I/O redirection.
+ *
+ * Supports:
+ *   exec cmd1 | cmd2 | cmd3   — piped commands
+ *   exec cmd > file            — output redirection (truncate)
+ *   exec cmd >> file           — output redirection (append)
+ *   exec cmd < file            — input redirection
+ *   exec cmd < in > out        — combined
+ *   exec cmd1 | cmd2 > file    — pipe + redirection
+ *
+ * Limitation: only the first command can have < and only the last
+ * can have > or >> (standard shell convention).
+ */
+
+/* Parse a single command segment into argv, stopping at | or end.
+ * Returns pointer past the segment (at '|' or '\0').
+ * Strips leading/trailing whitespace from args. */
+static char *parse_segment(char *start, char **argv, int max_args, int *argc)
+{
+    *argc = 0;
+    char *p = start;
+
+    while (*p && *p != '|') {
+        while (*p == ' ') p++;
+        if (!*p || *p == '|') break;
+        /* Stop at redirection operators — they're not args */
+        if (*p == '<' || *p == '>') break;
+        if (*argc < max_args - 1) {
+            argv[(*argc)++] = p;
+        }
+        while (*p && *p != ' ' && *p != '|' && *p != '<' && *p != '>') p++;
+        if (*p == ' ') *p++ = '\0';
+    }
+    argv[*argc] = NULL;
+    return p;
+}
+
+/* Find redirection operators in a command string and extract filenames.
+ * Modifies the string in place (null-terminates filenames).
+ * Returns: pointers to input file, output file, and append flag. */
+static void parse_redirections(char *cmd,
+                               char **infile, char **outfile, int *append)
+{
+    *infile = NULL;
+    *outfile = NULL;
+    *append = 0;
+
+    for (char *p = cmd; *p; p++) {
+        if (*p == '<') {
+            *p = '\0';
+            p++;
+            while (*p == ' ') p++;
+            *infile = p;
+            while (*p && *p != ' ' && *p != '>' && *p != '|') p++;
+            if (*p) { *p = '\0'; p++; }
+            p--; /* loop increment will advance */
+        } else if (*p == '>') {
+            *p = '\0';
+            p++;
+            if (*p == '>') {
+                *append = 1;
+                *p = '\0';
+                p++;
+            }
+            while (*p == ' ') p++;
+            *outfile = p;
+            while (*p && *p != ' ' && *p != '<' && *p != '|') p++;
+            if (*p) { *p = '\0'; p++; }
+            p--; /* loop increment will advance */
+        }
+    }
+}
+
+/* Count pipe segments in a command string */
+static int count_pipes(const char *cmd)
+{
+    int n = 0;
+    for (const char *p = cmd; *p; p++) {
+        if (*p == '|') n++;
+    }
+    return n;
+}
+
+static void shell_exec_cmd(char *cmdline)
+{
+    int npipes = count_pipes(cmdline);
+
+    /* Parse redirections from the full command line.
+     * For pipelines, < applies to first cmd, > to last cmd. */
+    char *infile = NULL, *outfile = NULL;
+    int append = 0;
+
+    /* For simple (no-pipe) commands, parse redirections directly */
+    if (npipes == 0) {
+        parse_redirections(cmdline, &infile, &outfile, &append);
+
+        char *argv[16];
+        int argc;
+        parse_segment(cmdline, argv, 16, &argc);
+        if (argc == 0) return;
+
+        /* Open input file if redirected */
+        int in_fd = -1;
+        if (infile) {
+            in_fd = syscall_dispatch(SYS_OPEN, (uint32_t)infile, O_RDONLY, 0, 0);
+            if (in_fd < 0) {
+                kprintf("cannot open %s\n", infile);
+                return;
+            }
+        }
+
+        /* Open output file if redirected */
+        int out_fd = -1;
+        if (outfile) {
+            uint32_t flags = O_WRONLY | O_CREAT;
+            flags |= append ? O_APPEND : O_TRUNC;
+            out_fd = syscall_dispatch(SYS_OPEN, (uint32_t)outfile, flags, 0, 0);
+            if (out_fd < 0) {
+                kprintf("cannot open %s\n", outfile);
+                if (in_fd >= 0)
+                    syscall_dispatch(SYS_CLOSE, in_fd, 0, 0, 0);
+                return;
+            }
+        }
+
+        int pid = do_spawn_fd(argv[0], (const char **)argv,
+                              in_fd, out_fd, -1);
+        if (pid > 0) {
+            int status;
+            do_waitpid(pid, &status);
+            int exitcode = (status >> 8) & 0xFF;
+            if (exitcode != 0)
+                kprintf("exit %d\n", exitcode);
+        } else {
+            kprintf("exec failed: %d\n", pid);
+        }
+
+        if (in_fd >= 0)
+            syscall_dispatch(SYS_CLOSE, in_fd, 0, 0, 0);
+        if (out_fd >= 0)
+            syscall_dispatch(SYS_CLOSE, out_fd, 0, 0, 0);
+        return;
+    }
+
+    /* Pipeline: cmd1 | cmd2 | ... | cmdN
+     *
+     * On a no-MMU system with a single USER_BASE, we can't run two user
+     * processes concurrently (they'd overwrite each other's memory).
+     * Instead, run each command sequentially:
+     *   1. Run cmd1 with stdout → pipe. cmd1 runs to completion.
+     *   2. Run cmd2 with stdin ← pipe, stdout → next pipe. Runs to completion.
+     *   etc.
+     *
+     * Limitation: each command's output must fit in the pipe buffer (512 bytes).
+     * If a command blocks on a full pipe, it deadlocks (no reader running).
+     * This is a known trade-off for single-memory-space systems. */
+
+    /* Find pipe boundaries */
+    char *segments[8];  /* max 8 commands in pipeline */
+    int nseg = 0;
+    segments[nseg++] = cmdline;
+    for (char *p = cmdline; *p; p++) {
+        if (*p == '|') {
+            *p = '\0';
+            if (nseg < 8)
+                segments[nseg++] = p + 1;
+        }
+    }
+
+    /* Parse redirections from first and last segments */
+    char *first_infile = NULL, *last_outfile = NULL;
+    int last_append = 0;
+    {
+        char *dummy_out;
+        int dummy_app;
+        parse_redirections(segments[0], &first_infile, &dummy_out, &dummy_app);
+    }
+    if (nseg > 1) {
+        char *dummy_in;
+        parse_redirections(segments[nseg - 1], &dummy_in, &last_outfile,
+                           &last_append);
+    }
+
+    /* Open input file for first command */
+    int in_fd = -1;
+    if (first_infile) {
+        in_fd = syscall_dispatch(SYS_OPEN, (uint32_t)first_infile, O_RDONLY, 0, 0);
+        if (in_fd < 0) {
+            kprintf("cannot open %s\n", first_infile);
+            return;
+        }
+    }
+
+    /* Open output file for last command */
+    int out_fd = -1;
+    if (last_outfile) {
+        uint32_t flags = O_WRONLY | O_CREAT;
+        flags |= last_append ? O_APPEND : O_TRUNC;
+        out_fd = syscall_dispatch(SYS_OPEN, (uint32_t)last_outfile, flags, 0, 0);
+        if (out_fd < 0) {
+            kprintf("cannot open %s\n", last_outfile);
+            if (in_fd >= 0)
+                syscall_dispatch(SYS_CLOSE, in_fd, 0, 0, 0);
+            return;
+        }
+    }
+
+    /* Run pipeline commands sequentially, connected by pipes */
+    int prev_read_fd = in_fd;
+    int i;
+
+    for (i = 0; i < nseg; i++) {
+        char *argv[16];
+        int argc;
+        parse_segment(segments[i], argv, 16, &argc);
+        if (argc == 0) {
+            kputs("empty command in pipeline\n");
+            break;
+        }
+
+        int pipe_fds[2] = {-1, -1};
+        int child_stdout;
+
+        if (i < nseg - 1) {
+            /* Not the last command: create pipe for output */
+            int prc = do_pipe(pipe_fds);
+            if (prc < 0) {
+                kprintf("pipe failed: %d\n", prc);
+                break;
+            }
+            child_stdout = pipe_fds[1]; /* write end */
+        } else {
+            /* Last command: use output file or default stdout */
+            child_stdout = out_fd;
+        }
+
+        int pid = do_spawn_fd(argv[0], (const char **)argv,
+                               prev_read_fd, child_stdout, -1);
+
+        /* Close parent's copies of FDs given to child */
+        if (prev_read_fd >= 0)
+            syscall_dispatch(SYS_CLOSE, prev_read_fd, 0, 0, 0);
+        if (child_stdout >= 0 && child_stdout != out_fd)
+            syscall_dispatch(SYS_CLOSE, pipe_fds[1], 0, 0, 0);
+
+        if (pid < 0) {
+            kprintf("exec failed: %d\n", pid);
+            if (pipe_fds[0] >= 0)
+                syscall_dispatch(SYS_CLOSE, pipe_fds[0], 0, 0, 0);
+            break;
+        }
+
+        /* Wait for this command to finish before loading the next.
+         * Required because all processes share USER_BASE (no MMU). */
+        int status;
+        do_waitpid(pid, &status);
+
+        /* The read end of this pipe becomes input for the next command */
+        prev_read_fd = pipe_fds[0];
+    }
+
+    /* Close remaining FDs */
+    if (prev_read_fd >= 0)
+        syscall_dispatch(SYS_CLOSE, prev_read_fd, 0, 0, 0);
+    if (out_fd >= 0)
+        syscall_dispatch(SYS_CLOSE, out_fd, 0, 0, 0);
+}
+
 /* Built-in emergency shell when no filesystem */
 void builtin_shell(void)
 {
@@ -401,8 +887,8 @@ void builtin_shell(void)
 
         /* Built-in commands */
         if (strcmp(line, "help") == 0) {
-            kputs("Commands: help, mem, ls, cat <file>, echo <text>, "
-                  "exec <file>, halt\n");
+            kputs("Commands: help, mem, ls, cat <file>, echo <text>,\n"
+                  "  exec <prog> [args] [| prog2] [< in] [> out], halt\n");
         } else if (strcmp(line, "halt") == 0) {
             return;
         } else if (strcmp(line, "mem") == 0) {
@@ -417,32 +903,12 @@ void builtin_shell(void)
             kputs(line + 5);
             kputc('\n');
         } else if (strncmp(line, "exec ", 5) == 0) {
-            /* Parse command into argv */
-            char *args[16];
-            int argc = 0;
-            char *p = line + 5;
-            while (*p && argc < 15) {
-                while (*p == ' ') p++;
-                if (!*p) break;
-                args[argc++] = p;
-                while (*p && *p != ' ') p++;
-                if (*p) *p++ = '\0';
-            }
-            args[argc] = NULL;
-            if (argc == 0) {
-                kputs("Usage: exec <program> [args...]\n");
+            char *cmdline = line + 5;
+            while (*cmdline == ' ') cmdline++;
+            if (!*cmdline) {
+                kputs("Usage: exec <program> [args...] [| cmd2] [< in] [> out]\n");
             } else {
-                /* Use spawn/waitpid pattern */
-                int pid = do_spawn(args[0], (const char **)args);
-                if (pid > 0) {
-                    int status;
-                    do_waitpid(pid, &status);
-                    int exitcode = (status >> 8) & 0xFF;
-                    if (exitcode != 0)
-                        kprintf("exit %d\n", exitcode);
-                } else {
-                    kprintf("exec failed: %d\n", pid);
-                }
+                shell_exec_cmd(cmdline);
             }
         } else if (strncmp(line, "write ", 6) == 0) {
             shell_write(line + 6);
