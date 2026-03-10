@@ -21,6 +21,7 @@ development.
 
 ## 2. Project Metrics
 
+
 | Metric | Value |
 |--------|-------|
 | Total project lines (excl. Musashi) | ~80,000 |
@@ -278,16 +279,12 @@ per-process kernel stacks were implemented. No negative impact.
    tested only via autotest, not host tests
 2. **No multi-process interaction autotest** — no test for concurrent
    processes exercising scheduling, signals during I/O
-3. **No kstack overflow detection** — 512-byte kstacks have no canary;
-   silent corruption possible on deep syscall paths
-
 ---
 
 ## 14. Possible Future Work
 
 | Item | Effort | Value | Priority |
 |------|--------|-------|----------|
-| kstack canary (debug builds) | Trivial | Catches silent corruption | Medium |
 | Glob expansion in shell | Medium | Enables `*.c` patterns | Low |
 | SRAM persistent filesystem | Medium | Writable persistent storage | Low |
 | Real shell (sh) with job control | Medium | Tier 3 utility | Low |
