@@ -1,6 +1,6 @@
 # Genix top-level Makefile
 
-.PHONY: all emu kernel tools libc apps apps-md disk disk-md run test test-emu test-md test-md-auto test-md-screenshot test-all megadrive clean
+.PHONY: all emu kernel tools libc apps apps-md disk disk-md run test test-emu test-md test-md-auto test-md-screenshot test-md-imshow test-all megadrive clean
 
 all: emu kernel tools apps disk
 
@@ -135,6 +135,46 @@ test-md-screenshot: libc tools
 	kill $$xvfb_pid 2>/dev/null; wait $$xvfb_pid 2>/dev/null; \
 	if [ -f test-md-screenshot.png ]; then \
 		echo "=== Screenshot saved to test-md-screenshot.png ==="; \
+	else \
+		echo "=== WARNING: no screenshot captured (missing xdotool/scrot?) ==="; \
+	fi
+	@$(MAKE) -C pal/megadrive clean
+	@$(MAKE) -C pal/megadrive DISK_IMG=../../disk-md.img
+	@$(MAKE) -C apps clean
+	@$(MAKE) -C apps
+
+# imshow screenshot test — spawn imshow in no-wait mode, capture the VDP
+# color bar output. Validates the full graphics stack: kernel VDP driver,
+# ioctl interface, libgfx, and userspace rendering.
+# Produces test-md-imshow.png for visual inspection.
+# Requires: Xvfb, xdotool, scrot, BlastEm.
+# Always restores the normal ROM when done, even on failure.
+test-md-imshow: libc tools
+	@$(MAKE) -C apps clean
+	@$(MAKE) -C apps LDSCRIPT=user-md.ld
+	@tools/mkfs.minifs disk-md.img 512 $(CORE_BINS)
+	@$(MAKE) -C pal/megadrive clean
+	@$(MAKE) -C pal/megadrive DISK_IMG=../../disk-md.img EXTRA_CFLAGS=-DIMSHOW_TEST
+	@echo "=== test-md-imshow: booting imshow ROM under Xvfb ==="
+	@mkdir -p $(BLASTEM_CFG_DIR); \
+	printf '$(BLASTEM_HEADLESS_CFG)' > $(BLASTEM_CFG_DIR)/blastem.cfg; \
+	Xvfb :59 -screen 0 640x480x24 >/dev/null 2>&1 & xvfb_pid=$$!; \
+	sleep 1; \
+	HOME=/tmp/blastem-test-home DISPLAY=:59 LIBGL_ALWAYS_SOFTWARE=1 SDL_AUDIODRIVER=dummy \
+		timeout -k 3 15 $(BLASTEM) pal/megadrive/genix-md.bin >/dev/null 2>&1 & blastem_pid=$$!; \
+	sleep 5; \
+	wid=$$(DISPLAY=:59 xdotool search --name "BlastEm" 2>/dev/null | tail -1); \
+	if [ -n "$$wid" ]; then \
+		DISPLAY=:59 xdotool windowfocus --sync "$$wid" 2>/dev/null; sleep 0.5; \
+		DISPLAY=:59 scrot -u test-md-imshow.png 2>/dev/null || \
+		DISPLAY=:59 scrot test-md-imshow.png 2>/dev/null || true; \
+	else \
+		DISPLAY=:59 scrot test-md-imshow.png 2>/dev/null || true; \
+	fi; \
+	kill $$blastem_pid 2>/dev/null; kill -9 $$blastem_pid 2>/dev/null; wait $$blastem_pid 2>/dev/null; \
+	kill $$xvfb_pid 2>/dev/null; wait $$xvfb_pid 2>/dev/null; \
+	if [ -f test-md-imshow.png ]; then \
+		echo "=== imshow screenshot saved to test-md-imshow.png ==="; \
 	else \
 		echo "=== WARNING: no screenshot captured (missing xdotool/scrot?) ==="; \
 	fi
