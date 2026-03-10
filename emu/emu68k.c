@@ -142,6 +142,9 @@ static int uart_read_char(void)
             g_quit = 1;
             return -1;
         }
+        /* Translate DEL (0x7F) to BS (0x08) to match Saturn keyboard */
+        if (c == 0x7F)
+            c = 0x08;
         return c;
     }
     if (n == 0) {
