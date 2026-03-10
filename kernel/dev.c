@@ -151,4 +151,24 @@ void dev_create_nodes(void)
     } else {
         fs_iput(condev);
     }
+
+    /* Create /dev/tty1, /dev/tty2, /dev/tty3 (major=DEV_CONSOLE, minor=1-3) */
+    {
+        static const char *tty_names[] = { "/dev/tty1", "/dev/tty2", "/dev/tty3" };
+        for (int i = 0; i < 3; i++) {
+            struct inode *tp = fs_namei(tty_names[i]);
+            if (!tp) {
+                struct inode *ip = fs_create(tty_names[i], FT_DEV);
+                if (ip) {
+                    ip->dev_major = DEV_CONSOLE;
+                    ip->dev_minor = i + 1;
+                    ip->dirty = 1;
+                    fs_iupdate(ip);
+                    fs_iput(ip);
+                }
+            } else {
+                fs_iput(tp);
+            }
+        }
+    }
 }

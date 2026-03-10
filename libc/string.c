@@ -169,3 +169,71 @@ char *strtok(char *s, const char *delim)
     saved = (void *)0;
     return start;
 }
+
+char *strstr(const char *haystack, const char *needle)
+{
+    unsigned int nlen;
+    if (!*needle) return (char *)haystack;
+    nlen = strlen(needle);
+    while (*haystack) {
+        if (strncmp(haystack, needle, nlen) == 0)
+            return (char *)haystack;
+        haystack++;
+    }
+    return (char *)0;
+}
+
+int strcasecmp(const char *s1, const char *s2)
+{
+    while (*s1 && *s2) {
+        int c1 = *s1, c2 = *s2;
+        if (c1 >= 'A' && c1 <= 'Z') c1 += 32;
+        if (c2 >= 'A' && c2 <= 'Z') c2 += 32;
+        if (c1 != c2) return c1 - c2;
+        s1++; s2++;
+    }
+    return (unsigned char)*s1 - (unsigned char)*s2;
+}
+
+int strncasecmp(const char *s1, const char *s2, unsigned int n)
+{
+    while (n-- && *s1 && *s2) {
+        int c1 = *s1, c2 = *s2;
+        if (c1 >= 'A' && c1 <= 'Z') c1 += 32;
+        if (c2 >= 'A' && c2 <= 'Z') c2 += 32;
+        if (c1 != c2) return c1 - c2;
+        s1++; s2++;
+    }
+    if (n == (unsigned int)-1) return 0;
+    return (unsigned char)*s1 - (unsigned char)*s2;
+}
+
+unsigned int strcspn(const char *s, const char *reject)
+{
+    const char *p = s;
+    while (*p) {
+        const char *r = reject;
+        while (*r) {
+            if (*p == *r) return p - s;
+            r++;
+        }
+        p++;
+    }
+    return p - s;
+}
+
+unsigned int strspn(const char *s, const char *accept)
+{
+    const char *p = s;
+    while (*p) {
+        const char *a = accept;
+        int found = 0;
+        while (*a) {
+            if (*p == *a) { found = 1; break; }
+            a++;
+        }
+        if (!found) return p - s;
+        p++;
+    }
+    return p - s;
+}

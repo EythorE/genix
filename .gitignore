@@ -38,6 +38,10 @@ apps/paste
 apps/comm
 apps/seq
 apps/tac
+apps/grep
+apps/od
+apps/env
+apps/expr
 apps/levee/levee
 tests/test_string
 tests/test_mem

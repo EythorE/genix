@@ -86,7 +86,7 @@ struct winsize {
 #define TTY_STOPPED   0x01  /* output stopped (^S) */
 #define TTY_THROTTLE  0x02  /* input throttled */
 
-#define NTTY  1  /* single TTY for now */
+#define NTTY  4  /* multi-TTY: /dev/console + /dev/tty1-tty3 */
 
 struct tty {
     struct kernel_termios termios;

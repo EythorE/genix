@@ -84,6 +84,22 @@ void pal_init(void)
     volatile uint8_t *sram_reg = (volatile uint8_t *)0xA130F1;
     *sram_reg = 0x03;  /* Enable SRAM, write-enable */
 
+    /* Validate SRAM contents — check for minifs superblock magic.
+     * SRAM is byte-accessible at odd addresses on Mega Drive:
+     * byte[i] lives at SRAM_BASE + i*2 + 1. */
+    {
+        volatile uint8_t *sram = (volatile uint8_t *)(SRAM_BASE + 1);
+        uint32_t magic = ((uint32_t)sram[0] << 24) |
+                         ((uint32_t)sram[2] << 16) |
+                         ((uint32_t)sram[4] << 8)  |
+                         (uint32_t)sram[6];
+        if (magic != 0x4D494E49) {  /* "MINI" — MINIFS_MAGIC */
+            /* SRAM not initialized — zero it for fresh filesystem */
+            for (uint32_t i = 0; i < SRAM_SIZE; i++)
+                sram[i * 2] = 0;
+        }
+    }
+
     /* Initialize Saturn keyboard */
     keyboard_init();
 
@@ -229,4 +245,26 @@ void pal_halt(void)
 void md_vblank_handler(void)
 {
     md_ticks++;
+}
+
+/*
+ * pal_keyboard_poll — called from VBlank ISR to feed keyboard input
+ * into the TTY layer via tty_inproc().
+ *
+ * keyboard_read() is non-blocking: returns 0 if no key is available.
+ * This replaces the polling loop in tty_read() on Mega Drive — chars
+ * arrive via interrupt and are queued before the reader wakes up.
+ */
+void pal_keyboard_poll(void)
+{
+    extern void tty_inproc(int minor, uint8_t c);
+    uint8_t key = keyboard_read();
+    if (key != 0) {
+        /* F12 toggles debug overlay — don't pass to TTY */
+        if (key == KEY_F12) {
+            dbg_toggle();
+            return;
+        }
+        tty_inproc(0, key);
+    }
 }

@@ -1581,3 +1581,154 @@ Largest new utility is comm at 1,624 bytes.
 | `apps/Makefile` | Added 8 new programs to PROGRAMS list |
 | `Makefile` | Added 8 programs to CORE_BINS |
 | `kernel/main.c` | 4 new autotest cases (tests 24-27) |
+
+---
+
+## Phase 2f Completion: Libc Extensions, Regex, Tier 2 Utilities
+
+**Date:** 2026-03-10
+**Status:** Complete
+
+### What Was Done
+
+Completed the remaining Phase 2f work:
+
+1. **Libc extensions**: Added strstr, strcasecmp, strncasecmp, strcspn, strspn
+   to string.c. Added fputs, fread, fwrite, ungetc to stdio.c. Added putchar,
+   getchar, putc, getc macros to stdio.h. Added sscanf to sprintf.c. Added
+   qsort (shell sort), bsearch, rand, srand to stdlib.c. Added environment
+   variable support (environ, getenv, setenv, unsetenv) to stdlib.c.
+
+2. **Regex library**: New libc/regex.c (~240 lines) — recursive backtracking
+   matcher supporting literals, `.`, `^`, `$`, `*`, `[abc]`, `[^abc]`,
+   `[a-z]`, `\` escaping. No dynamic allocation. Suitable for grep on 68000.
+
+3. **Tier 2 utilities**: grep (regex search, -inv flags), od (octal/hex dump),
+   env (print/set environment), expr (arithmetic + comparison expressions).
+
+4. **Shell improvements**: PATH search (commands without `/` automatically
+   try `/bin/` prefix), `cd` builtin, implicit exec (no need to type "exec").
+
+5. **Host tests**: Added qsort tests (4 cases using inline shell sort),
+   sscanf helper tests (is_space, do_vsnprintf round-trips). Total: 71
+   test_libc cases.
+
+### Pain Points and Decisions
+
+- **Shell sort for qsort**: Chose shell sort over quicksort. On 68000,
+  recursion costs 18 cycles per JSR + register saves, and kernel stacks are
+  512 bytes. Shell sort is O(n^1.5) worst case with constant stack usage.
+  Adequate for sorting small arrays in utility programs.
+
+- **malloc/free forward declaration**: setenv/unsetenv use malloc/free but
+  are defined before them in stdlib.c. Cross-compiler catches this as an
+  error (implicit function declaration). Fixed with forward declarations.
+
+- **68000 varargs vs x86-64 host testing**: sscanf uses `(&fmt + 1)` to walk
+  stack-passed arguments. This doesn't work on x86-64. Solution: test sscanf
+  helpers (is_space) and round-trip via do_vsnprintf on the host. The full
+  sscanf is tested only via cross-compiled guest programs.
+
+- **grep size**: 7 KB with regex library linked in. Fits in MD's ~28 KB user
+  space but is one of the larger utilities. The regex engine itself is ~1.5 KB
+  compiled; most of the size comes from libc (stdio, getopt, string functions).
+
+- **Environment variables are process-local**: Since Genix has no fork(),
+  each exec'd process starts with a fresh environment. The `env` utility only
+  sets variables within its own process. True environment passing would require
+  kernel support to forward envp through exec(). Documented as a known
+  limitation.
+
+- **sed omitted**: The plan included sed but it requires significant regex
+  integration (substitution, addresses, hold/pattern space). Deferred — grep
+  alone provides the highest-value regex utility.
+
+### Testing
+
+- 2675 host tests pass (was 2636)
+- Workbench AUTOTEST: 31 passed, 0 failed (existing tests still pass)
+- All 34 apps cross-compile for both workbench and Mega Drive
+- BlastEm headless 300-frame boot: no crash
+- Mega Drive ROM size: 555 KB (34 apps in /bin)
+
+---
+
+## Phase 4: Polish (Partial)
+
+**Date:** 2026-03-10
+**Status:** Complete (items 1-4 of Phase 4)
+
+### What Was Done
+
+1. **Platform-configurable buffer cache**: NBUFS is now `#ifndef NBUFS` in
+   kernel.h (default 16). Mega Drive Makefile passes `-DNBUFS=8`, saving 8 KB
+   of RAM for the buffer cache. Workbench keeps NBUFS=16.
+
+2. **Multi-TTY infrastructure**: NTTY increased from 1 to 4. Device nodes
+   /dev/tty1, /dev/tty2, /dev/tty3 created in dev_create_nodes(). TTY table
+   already supports multiple entries. All TTYs share the VDP output and
+   keyboard input routes to TTY 0 (foreground).
+
+3. **Interrupt-driven keyboard (Mega Drive)**: Added pal_keyboard_poll() to
+   platform.c, called from VBlank ISR in crt0.S. Keyboard input now arrives
+   via interrupt rather than polling in tty_read(). Characters are fed to
+   tty_inproc(0, key) which is ISR-safe (single byte write to inq_head).
+
+4. **SRAM persistent filesystem validation**: On boot, pal_init() checks SRAM
+   for valid minifs superblock magic ("MINI" = 0x4D494E49). If not found,
+   zeroes SRAM for fresh filesystem. Handles Mega Drive's odd-byte SRAM
+   addressing (byte[i] at SRAM_BASE + i*2 + 1).
+
+### Pain Points and Decisions
+
+- **VBlank ISR keyboard vs polling**: The polling approach in pal_console_getc()
+  still exists for the rare case where getc is called directly. The ISR path
+  is the primary input method now. Both paths handle F12 (debug toggle)
+  filtering. No race condition because inq_head write is atomic (uint8_t)
+  on 68000.
+
+- **NBUFS=8 on Mega Drive**: Each buffer is 1 KB (BLOCK_SIZE) + header.
+  Reducing from 16 to 8 saves ~8 KB. With 64 KB total RAM and ~35 KB kernel,
+  this leaves more headroom for user programs. Trade-off: more disk I/O on
+  cache misses, but filesystem access patterns on MD are sequential (exec,
+  read) so hit rate stays acceptable.
+
+- **Multi-TTY is wiring only**: The TTY layer already supported multiple
+  entries. The main change is creating device nodes and routing console I/O
+  through minor numbers. Actual TTY switching (foreground/background) would
+  need keyboard shortcuts and VDP context switching — deferred to future work.
+
+- **SRAM zeroing on invalid magic**: Rather than auto-formatting with mkfs,
+  we just zero SRAM. The kernel's fs_init() will see an empty superblock and
+  either format it or skip SRAM as a device. This is safer than assuming a
+  specific filesystem layout.
+
+### What Changed
+
+| File | Change |
+|------|--------|
+| `libc/string.c` | Added strstr, strcasecmp, strncasecmp, strcspn, strspn |
+| `libc/include/string.h` | Declarations for new string functions |
+| `libc/stdio.c` | Added fputs, fread, fwrite, ungetc |
+| `libc/include/stdio.h` | Declarations + putchar/getchar/putc/getc macros |
+| `libc/stdlib.c` | Environment vars, qsort, bsearch, rand/srand, fwd decls |
+| `libc/include/stdlib.h` | Declarations for new stdlib functions |
+| `libc/sprintf.c` | Added sscanf implementation |
+| `libc/regex.c` | New — minimal regex engine |
+| `libc/include/regex.h` | New — regex_t, regcomp/regexec/regfree |
+| `libc/Makefile` | Added regex.o to OBJS |
+| `apps/grep.c` | New — pattern search with regex |
+| `apps/od.c` | New — octal/hex dump |
+| `apps/env.c` | New — environment variable utility |
+| `apps/expr.c` | New — expression evaluator |
+| `apps/Makefile` | Added grep, od, env, expr to PROGRAMS |
+| `Makefile` | Added grep, od, env, expr to CORE_BINS |
+| `.gitignore` | Added grep, od, env, expr binaries |
+| `kernel/main.c` | Shell: PATH search, cd builtin, implicit exec |
+| `kernel/kernel.h` | NBUFS now configurable via #ifndef |
+| `kernel/tty.h` | NTTY 1→4 for multi-TTY |
+| `kernel/dev.c` | /dev/tty1-tty3 device nodes |
+| `pal/megadrive/platform.c` | pal_keyboard_poll(), SRAM validation |
+| `pal/megadrive/crt0.S` | VBlank ISR calls pal_keyboard_poll |
+| `pal/megadrive/Makefile` | -DNBUFS=8 |
+| `tests/test_libc.c` | Added qsort + sscanf helper tests |
