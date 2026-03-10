@@ -85,8 +85,8 @@ make test-all      # Full testing ladder (all of the above in order)
 ```
 
 BlastEm headless tests (`test-md`, `test-md-auto`) use `-b N` and need
-no display. The screenshot test (`make test-md-screenshot`) needs
-`Xvfb` and `xdotool`; `scrot` is an optional fallback.
+no display. The screenshot tests (`make test-md-screenshot`,
+`make test-md-imshow`) need `Xvfb`, `xdotool`, and `scrot`.
 
 ### All Build Targets
 
@@ -110,6 +110,7 @@ make test-md         # 5. Headless BlastEm -b 300 (~5s, no Xvfb)
 make test-md-auto    # 6. BlastEm -b 600 AUTOTEST (PRIMARY QUALITY GATE)
 make test-all        # Full ladder: test → kernel → test-emu → megadrive → test-md → test-md-auto
 make test-md-screenshot  # Visual VDP test (saves test-md-screenshot.png)
+make test-md-imshow  # imshow graphics test (saves test-md-imshow.png)
 make clean           # Remove all build artifacts
 ```
 
