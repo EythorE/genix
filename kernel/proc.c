@@ -811,6 +811,170 @@ static int sys_dup2(uint32_t oldfd, uint32_t newfd)
     return newfd;
 }
 
+/* ======== Signals ======== */
+
+/*
+ * Deliver pending signals to the current process.
+ *
+ * Called on return from syscall (end of syscall_dispatch).
+ * For now, only default actions are supported:
+ *   - SIG_DFL: terminate process (most signals), or ignore (SIGCHLD, SIGCONT)
+ *   - SIG_IGN: discard the signal
+ *   - User handlers: not yet implemented (requires signal frame on user stack)
+ *
+ * SIGKILL and SIGSTOP cannot be caught or ignored.
+ */
+void sig_deliver(void)
+{
+    if (!curproc || !curproc->sig_pending)
+        return;
+
+    for (int sig = 1; sig < NSIG; sig++) {
+        if (!(curproc->sig_pending & (1u << sig)))
+            continue;
+        curproc->sig_pending &= ~(1u << sig);
+
+        uint32_t handler = curproc->sig_handler[sig];
+
+        /* SIGKILL/SIGSTOP: always take default action */
+        if (sig == SIGKILL) {
+            do_exit(128 + sig);
+            return;  /* not reached */
+        }
+        if (sig == SIGSTOP) {
+            /* TODO: stop/continue support */
+            continue;
+        }
+
+        if (handler == SIG_IGN)
+            continue;
+
+        if (handler == SIG_DFL) {
+            /* Default actions */
+            switch (sig) {
+            case SIGCHLD:
+            case SIGCONT:
+                /* Default is ignore */
+                break;
+            default:
+                /* Default is terminate */
+                do_exit(128 + sig);
+                return;  /* not reached */
+            }
+        } else {
+            /* User handler: not yet implemented.
+             * For now, treat like SIG_DFL to avoid ignoring signals.
+             * TODO: build signal frame on user stack + sigreturn trampoline */
+            switch (sig) {
+            case SIGCHLD:
+            case SIGCONT:
+                break;
+            default:
+                do_exit(128 + sig);
+                return;
+            }
+        }
+    }
+}
+
+/* ======== getcwd ======== */
+
+/*
+ * Walk from the cwd inode to root, building the absolute path.
+ *
+ * Algorithm: starting at curproc->cwd, look up ".." to find parent,
+ * then scan parent's directory for the entry pointing to current inode.
+ * Repeat until we reach root (inode 1 or ".." points to self).
+ */
+static int sys_getcwd(char *buf, uint32_t size)
+{
+    if (!buf || size < 2)
+        return -EINVAL;
+
+    uint16_t cur = curproc ? curproc->cwd : 1;
+
+    /* Root directory: just return "/" */
+    if (cur == 1) {
+        buf[0] = '/';
+        buf[1] = '\0';
+        return (int32_t)(uint32_t)buf;
+    }
+
+    /* Build path components in reverse.
+     * Use a stack of names (limited depth to avoid deep recursion). */
+    char names[8][NAME_MAX + 2];  /* max depth 8 */
+    int depth = 0;
+
+    uint16_t child_inum = cur;
+    while (child_inum != 1 && depth < 8) {
+        /* Open parent directory */
+        struct inode *child_ip = fs_iget(child_inum);
+        if (!child_ip)
+            break;
+
+        /* Read ".." entry to find parent inode */
+        struct dirent_disk de;
+        uint16_t parent_inum = 1;  /* fallback to root */
+        uint32_t off = 0;
+        while (off < child_ip->size) {
+            if (fs_read(child_ip, &de, off, sizeof(de)) != sizeof(de))
+                break;
+            off += sizeof(de);
+            if (de.inode && strcmp(de.name, "..") == 0) {
+                parent_inum = de.inode;
+                break;
+            }
+        }
+        fs_iput(child_ip);
+
+        if (parent_inum == child_inum)
+            break;  /* root: ".." points to self */
+
+        /* Scan parent for entry pointing to child_inum */
+        struct inode *parent_ip = fs_iget(parent_inum);
+        if (!parent_ip)
+            break;
+
+        off = 0;
+        while (off < parent_ip->size) {
+            if (fs_read(parent_ip, &de, off, sizeof(de)) != sizeof(de))
+                break;
+            off += sizeof(de);
+            if (de.inode == child_inum &&
+                strcmp(de.name, ".") != 0 &&
+                strcmp(de.name, "..") != 0) {
+                strncpy(names[depth], de.name, NAME_MAX);
+                names[depth][NAME_MAX] = '\0';
+                depth++;
+                break;
+            }
+        }
+        fs_iput(parent_ip);
+
+        child_inum = parent_inum;
+    }
+
+    /* Build path from components (reverse order) */
+    uint32_t pos = 0;
+    if (depth == 0) {
+        buf[0] = '/';
+        buf[1] = '\0';
+        return (int32_t)(uint32_t)buf;
+    }
+    for (int i = depth - 1; i >= 0; i--) {
+        if (pos + 1 >= size)
+            return -ERANGE;
+        buf[pos++] = '/';
+        uint32_t nlen = strlen(names[i]);
+        if (pos + nlen >= size)
+            return -ERANGE;
+        memcpy(buf + pos, names[i], nlen);
+        pos += nlen;
+    }
+    buf[pos] = '\0';
+    return (int32_t)(uint32_t)buf;
+}
+
 /* ======== Syscall dispatch ======== */
 
 int32_t syscall_dispatch(uint32_t num, uint32_t a1, uint32_t a2,
@@ -890,31 +1054,56 @@ int32_t syscall_dispatch(uint32_t num, uint32_t a1, uint32_t a2,
         }
         return -ENOTTY;
     }
-    case SYS_SIGNAL:
-        /* Basic signal stub: store handler, return 0
-         * a1 = signal number, a2 = handler address */
-        (void)a1; (void)a2;
+    case SYS_SIGNAL: {
+        int signum = (int)a1;
+        uint32_t handler = a2;
+        if (signum < 1 || signum >= NSIG)
+            return -EINVAL;
+        /* SIGKILL and SIGSTOP cannot be caught or ignored */
+        if (signum == SIGKILL || signum == SIGSTOP)
+            return -EINVAL;
+        uint32_t old = curproc->sig_handler[signum];
+        curproc->sig_handler[signum] = handler;
+        return (int32_t)old;
+    }
+    case SYS_KILL: {
+        int pid = (int)a1;
+        int sig = (int)a2;
+        if (sig < 0 || sig >= NSIG)
+            return -EINVAL;
+        if (sig == 0)
+            return 0;  /* sig 0: check if process exists */
+        /* Find target process */
+        struct proc *target = NULL;
+        for (int i = 0; i < MAXPROC; i++) {
+            if (proctab[i].state != P_FREE &&
+                proctab[i].pid == (uint8_t)pid) {
+                target = &proctab[i];
+                break;
+            }
+        }
+        if (!target)
+            return -ESRCH;
+        target->sig_pending |= (1u << sig);
+        /* Wake sleeping processes so they can handle the signal */
+        if (target->state == P_SLEEPING)
+            target->state = P_READY;
         return 0;
-    case SYS_KILL:
-        /* Stub: just return 0 */
-        (void)a1; (void)a2;
-        return 0;
+    }
     case SYS_FCNTL:
         /* Stub: return 0 for F_GETFL, etc. */
         return 0;
-    case SYS_GETDENTS:
+    case SYS_GETDENTS: {
         if (a1 >= MAXFD || !curproc->fd[a1]) return -EBADF;
         if (!curproc->fd[a1]->inode) return -EBADF;
-        return fs_getdents(curproc->fd[a1]->inode, (void *)a2,
-                          curproc->fd[a1]->offset, a3);
+        struct ofile *gof = curproc->fd[a1];
+        int gn = fs_getdents(gof->inode, (void *)a2, gof->offset, a3);
+        if (gn > 0)
+            gof->offset += gn;
+        return gn;
+    }
     case SYS_GETCWD:
-        /* Simple getcwd stub - return "/" */
-        if (a1 && a2 >= 2) {
-            ((char *)a1)[0] = '/';
-            ((char *)a1)[1] = '\0';
-            return (int32_t)a1;
-        }
-        return -EINVAL;
+        return sys_getcwd((char *)a1, a2);
     case SYS_PIPE:
         return do_pipe((int *)a1);
     case SYS_TIME:
@@ -922,4 +1111,8 @@ int32_t syscall_dispatch(uint32_t num, uint32_t a1, uint32_t a2,
     default:
         return -ENOSYS;
     }
+
+    /* Not reached — all cases return above. If we add fall-through
+     * cases in the future, sig_deliver() here will catch pending signals
+     * before returning to user mode. */
 }

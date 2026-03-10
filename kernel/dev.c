@@ -72,6 +72,21 @@ static int con_read(int minor, void *buf, int len)
     for (int i = 0; i < len; i++) {
         p[i] = kgetc();
         if (p[i] == '\r') p[i] = '\n';
+        /* Signal generation when ISIG is set */
+        if ((con_termios.c_lflag & ISIG) && curproc) {
+            if (p[i] == con_termios.c_cc[VINTR]) {
+                /* Ctrl+C: send SIGINT to current process */
+                kputs("^C\n");
+                curproc->sig_pending |= (1u << SIGINT);
+                return -EINTR;
+            }
+            if (p[i] == con_termios.c_cc[VQUIT]) {
+                /* Ctrl+\: send SIGQUIT to current process */
+                kputs("^\\\n");
+                curproc->sig_pending |= (1u << SIGQUIT);
+                return -EINTR;
+            }
+        }
         /* Echo */
         kputc(p[i]);
         if (p[i] == '\n')
@@ -151,13 +166,60 @@ static int disk_ioctl(int minor, int cmd, void *arg) {
     return -EINVAL;
 }
 
+/* ======== Null device (/dev/null) ======== */
+static int null_open(int minor) { (void)minor; return 0; }
+static int null_close(int minor) { (void)minor; return 0; }
+static int null_read(int minor, void *buf, int len) {
+    (void)minor; (void)buf; (void)len;
+    return 0;  /* EOF */
+}
+static int null_write(int minor, const void *buf, int len) {
+    (void)minor; (void)buf;
+    return len;  /* discard, report success */
+}
+static int null_ioctl(int minor, int cmd, void *arg) {
+    (void)minor; (void)cmd; (void)arg;
+    return -EINVAL;
+}
+
 struct device devtab[NDEV] = {
     [DEV_CONSOLE] = { con_open, con_close, con_read, con_write, con_ioctl },
     [DEV_DISK]    = { disk_open, disk_close, disk_read, disk_write, disk_ioctl },
     [DEV_VDP]     = { vdp_open, vdp_close, vdp_read, vdp_write, vdp_ioctl },
+    [DEV_NULL]    = { null_open, null_close, null_read, null_write, null_ioctl },
 };
 
 void dev_init(void)
 {
-    kputs("[dev] Console, disk, and VDP devices ready.\n");
+    kputs("[dev] Console, disk, VDP, and null devices ready.\n");
+}
+
+/*
+ * Create device nodes in the filesystem.
+ * Must be called AFTER fs_init() (filesystem must be mounted).
+ */
+void dev_create_nodes(void)
+{
+    /* Create /dev directory if it doesn't exist */
+    struct inode *devdir = fs_namei("/dev");
+    if (!devdir) {
+        fs_mkdir("/dev");
+    } else {
+        fs_iput(devdir);
+    }
+
+    /* Create /dev/null (major=DEV_NULL, minor=0) */
+    struct inode *nulldev = fs_namei("/dev/null");
+    if (!nulldev) {
+        struct inode *ip = fs_create("/dev/null", FT_DEV);
+        if (ip) {
+            ip->dev_major = DEV_NULL;
+            ip->dev_minor = 0;
+            ip->dirty = 1;
+            fs_iupdate(ip);
+            fs_iput(ip);
+        }
+    } else {
+        fs_iput(nulldev);
+    }
 }

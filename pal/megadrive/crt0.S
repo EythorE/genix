@@ -174,6 +174,7 @@ _vec_vblank:
     jsr     md_vblank_handler
     jsr     timer_interrupt
     jsr     schedule            /* may swtch to different process */
+    jsr     sig_deliver         /* deliver pending signals */
 
     move.l  (%sp)+, %a0
     move    %a0, %usp
@@ -212,6 +213,9 @@ _vec_syscall:
 
     /* Store return value in saved d0 slot */
     move.l  %d0, 4(%sp)
+
+    /* Deliver pending signals before returning to user mode */
+    jsr     sig_deliver
 
     /* Restore user stack pointer */
     move.l  (%sp)+, %a0

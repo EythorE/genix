@@ -52,6 +52,7 @@ typedef int bool;
 #define ESPIPE      29
 #define EROFS       30
 #define EPIPE       32
+#define ERANGE      34
 #define ENOSYS      38
 #define ENOTEMPTY   39
 #define ENAMETOOLONG 36
@@ -235,10 +236,12 @@ struct device {
 #define DEV_CONSOLE  0
 #define DEV_DISK     1
 #define DEV_VDP      2
-#define NDEV         3
+#define DEV_NULL     3
+#define NDEV         4
 
 extern struct device devtab[];
 void dev_init(void);
+void dev_create_nodes(void);
 
 /* ======== Pipes ======== */
 
@@ -263,6 +266,26 @@ int  pipe_read(struct pipe *p, void *buf, int len);
 int  pipe_write(struct pipe *p, const void *buf, int len);
 void pipe_close_read(struct pipe *p);
 void pipe_close_write(struct pipe *p);
+
+/* ======== Signals ======== */
+
+#define SIGHUP   1
+#define SIGINT   2
+#define SIGQUIT  3
+#define SIGKILL  9
+#define SIGPIPE  13
+#define SIGTERM  15
+#define SIGCHLD  17
+#define SIGCONT  18
+#define SIGSTOP  19
+#define SIGTSTP  20
+#define NSIG     21   /* signals 0..20 */
+
+#define SIG_DFL  0
+#define SIG_IGN  1
+
+/* Check and deliver pending signals. Called on return to user mode. */
+void sig_deliver(void);
 
 /* ======== Process management ======== */
 
@@ -292,6 +315,8 @@ struct proc {
     uint32_t brk;          /* current break (top of data) */
     uint32_t vfork_ctx[13]; /* vfork_save context (d2-d7,a2-a6,sp,retaddr) */
     uint16_t cwd;          /* current working directory inode */
+    uint32_t sig_pending;  /* bitmask of pending signals */
+    uint32_t sig_handler[NSIG]; /* signal handlers (0=SIG_DFL, 1=SIG_IGN, else addr) */
     struct ofile *fd[MAXFD];
     uint32_t kstack[KSTACK_WORDS]; /* per-process kernel stack */
 };
