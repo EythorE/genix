@@ -121,6 +121,11 @@ static void sigint_handler(int sig)
     g_quit = 1;
 }
 
+/* Idle detection: sleep briefly when the CPU is just polling UART status */
+static int g_idle_polls = 0;
+#define IDLE_THRESHOLD  4   /* consecutive no-data polls before sleeping */
+#define IDLE_USLEEP     1000 /* 1ms — responsive yet ~0% CPU when idle */
+
 /* Check if a character is available from stdin */
 static int uart_rx_ready(void)
 {
@@ -128,7 +133,13 @@ static int uart_rx_ready(void)
     struct timeval tv = {0, 0};
     FD_ZERO(&fds);
     FD_SET(STDIN_FILENO, &fds);
-    return select(STDIN_FILENO + 1, &fds, NULL, NULL, &tv) > 0;
+    if (select(STDIN_FILENO + 1, &fds, NULL, NULL, &tv) > 0) {
+        g_idle_polls = 0;
+        return 1;
+    }
+    if (++g_idle_polls >= IDLE_THRESHOLD)
+        usleep(IDLE_USLEEP);
+    return 0;
 }
 
 static int g_stdin_eof = 0;
