@@ -1031,9 +1031,118 @@ The kernel multitasking infrastructure is now complete:
    (or a timer ISR nests on top), it silently corrupts `fd[]`, `cwd`,
    etc. Consider adding a canary word at kstack[0] for debug builds.
 
-3. **No signals yet**: `SYS_SIGNAL` and `SYS_KILL` are stubs. Job
-   control (^C, ^Z, fg/bg) requires signal delivery. This is Phase 2d.
+3. **No user signal handlers yet**: Signal delivery works for default
+   actions (terminate, ignore) and SIG_IGN, but user-defined handlers
+   require pushing a signal frame on the user stack and returning to
+   the handler address — not yet implemented. See Phase 2d below.
 
 4. **No I/O redirection in shell**: The shell's `exec` command uses
    `do_spawn()` but doesn't support `>`, `<`, or `2>` syntax. Pipes
    work at the kernel level but need shell syntax support.
+
+---
+
+## Decision: Signal Delivery — Default Actions Only (March 2026)
+
+**Date:** 2026-03-10
+**Status:** Done (Phase 2d partial)
+
+Implemented kernel signal delivery with default actions only:
+- `SYS_SIGNAL(signum, handler)` — set handler, return old handler
+- `SYS_KILL(pid, sig)` — send signal to process (sets pending bit)
+- `sig_deliver()` — called on return to user mode (both syscall and
+  timer ISR paths), processes pending signals
+
+### Design Choices
+
+1. **Bitmask for pending signals**: `uint32_t sig_pending` — one bit per
+   signal (1–20). Simple, no queue, no memory allocation. Adequate for
+   our 21 signals. Mirrors FUZIX approach.
+
+2. **Default actions only (no user handlers yet)**: Most signals terminate
+   the process (exit code 128+signum). SIGCHLD and SIGCONT are ignored by
+   default. SIGKILL always terminates (can't be caught/ignored). SIGSTOP
+   is acknowledged but currently a no-op (no job control yet).
+
+3. **SIG_IGN works**: Processes can ignore specific signals. The signal
+   is cleared from `sig_pending` without action.
+
+4. **sig_deliver in assembly return paths**: Added `jsr sig_deliver` in
+   both `crt0.S` files (workbench and Mega Drive) at two points:
+   - After `syscall_dispatch` returns, before restoring USP
+   - After `schedule()` in timer ISR, before restoring user state
+   This ensures signals are checked on every return to user mode.
+
+5. **Ctrl+C and Ctrl+\ in console driver**: `con_read()` generates
+   SIGINT (Ctrl+C) and SIGQUIT (Ctrl+\) when ISIG is set in termios.
+   Returns `-EINTR` after setting the signal pending bit.
+
+### Why Not User Handlers Yet
+
+Delivering to a user-defined handler requires:
+- Saving the interrupted user context (registers, PC, SR)
+- Building a signal frame on the user stack
+- Setting PC to the handler address
+- On handler return (via sigreturn syscall), restoring the saved context
+
+This is ~100 lines of tricky assembly and a new syscall. Not needed for
+Ctrl+C (which just terminates) or the current app set. Will implement
+when we need it (e.g., for a proper shell with job control).
+
+### Pain Points
+
+1. **ERANGE missing from kernel.h**: `sys_getcwd()` used `ERANGE` but it
+   wasn't defined. Cross-compilation caught it (`proc.c:966: error:
+   'ERANGE' undeclared`). Host tests didn't catch it because they use
+   the host's `<errno.h>`. **Lesson:** Always run `make kernel` after
+   adding new errno values — host tests are not sufficient.
+
+2. **dev_init() called before fs_init()**: `dev_create_nodes()` (which
+   creates `/dev/null` in the filesystem) was originally inside
+   `dev_init()`. But `kmain()` calls `dev_init()` before `fs_init()`,
+   so all filesystem operations silently failed. The `/dev/null`
+   autotest caught this. **Fix:** Split into `dev_init()` (hardware
+   setup, no FS) and `dev_create_nodes()` (called after `fs_init()`).
+   **Lesson:** Initialization order dependencies are insidious. The
+   silent failure made it hard to diagnose — `fs_namei()` returned NULL
+   but didn't print an error because the filesystem wasn't mounted yet.
+
+3. **GETDENTS offset not updated**: `SYS_GETDENTS` was reading directory
+   entries but not advancing the file offset in the `ofile` struct.
+   This meant `readdir()` in libc would return the same entry forever.
+   **Fix:** Added `gof->offset += gn` after successful `fs_getdents()`.
+   **Lesson:** Syscalls that advance a file position must update the
+   ofile offset — the caller can't do it because only the kernel knows
+   how many bytes were actually consumed.
+
+### What Changed
+
+| File | Change |
+|------|--------|
+| `kernel/kernel.h` | Signal constants (SIGHUP–SIGTSTP), NSIG, SIG_DFL/SIG_IGN, `sig_deliver()`, `sig_pending`/`sig_handler[]` in proc, ERANGE, DEV_NULL, `dev_create_nodes()` |
+| `kernel/proc.c` | Full `sys_signal()`, `sys_kill()`, `sig_deliver()`, `sys_getcwd()`, fixed GETDENTS offset |
+| `kernel/dev.c` | /dev/null device, Ctrl+C/Ctrl+\ signal generation, `dev_create_nodes()` |
+| `kernel/main.c` | Call `dev_create_nodes()` after `fs_init()`, 3 new autotests (ls, /dev/null, signals) |
+| `kernel/crt0.S` | `jsr sig_deliver` in syscall return + timer ISR |
+| `pal/megadrive/crt0.S` | Same sig_deliver additions |
+| `libc/dirent.c` | New: opendir/readdir/closedir using SYS_GETDENTS |
+| `libc/include/dirent.h` | New: DIR, struct dirent, function declarations |
+| `libc/syscalls.S` | Added getdents, getcwd, rmdir, time stubs |
+| `libc/Makefile` | Added dirent.o |
+| `apps/ls.c` | New: ls with -l flag, using opendir/readdir |
+| `apps/sleep.c` | New: busy-wait sleep using SYS_TIME |
+| `apps/Makefile` | Added ls, sleep |
+| `Makefile` | Added ls, sleep to CORE_BINS |
+| `tests/test_signal.c` | New: 20 signal tests (63 assertions) |
+| `tests/Makefile` | Added test_signal |
+
+### Test Results
+
+| Test | Result |
+|------|--------|
+| `make test` (host) | 454 passed, 0 failed (63 new from test_signal) |
+| `make kernel` | Clean cross-compilation |
+| `make test-emu` | 13 autotest passed, 0 failed (3 new tests) |
+| `make megadrive` | ROM built (549 KB) |
+| `make test-md` | OK (300 frames, no crash) |
+| `make test-md-auto` | OK (600 frames, no crash) |

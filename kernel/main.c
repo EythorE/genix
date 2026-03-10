@@ -91,6 +91,7 @@ void kmain(void)
     buf_init();
     dev_init();
     fs_init();
+    dev_create_nodes();
     proc_init();
 
     kputs("All subsystems initialized.\n");
@@ -251,6 +252,69 @@ static void autotest(void)
             /* Clean up pipe */
             pipe_close_read(p);
             pipe_close_write(p);
+        }
+    }
+
+    /* Test 11: spawn /bin/ls /bin */
+    kputs("[test] spawn ls /bin: ");
+    {
+        const char *argv[] = { "/bin/ls", "/bin", NULL };
+        int pid = do_spawn("/bin/ls", argv);
+        if (pid > 0) {
+            int status = -1;
+            int wpid = do_waitpid(pid, &status);
+            int exitcode = (status >> 8) & 0xFF;
+            if (wpid == pid && exitcode == 0) {
+                kputs("PASS\n");
+                pass++;
+            } else {
+                kprintf("FAIL (wpid=%d exitcode=%d)\n", wpid, exitcode);
+                fail++;
+            }
+        } else {
+            kprintf("FAIL (spawn returned %d)\n", pid);
+            fail++;
+        }
+    }
+
+    /* Test 12: /dev/null exists and is usable */
+    kputs("[test] /dev/null: ");
+    {
+        struct inode *ip = fs_namei("/dev/null");
+        if (ip && ip->type == FT_DEV && ip->dev_major == DEV_NULL) {
+            kputs("PASS\n");
+            pass++;
+            fs_iput(ip);
+        } else {
+            kputs("FAIL\n");
+            fail++;
+            if (ip) fs_iput(ip);
+        }
+    }
+
+    /* Test 13: signal/kill — send SIGTERM to a zombie-able process */
+    kputs("[test] signal/kill: ");
+    {
+        /* Kill with sig=0 to current process — should succeed (exists) */
+        int32_t r = syscall_dispatch(SYS_KILL, 0, 0, 0, 0);
+        if (r == 0) {
+            /* Set SIGTERM to SIG_IGN, then send SIGTERM to self */
+            syscall_dispatch(SYS_SIGNAL, SIGTERM, SIG_IGN, 0, 0);
+            syscall_dispatch(SYS_KILL, 0, SIGTERM, 0, 0);
+            /* sig_deliver should ignore it */
+            sig_deliver();
+            if (curproc && curproc->state == P_RUNNING) {
+                /* Restore default handler */
+                syscall_dispatch(SYS_SIGNAL, SIGTERM, SIG_DFL, 0, 0);
+                kputs("PASS\n");
+                pass++;
+            } else {
+                kputs("FAIL (process killed unexpectedly)\n");
+                fail++;
+            }
+        } else {
+            kprintf("FAIL (kill sig=0 returned %d)\n", r);
+            fail++;
         }
     }
 

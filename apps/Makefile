@@ -15,7 +15,7 @@ MKBIN = ../tools/mkbin
 
 # Programs to build
 PROGRAMS = hello echo cat wc head true false \
-           tail tee yes basename dirname rev nl cmp cut tr uniq imshow
+           tail tee yes basename dirname rev nl cmp cut tr uniq imshow ls sleep
 
 # Cancel make's built-in rule that compiles .c directly to executable
 %: %.c

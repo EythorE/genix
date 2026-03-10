@@ -267,3 +267,46 @@ pipe:
     move.l  #42, %d0           /* SYS_PIPE */
     trap    #0
     rts
+
+/* int getdents(int fd, void *buf, int count) */
+    .globl getdents
+getdents:
+    movem.l %d2-%d3, -(%sp)
+    move.l  12(%sp), %d1       /* fd */
+    move.l  16(%sp), %d2       /* buf */
+    move.l  20(%sp), %d3       /* count */
+    move.l  #141, %d0          /* SYS_GETDENTS */
+    trap    #0
+    movem.l (%sp)+, %d2-%d3
+    rts
+
+/* char *getcwd(char *buf, int size) */
+    .globl getcwd
+getcwd:
+    move.l  %d2, -(%sp)
+    move.l  8(%sp), %d1        /* buf */
+    move.l  12(%sp), %d2       /* size */
+    move.l  #79, %d0           /* SYS_GETCWD */
+    trap    #0
+    move.l  (%sp)+, %d2
+    rts
+
+/* int rmdir(const char *path) */
+    .globl rmdir
+rmdir:
+    move.l  4(%sp), %d1        /* path */
+    move.l  #40, %d0           /* SYS_RMDIR */
+    trap    #0
+    rts
+
+/* time_t time(time_t *t) */
+    .globl time
+time:
+    move.l  #13, %d0           /* SYS_TIME */
+    trap    #0
+    /* Store result to *t if t != NULL */
+    move.l  4(%sp), %a0
+    cmp.l   #0, %a0
+    beq     1f
+    move.l  %d0, (%a0)
+1:  rts
