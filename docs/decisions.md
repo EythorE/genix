@@ -1732,3 +1732,168 @@ Completed the remaining Phase 2f work:
 | `pal/megadrive/crt0.S` | VBlank ISR calls pal_keyboard_poll |
 | `pal/megadrive/Makefile` | -DNBUFS=8 |
 | `tests/test_libc.c` | Added qsort + sscanf helper tests |
+
+---
+
+## Bug Fix: Data Block Deallocation on Inode Free (2026-03-10)
+
+**Date:** 2026-03-10
+**Status:** Fixed
+
+### The Bug
+
+`fs_iput()` had a TODO at line 111: when an inode's refcount and nlink both
+reached 0, the inode type was set to FT_FREE but **data blocks were never
+returned to the free list**. This meant every deleted file permanently leaked
+its data blocks. On SRAM-backed filesystems with limited space, this would
+cause eventual ENOSPC even after deleting files.
+
+### The Fix
+
+Added block deallocation to `fs_iput()`:
+1. Free all 12 direct blocks (skip if 0)
+2. For the indirect block: read it, free all non-zero data blocks it points
+   to, then free the indirect block itself
+3. Zero `ip->size`, `ip->direct[]`, and `ip->indirect` before marking FT_FREE
+
+Required a forward declaration of `static void bfree(uint16_t blk)` since
+`fs_iput()` appears before `bfree()` in the source file.
+
+### Testing
+
+Added 3 new host tests to `test_fs.c`:
+- `test_iput_frees_direct_blocks` — allocates 3 blocks, assigns to inode,
+  drops nlink to 0, verifies blocks return to free list
+- `test_iput_frees_indirect_blocks` — same for indirect block + data blocks
+- `test_iput_nlink_nonzero_keeps_blocks` — verifies blocks are NOT freed
+  when nlink > 0 (regression guard)
+
+### What Changed
+
+| File | Change |
+|------|--------|
+| `kernel/fs.c` | Added bfree forward decl; implemented block deallocation in fs_iput |
+| `tests/test_fs.c` | 3 new tests (118 total assertions, was 109) |
+
+---
+
+## Test Coverage Expansion: buf.c, kprintf.c, Pipe Stress (2026-03-10)
+
+**Date:** 2026-03-10
+**Status:** Done
+
+### Problem
+
+The status review identified three significant host test gaps:
+1. **Buffer cache (buf.c)** — 69 lines of code, zero host test coverage
+2. **kprintf (kprintf.c)** — 96 lines of format string handling, untested
+3. **Pipe stress** — existing pipe test wrote only 5 bytes; no full-buffer,
+   circular wrap, or partial-read tests
+
+### What Was Done
+
+**test_buf.c** (36 assertions): Tests bread/bwrite/brelse with a mock
+PAL disk layer. Covers cache hits, cache misses, dirty/clean eviction,
+different devices, and write-back on eviction. Uses NBUFS=4 to force
+eviction scenarios.
+
+**test_kprintf.c** (24 assertions): Captures kputc output into a buffer
+via a mock pal_console_putc. Tests %d, %u, %x, %s, %c, %% format
+specifiers plus edge cases: negative numbers, zero, large numbers,
+NULL string, unknown format.
+
+**test_pipe.c** (2170 assertions): Re-implements non-blocking pipe_read/
+pipe_write on the host. Tests: exact fill (512 bytes), overflow (>512),
+partial reads, EOF on writer close, EPIPE on reader close, circular
+buffer wrap-around, 512 individual byte writes, alternating read/write
+patterns (100 rounds), zero-length operations.
+
+### Testing
+
+All 4924 host test assertions pass across 13 test files (was 2675 across
+10 files — an 84% increase in test assertions).
+
+### What Changed
+
+| File | Change |
+|------|--------|
+| `tests/test_buf.c` | New — 12 buffer cache tests (36 assertions) |
+| `tests/test_kprintf.c` | New — 18 kprintf tests (24 assertions) |
+| `tests/test_pipe.c` | New — 12 pipe stress tests (2170 assertions) |
+| `tests/Makefile` | Added test_buf, test_kprintf, test_pipe |
+
+---
+
+## CI Pipeline Expansion (2026-03-10)
+
+**Date:** 2026-03-10
+**Status:** Done
+
+### Problem
+
+The CI pipeline (`.github/workflows/ci.yml`) only ran `make test` (host
+unit tests). Per CLAUDE.md, steps 4-6 of the testing ladder "must pass
+before considering any change done," and `test-md-auto` is the "primary
+quality gate" — yet none of these ran in CI.
+
+### The Fix
+
+Expanded the CI pipeline to three jobs:
+
+1. **host-tests** — `make test` (unchanged, no cross-compiler needed)
+2. **cross-build** — Fetches m68k-elf toolchain, then builds kernel
+   (workbench), Mega Drive ROM, and workbench emulator + disk image.
+   Catches compilation errors, link failures, and memory layout issues.
+3. **emu-tests** — Runs the full testing ladder: workbench autotest
+   (STRICT_ALIGN + AUTOTEST), BlastEm headless boot (-b 300), and
+   BlastEm AUTOTEST (-b 600, the primary quality gate).
+
+Jobs run sequentially: host-tests → cross-build → emu-tests. This matches
+the testing ladder order and fails fast on the cheapest tests.
+
+### What Changed
+
+| File | Change |
+|------|--------|
+| `.github/workflows/ci.yml` | Expanded from 1 job to 3 jobs covering full testing ladder |
+
+---
+
+## Project Status Update (2026-03-10 — Late)
+
+All project phases are now **complete**:
+
+| Phase | Status |
+|-------|--------|
+| Phases 1-2e, 3 | **Complete** (unchanged) |
+| Phase 2f (libc + apps) | **Complete** — 34 apps, 16 libc modules incl. regex |
+| Phase 4 (polish) | **Complete** — NBUFS config, multi-TTY, interrupt keyboard, SRAM validation |
+
+### Key Improvements This Session
+
+1. **Last kernel TODO resolved** — data block deallocation in fs_iput().
+   The kernel has zero remaining TODO/FIXME items in production code.
+
+2. **Test coverage dramatically improved** — 4924 host assertions across
+   13 test files (was 2675 across 10). New coverage for buffer cache,
+   kprintf, and pipe stress testing. Previously untested subsystems now
+   have comprehensive host tests.
+
+3. **CI pipeline enforces quality gate** — the full testing ladder
+   (host → cross-compile → workbench autotest → BlastEm headless →
+   BlastEm AUTOTEST) now runs in GitHub Actions on every push and PR.
+
+### Remaining Known Limitations
+
+1. **Single user memory space** — all user programs load at USER_BASE;
+   two processes can't coexist in memory. Pipelines execute sequentially.
+   Fundamental no-MMU limitation.
+
+2. **Shell features** — no glob expansion, no environment variables,
+   no background jobs. The built-in shell is adequate for the current
+   single-user, single-terminal use case.
+
+3. **docs/status-review.md outdated** — reports Phase 2f and Phase 4
+   as partially done, interrupt keyboard as "not done", and test count
+   as 615+. The reality is all phases complete, 4924+ test assertions,
+   and interrupt keyboard implemented.

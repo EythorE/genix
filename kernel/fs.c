@@ -16,6 +16,9 @@ static struct superblock sb;
 static struct inode inode_cache[MAXINODE];
 static int fs_ready = 0;
 
+/* Forward declaration — bfree is used by fs_iput, defined below */
+static void bfree(uint16_t blk);
+
 /* How many blocks for inode table */
 static uint16_t inode_blocks(void)
 {
@@ -107,8 +110,26 @@ void fs_iput(struct inode *ip)
     if (ip->refcount == 0 && ip->dirty)
         fs_iupdate(ip);
     if (ip->refcount == 0 && ip->nlink == 0 && ip->type != FT_FREE) {
-        /* Free inode and its blocks */
-        /* TODO: free data blocks */
+        /* Free data blocks: direct blocks first */
+        for (int i = 0; i < 12; i++) {
+            if (ip->direct[i] != 0) {
+                bfree(ip->direct[i]);
+                ip->direct[i] = 0;
+            }
+        }
+        /* Free indirect block and all blocks it points to */
+        if (ip->indirect != 0) {
+            struct buf *ib = bread(0, ip->indirect);
+            uint16_t *ptrs = (uint16_t *)ib->data;
+            for (int i = 0; i < (int)PTRS_PER_BLK; i++) {
+                if (ptrs[i] != 0)
+                    bfree(ptrs[i]);
+            }
+            brelse(ib);
+            bfree(ip->indirect);
+            ip->indirect = 0;
+        }
+        ip->size = 0;
         ip->type = FT_FREE;
         ip->dirty = 1;
         fs_iupdate(ip);
