@@ -1889,11 +1889,11 @@ All project phases are now **complete**:
    two processes can't coexist in memory. Pipelines execute sequentially.
    Fundamental no-MMU limitation.
 
-2. **Shell features** — no glob expansion, no environment variables,
-   no background jobs. The built-in shell is adequate for the current
-   single-user, single-terminal use case.
+2. **Shell features** — no glob expansion, no environment variable
+   substitution, no background jobs. The built-in shell is adequate for
+   the current single-user, single-terminal use case.
 
-3. **docs/status-review.md outdated** — reports Phase 2f and Phase 4
-   as partially done, interrupt keyboard as "not done", and test count
-   as 615+. The reality is all phases complete, 4924+ test assertions,
-   and interrupt keyboard implemented.
+3. **No kstack overflow detection** — the 512-byte kstack has no canary.
+   A deeply nested syscall path silently corrupts the proc struct.
+   Adding a canary (magic word at kstack[0], checked on syscall return)
+   would catch this in debug builds.
