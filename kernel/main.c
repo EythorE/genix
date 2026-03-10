@@ -1103,7 +1103,13 @@ void builtin_shell(void)
          * echo, erase, kill, signals, and CR→NL mapping) */
         pos = devtab[DEV_CONSOLE].read(0, line, 255);
         if (pos < 0) {
-            /* EINTR from signal — just restart */
+            /* EINTR from signal — clear it and restart.
+             * The builtin shell runs in kernel context and never returns
+             * to user mode, so sig_deliver() (called from crt0.S) never
+             * runs.  We must clear sig_pending here or tty_read() will
+             * return -EINTR again immediately, creating a tight loop. */
+            if (curproc)
+                curproc->sig_pending = 0;
             continue;
         }
         /* Strip trailing newline if present */
