@@ -28,6 +28,8 @@ apps/cut
 apps/tr
 apps/uniq
 apps/imshow
+apps/ls
+apps/sleep
 apps/levee/levee
 tests/test_string
 tests/test_mem
@@ -35,5 +37,6 @@ tests/test_exec
 tests/test_proc
 tests/test_libc
 tests/test_vdp
+tests/test_signal
 test-md-screenshot*.png
 _levee_source/
