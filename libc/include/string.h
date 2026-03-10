@@ -21,5 +21,10 @@ char        *strrchr(const char *s, int c);
 char        *strdup(const char *s);
 char        *strtok(char *s, const char *delim);
 const char  *strerror(int errnum);
+char        *strstr(const char *haystack, const char *needle);
+int          strcasecmp(const char *s1, const char *s2);
+int          strncasecmp(const char *s1, const char *s2, unsigned int n);
+unsigned int strcspn(const char *s, const char *reject);
+unsigned int strspn(const char *s, const char *accept);
 
 #endif

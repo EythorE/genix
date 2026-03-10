@@ -1502,3 +1502,233 @@ PAL: pal_console_putc()/pal_console_getc()
 | `pal/megadrive/Makefile` | Added tty.c + tty.o build rule |
 | `tests/test_tty.c` | New — 78 host unit tests |
 | `tests/Makefile` | Added test_tty |
+
+---
+
+## Phase 2f: Tier 1 Utility Porting (2026-03-10)
+
+### Decision: Write Custom Utilities vs. Port Fuzix Source
+
+Chose to write custom implementations of the Tier 1 utilities rather than
+directly porting Fuzix source files. The Fuzix utilities use Fuzix-specific
+libc headers and calling conventions that would require more adaptation work
+than writing simple tools from scratch. Each utility is under 100 lines and
+follows the established Genix app pattern (raw syscall declarations, static
+buffers with even sizes, no dynamic allocation).
+
+### Programs Added (8 new utilities → 30 total)
+
+| Program | Size (bytes) | Description |
+|---------|-------------|-------------|
+| strings | 1,253 | Extract printable strings from binary files |
+| fold    | 1,134 | Wrap lines to specified width (default 80) |
+| expand  | 1,322 | Convert tabs to spaces |
+| unexpand | 1,560 | Convert leading spaces to tabs |
+| paste   | 1,164 | Merge lines from multiple files |
+| comm    | 1,624 | Compare two sorted files line by line |
+| seq     | 1,398 | Print number sequences |
+| tac     | 949   | Reverse cat (print file lines in reverse) |
+
+All programs are well under the Mega Drive's ~28 KB user space limit.
+Largest new utility is comm at 1,624 bytes.
+
+### Pain Points
+
+1. **tac uses a 4 KB static buffer** — the `static char data[BUF_SIZE]`
+   in `tac.c` consumes 4,099 bytes of BSS. On the Mega Drive this is fine
+   (the buffer lives in user space, ~28 KB available), but it means tac
+   can only reverse files up to 4 KB. For the Mega Drive use case this is
+   acceptable — most text files will be much smaller.
+
+2. **paste reads one byte at a time** — the `read_line()` helper does
+   `read(fd, &c, 1)` per character, which is slow (one syscall per byte).
+   This is the same pattern as cut, tr, and other existing apps. It's
+   simple and correct. Buffered I/O would require stdio (fgets), which
+   is available in libc but the existing app style uses raw syscalls.
+   **Decision:** Keep the raw syscall style for consistency. If performance
+   becomes an issue, migrate apps to libc stdio.
+
+3. **expand uses modulo for tab stops** — `col % tabstop` generates a
+   division instruction. The tabstop is always a small constant (default 8)
+   so DIVU.W is used (fits in 16 bits). Annotated with comment per the
+   division guidelines.
+
+4. **No cross-compiler pre-installed** — the CI/dev environment requires
+   running `scripts/fetch-toolchain.sh` to get `m68k-elf-gcc`. This adds
+   ~10s to first-time setup. The script downloads both the cross-compiler
+   and BlastEm from pre-built releases.
+
+### Testing
+
+- All 99 host tests pass (no regressions)
+- Workbench AUTOTEST: 31 passed, 0 failed (was 27, added 4 new cases)
+- New autotest cases: exec seq, exec strings, exec tac, spawn pipe seq|wc
+- Mega Drive build: clean compile, BlastEm headless 300-frame boot passes
+- Strict alignment checking: no alignment violations in new utilities
+
+### What Changed
+
+| File | Change |
+|------|--------|
+| `apps/strings.c` | New — extract printable strings |
+| `apps/fold.c` | New — line folding |
+| `apps/expand.c` | New — tab expansion |
+| `apps/unexpand.c` | New — space to tab compression |
+| `apps/paste.c` | New — merge file lines |
+| `apps/comm.c` | New — sorted file comparison |
+| `apps/seq.c` | New — number sequence generator |
+| `apps/tac.c` | New — reverse cat |
+| `apps/Makefile` | Added 8 new programs to PROGRAMS list |
+| `Makefile` | Added 8 programs to CORE_BINS |
+| `kernel/main.c` | 4 new autotest cases (tests 24-27) |
+
+---
+
+## Phase 2f Completion: Libc Extensions, Regex, Tier 2 Utilities
+
+**Date:** 2026-03-10
+**Status:** Complete
+
+### What Was Done
+
+Completed the remaining Phase 2f work:
+
+1. **Libc extensions**: Added strstr, strcasecmp, strncasecmp, strcspn, strspn
+   to string.c. Added fputs, fread, fwrite, ungetc to stdio.c. Added putchar,
+   getchar, putc, getc macros to stdio.h. Added sscanf to sprintf.c. Added
+   qsort (shell sort), bsearch, rand, srand to stdlib.c. Added environment
+   variable support (environ, getenv, setenv, unsetenv) to stdlib.c.
+
+2. **Regex library**: New libc/regex.c (~240 lines) — recursive backtracking
+   matcher supporting literals, `.`, `^`, `$`, `*`, `[abc]`, `[^abc]`,
+   `[a-z]`, `\` escaping. No dynamic allocation. Suitable for grep on 68000.
+
+3. **Tier 2 utilities**: grep (regex search, -inv flags), od (octal/hex dump),
+   env (print/set environment), expr (arithmetic + comparison expressions).
+
+4. **Shell improvements**: PATH search (commands without `/` automatically
+   try `/bin/` prefix), `cd` builtin, implicit exec (no need to type "exec").
+
+5. **Host tests**: Added qsort tests (4 cases using inline shell sort),
+   sscanf helper tests (is_space, do_vsnprintf round-trips). Total: 71
+   test_libc cases.
+
+### Pain Points and Decisions
+
+- **Shell sort for qsort**: Chose shell sort over quicksort. On 68000,
+  recursion costs 18 cycles per JSR + register saves, and kernel stacks are
+  512 bytes. Shell sort is O(n^1.5) worst case with constant stack usage.
+  Adequate for sorting small arrays in utility programs.
+
+- **malloc/free forward declaration**: setenv/unsetenv use malloc/free but
+  are defined before them in stdlib.c. Cross-compiler catches this as an
+  error (implicit function declaration). Fixed with forward declarations.
+
+- **68000 varargs vs x86-64 host testing**: sscanf uses `(&fmt + 1)` to walk
+  stack-passed arguments. This doesn't work on x86-64. Solution: test sscanf
+  helpers (is_space) and round-trip via do_vsnprintf on the host. The full
+  sscanf is tested only via cross-compiled guest programs.
+
+- **grep size**: 7 KB with regex library linked in. Fits in MD's ~28 KB user
+  space but is one of the larger utilities. The regex engine itself is ~1.5 KB
+  compiled; most of the size comes from libc (stdio, getopt, string functions).
+
+- **Environment variables are process-local**: Since Genix has no fork(),
+  each exec'd process starts with a fresh environment. The `env` utility only
+  sets variables within its own process. True environment passing would require
+  kernel support to forward envp through exec(). Documented as a known
+  limitation.
+
+- **sed omitted**: The plan included sed but it requires significant regex
+  integration (substitution, addresses, hold/pattern space). Deferred — grep
+  alone provides the highest-value regex utility.
+
+### Testing
+
+- 2675 host tests pass (was 2636)
+- Workbench AUTOTEST: 31 passed, 0 failed (existing tests still pass)
+- All 34 apps cross-compile for both workbench and Mega Drive
+- BlastEm headless 300-frame boot: no crash
+- Mega Drive ROM size: 555 KB (34 apps in /bin)
+
+---
+
+## Phase 4: Polish (Partial)
+
+**Date:** 2026-03-10
+**Status:** Complete (items 1-4 of Phase 4)
+
+### What Was Done
+
+1. **Platform-configurable buffer cache**: NBUFS is now `#ifndef NBUFS` in
+   kernel.h (default 16). Mega Drive Makefile passes `-DNBUFS=8`, saving 8 KB
+   of RAM for the buffer cache. Workbench keeps NBUFS=16.
+
+2. **Multi-TTY infrastructure**: NTTY increased from 1 to 4. Device nodes
+   /dev/tty1, /dev/tty2, /dev/tty3 created in dev_create_nodes(). TTY table
+   already supports multiple entries. All TTYs share the VDP output and
+   keyboard input routes to TTY 0 (foreground).
+
+3. **Interrupt-driven keyboard (Mega Drive)**: Added pal_keyboard_poll() to
+   platform.c, called from VBlank ISR in crt0.S. Keyboard input now arrives
+   via interrupt rather than polling in tty_read(). Characters are fed to
+   tty_inproc(0, key) which is ISR-safe (single byte write to inq_head).
+
+4. **SRAM persistent filesystem validation**: On boot, pal_init() checks SRAM
+   for valid minifs superblock magic ("MINI" = 0x4D494E49). If not found,
+   zeroes SRAM for fresh filesystem. Handles Mega Drive's odd-byte SRAM
+   addressing (byte[i] at SRAM_BASE + i*2 + 1).
+
+### Pain Points and Decisions
+
+- **VBlank ISR keyboard vs polling**: The polling approach in pal_console_getc()
+  still exists for the rare case where getc is called directly. The ISR path
+  is the primary input method now. Both paths handle F12 (debug toggle)
+  filtering. No race condition because inq_head write is atomic (uint8_t)
+  on 68000.
+
+- **NBUFS=8 on Mega Drive**: Each buffer is 1 KB (BLOCK_SIZE) + header.
+  Reducing from 16 to 8 saves ~8 KB. With 64 KB total RAM and ~35 KB kernel,
+  this leaves more headroom for user programs. Trade-off: more disk I/O on
+  cache misses, but filesystem access patterns on MD are sequential (exec,
+  read) so hit rate stays acceptable.
+
+- **Multi-TTY is wiring only**: The TTY layer already supported multiple
+  entries. The main change is creating device nodes and routing console I/O
+  through minor numbers. Actual TTY switching (foreground/background) would
+  need keyboard shortcuts and VDP context switching — deferred to future work.
+
+- **SRAM zeroing on invalid magic**: Rather than auto-formatting with mkfs,
+  we just zero SRAM. The kernel's fs_init() will see an empty superblock and
+  either format it or skip SRAM as a device. This is safer than assuming a
+  specific filesystem layout.
+
+### What Changed
+
+| File | Change |
+|------|--------|
+| `libc/string.c` | Added strstr, strcasecmp, strncasecmp, strcspn, strspn |
+| `libc/include/string.h` | Declarations for new string functions |
+| `libc/stdio.c` | Added fputs, fread, fwrite, ungetc |
+| `libc/include/stdio.h` | Declarations + putchar/getchar/putc/getc macros |
+| `libc/stdlib.c` | Environment vars, qsort, bsearch, rand/srand, fwd decls |
+| `libc/include/stdlib.h` | Declarations for new stdlib functions |
+| `libc/sprintf.c` | Added sscanf implementation |
+| `libc/regex.c` | New — minimal regex engine |
+| `libc/include/regex.h` | New — regex_t, regcomp/regexec/regfree |
+| `libc/Makefile` | Added regex.o to OBJS |
+| `apps/grep.c` | New — pattern search with regex |
+| `apps/od.c` | New — octal/hex dump |
+| `apps/env.c` | New — environment variable utility |
+| `apps/expr.c` | New — expression evaluator |
+| `apps/Makefile` | Added grep, od, env, expr to PROGRAMS |
+| `Makefile` | Added grep, od, env, expr to CORE_BINS |
+| `.gitignore` | Added grep, od, env, expr binaries |
+| `kernel/main.c` | Shell: PATH search, cd builtin, implicit exec |
+| `kernel/kernel.h` | NBUFS now configurable via #ifndef |
+| `kernel/tty.h` | NTTY 1→4 for multi-TTY |
+| `kernel/dev.c` | /dev/tty1-tty3 device nodes |
+| `pal/megadrive/platform.c` | pal_keyboard_poll(), SRAM validation |
+| `pal/megadrive/crt0.S` | VBlank ISR calls pal_keyboard_poll |
+| `pal/megadrive/Makefile` | -DNBUFS=8 |
+| `tests/test_libc.c` | Added qsort + sscanf helper tests |

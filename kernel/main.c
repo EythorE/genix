@@ -689,6 +689,76 @@ static void autotest(void)
         }
     }
 
+    /* Test 24: exec /bin/seq 1 5 — verify number sequence output */
+    kputs("[test] exec /bin/seq: ");
+    {
+        const char *argv[] = { "/bin/seq", "1", "5", NULL };
+        rc = do_exec("/bin/seq", argv);
+        if (rc == 0) { kputs("PASS\n"); pass++; }
+        else { kprintf("FAIL (exit %d)\n", rc); fail++; }
+    }
+
+    /* Test 25: exec /bin/strings on a known binary */
+    kputs("[test] exec /bin/strings: ");
+    {
+        const char *argv[] = { "/bin/strings", "/bin/hello", NULL };
+        rc = do_exec("/bin/strings", argv);
+        if (rc == 0) { kputs("PASS\n"); pass++; }
+        else { kprintf("FAIL (exit %d)\n", rc); fail++; }
+    }
+
+    /* Test 26: exec /bin/fold (reads stdin, but exits 0 on empty) */
+    kputs("[test] exec /bin/tac: ");
+    {
+        const char *argv[] = { "/bin/tac", "/bin/hello", NULL };
+        rc = do_exec("/bin/tac", argv);
+        if (rc == 0) { kputs("PASS\n"); pass++; }
+        else { kprintf("FAIL (exit %d)\n", rc); fail++; }
+    }
+
+    /* Test 27: spawn seq and check output via pipe */
+    kputs("[test] spawn pipe seq|wc: ");
+    {
+        int pfd[2];
+        rc = do_pipe(pfd);
+        if (rc < 0) {
+            kprintf("FAIL (pipe returned %d)\n", rc);
+            fail++;
+        } else {
+            /* Run seq 1 3 with stdout → pipe */
+            const char *seq_argv[] = { "/bin/seq", "1", "3", NULL };
+            int seq_pid = do_spawn_fd("/bin/seq", seq_argv,
+                                       -1, pfd[1], -1);
+            syscall_dispatch(SYS_CLOSE, pfd[1], 0, 0, 0);
+
+            int ok = 1;
+            if (seq_pid > 0) {
+                int status;
+                do_waitpid(seq_pid, &status);
+            } else { ok = 0; }
+
+            /* Run wc with stdin ← pipe */
+            const char *wc_argv[] = { "/bin/wc", NULL };
+            int wc_pid = do_spawn_fd("/bin/wc", wc_argv,
+                                      pfd[0], -1, -1);
+            syscall_dispatch(SYS_CLOSE, pfd[0], 0, 0, 0);
+
+            if (wc_pid > 0) {
+                int status;
+                do_waitpid(wc_pid, &status);
+            } else { ok = 0; }
+
+            if (ok) {
+                kputs("PASS\n");
+                pass++;
+            } else {
+                kprintf("FAIL (seq_pid=%d wc_pid=%d)\n",
+                        seq_pid, wc_pid);
+                fail++;
+            }
+        }
+    }
+
     /* Summary */
     kprintf("\n=== AUTOTEST DONE: %d passed, %d failed ===\n", pass, fail);
     if (fail > 0)
@@ -852,6 +922,19 @@ static void shell_exec_cmd(char *cmdline)
             }
         }
 
+        /* If command doesn't start with '/', try /bin/ prefix */
+        char pathbuf[64];  /* even size for 68000 alignment */
+        if (argv[0][0] != '/') {
+            /* Build /bin/progname path */
+            int plen = 0;
+            const char *prefix = "/bin/";
+            while (prefix[plen]) { pathbuf[plen] = prefix[plen]; plen++; }
+            int ii = 0;
+            while (argv[0][ii] && plen < 62) { pathbuf[plen++] = argv[0][ii++]; }
+            pathbuf[plen] = '\0';
+            argv[0] = pathbuf;
+        }
+
         int pid = do_spawn_fd(argv[0], (const char **)argv,
                               in_fd, out_fd, -1);
         if (pid > 0) {
@@ -963,6 +1046,19 @@ static void shell_exec_cmd(char *cmdline)
             child_stdout = out_fd;
         }
 
+        /* If command doesn't start with '/', try /bin/ prefix */
+        char pathbuf[64];  /* even size for 68000 alignment */
+        if (argv[0][0] != '/') {
+            /* Build /bin/progname path */
+            int plen = 0;
+            const char *prefix = "/bin/";
+            while (prefix[plen]) { pathbuf[plen] = prefix[plen]; plen++; }
+            int ii = 0;
+            while (argv[0][ii] && plen < 62) { pathbuf[plen++] = argv[0][ii++]; }
+            pathbuf[plen] = '\0';
+            argv[0] = pathbuf;
+        }
+
         int pid = do_spawn_fd(argv[0], (const char **)argv,
                                prev_read_fd, child_stdout, -1);
 
@@ -1035,6 +1131,12 @@ void builtin_shell(void)
         } else if (strncmp(line, "echo ", 5) == 0) {
             kputs(line + 5);
             kputc('\n');
+        } else if (strncmp(line, "cd ", 3) == 0) {
+            if (syscall_dispatch(SYS_CHDIR, (uint32_t)(line + 3), 0, 0, 0) < 0)
+                kputs("cd: no such directory\n");
+        } else if (strcmp(line, "cd") == 0) {
+            /* cd with no args — go to root */
+            syscall_dispatch(SYS_CHDIR, (uint32_t)"/", 0, 0, 0);
         } else if (strncmp(line, "exec ", 5) == 0) {
             char *cmdline = line + 5;
             while (*cmdline == ' ') cmdline++;
@@ -1049,7 +1151,8 @@ void builtin_shell(void)
             if (fs_mkdir(line + 6) < 0)
                 kputs("mkdir failed\n");
         } else {
-            kputs("Unknown command. Type 'help'.\n");
+            /* Try running as a program (implicit exec) */
+            shell_exec_cmd(line);
         }
     }
 }

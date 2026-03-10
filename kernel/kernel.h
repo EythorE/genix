@@ -20,7 +20,9 @@ typedef int bool;
 #define NAME_MAX    30
 #define PATH_MAX    256
 #define BLOCK_SIZE  1024
+#ifndef NBUFS
 #define NBUFS       16
+#endif
 
 /* Error numbers */
 #define EPERM        1

@@ -129,3 +129,135 @@ int sprintf(char *buf, const char *fmt, ...)
     /* Use a large limit — caller must ensure buf is big enough */
     return do_vsnprintf(buf, 0x7FFFFFFF, fmt, args);
 }
+
+/* ======== sscanf — formatted input parsing ======== */
+
+static int is_space(int c)
+{
+    return c == ' ' || c == '\t' || c == '\n' || c == '\r';
+}
+
+int sscanf(const char *str, const char *fmt, ...)
+{
+    void **args = (void **)(&fmt + 1);
+    int arg_idx = 0;
+    int matched = 0;
+    const char *p = fmt;
+    const char *s = str;
+
+    while (*p && *s) {
+        /* Whitespace in format matches any amount of whitespace in input */
+        if (is_space(*p)) {
+            while (is_space(*s)) s++;
+            while (is_space(*p)) p++;
+            continue;
+        }
+
+        /* Literal match */
+        if (*p != '%') {
+            if (*s != *p) break;
+            s++; p++;
+            continue;
+        }
+
+        p++;  /* skip '%' */
+
+        /* Check for 'l' modifier */
+        int is_long = 0;
+        if (*p == 'l') {
+            is_long = 1;
+            p++;
+            (void)is_long; /* same size on 68000 */
+        }
+
+        /* %n — store characters consumed so far */
+        if (*p == 'n') {
+            int *np = (int *)args[arg_idx++];
+            *np = (int)(s - str);
+            p++;
+            continue;  /* %n doesn't count as a match */
+        }
+
+        /* %% — literal percent */
+        if (*p == '%') {
+            if (*s != '%') break;
+            s++; p++;
+            continue;
+        }
+
+        switch (*p) {
+        case 'd': {
+            /* Skip leading whitespace */
+            while (is_space(*s)) s++;
+            int neg = 0;
+            if (*s == '-') { neg = 1; s++; }
+            else if (*s == '+') s++;
+            if (*s < '0' || *s > '9') goto done;
+            long val = 0;
+            while (*s >= '0' && *s <= '9') {
+                /* DIVU.W safe: constant 10 */
+                val = val * 10 + (*s - '0');
+                s++;
+            }
+            if (neg) val = -val;
+            *(int *)args[arg_idx++] = (int)val;
+            matched++;
+            break;
+        }
+        case 'u': {
+            while (is_space(*s)) s++;
+            if (*s < '0' || *s > '9') goto done;
+            unsigned long val = 0;
+            while (*s >= '0' && *s <= '9') {
+                val = val * 10 + (*s - '0');
+                s++;
+            }
+            *(unsigned int *)args[arg_idx++] = (unsigned int)val;
+            matched++;
+            break;
+        }
+        case 'x': {
+            while (is_space(*s)) s++;
+            /* Skip optional 0x prefix */
+            if (s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) s += 2;
+            if (!((*s >= '0' && *s <= '9') ||
+                  (*s >= 'a' && *s <= 'f') ||
+                  (*s >= 'A' && *s <= 'F'))) goto done;
+            unsigned long val = 0;
+            while (1) {
+                if (*s >= '0' && *s <= '9')
+                    val = (val << 4) | (*s - '0');
+                else if (*s >= 'a' && *s <= 'f')
+                    val = (val << 4) | (*s - 'a' + 10);
+                else if (*s >= 'A' && *s <= 'F')
+                    val = (val << 4) | (*s - 'A' + 10);
+                else break;
+                s++;
+            }
+            *(unsigned int *)args[arg_idx++] = (unsigned int)val;
+            matched++;
+            break;
+        }
+        case 's': {
+            while (is_space(*s)) s++;
+            char *dest = (char *)args[arg_idx++];
+            while (*s && !is_space(*s))
+                *dest++ = *s++;
+            *dest = '\0';
+            matched++;
+            break;
+        }
+        case 'c': {
+            *(char *)args[arg_idx++] = *s++;
+            matched++;
+            break;
+        }
+        default:
+            goto done;
+        }
+        p++;
+    }
+
+done:
+    return matched;
+}

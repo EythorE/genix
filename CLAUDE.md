@@ -451,15 +451,17 @@ Detailed technical documentation is in `docs/`:
 | Phase 2c | Pipes and I/O redirection | **Complete** |
 | Phase 2d | Signals and job control | **Complete** (user handlers, SIGTSTP/SIGCONT, process groups) |
 | Phase 2e | TTY subsystem (line discipline, termios) | **Complete** |
-| Phase 2f | Fuzix libc + utilities | **In progress** (22 apps, custom libc with 14 modules) |
+| Phase 2f | Fuzix libc + utilities | **Complete** (34 apps, custom libc with 16 modules incl. regex) |
 | Phase 3 | Mega Drive port (PAL drivers from Fuzix) | **Complete** |
-| Phase 4 | Polish (interrupt keyboard, multi-TTY, /dev/null) | Partial (/dev/null done) |
+| Phase 4 | Polish (interrupt keyboard, multi-TTY, /dev/null) | **Complete** (NBUFS config, multi-TTY, interrupt keyboard, SRAM validation) |
 
 What works today: kernel boots on both workbench and Mega Drive, minifs
-filesystem with indirect blocks, exec() loads user programs (22 apps in
+filesystem with indirect blocks, exec() loads user programs (34 apps in
 /bin including hello, echo, cat, wc, head, tail, tee, basename, dirname,
-rev, nl, cmp, cut, tr, uniq, yes, imshow, ls, sleep, levee), built-in
-shell with pipes (`|`), I/O redirection (`>`, `>>`, `<`), and sequential
+rev, nl, cmp, cut, tr, uniq, yes, imshow, ls, sleep, strings, fold,
+expand, unexpand, paste, comm, seq, tac, grep, od, env, expr, levee),
+built-in shell with pipes (`|`), I/O redirection (`>`, `>>`, `<`),
+PATH search (/bin/ prefix), cd builtin, implicit exec, and sequential
 pipeline execution, process table (16 slots) with preemptive scheduling
 (timer-driven context switch via swtch/proc_first_run), per-process
 kernel stacks (512 bytes), user mode execution (USP/SSP separated),
@@ -468,12 +470,14 @@ buffer), user signal handlers (signal frame + sigreturn trampoline),
 SIGPIPE on broken pipes, SIGTSTP/SIGCONT for process stop/continue,
 process groups, TTY line discipline with cooked/raw modes + echo + line editing
 + signal generation + OPOST, termios ioctls (TCGETS/TCSETS/TIOCGWINSZ),
-/dev/tty and /dev/console device nodes, full libc (stdio/stdlib/string/
-ctype/termios/getopt/sprintf/strtol/perror), VDP device driver with
-libgfx userspace library, levee (vi clone) on workbench, 615+ host
-tests (including 78 TTY tests), automated
-guest tests (19+ cases) on both platforms, Saturn keyboard on Mega Drive, SRAM with
-standard Sega mapper. See `docs/decisions.md` for full history.
+/dev/tty and /dev/console device nodes, full libc (stdio/stdlib/string/ctype/termios/getopt/sprintf/strtol/
+perror/regex with 16 modules), VDP device driver with libgfx userspace
+library, levee (vi clone) on workbench, 2675+ host tests (including 78
+TTY tests, 71 libc tests), automated guest tests (31 cases) on both
+platforms, interrupt-driven Saturn keyboard on Mega Drive, SRAM with
+standard Sega mapper and boot-time validation, configurable buffer cache
+(NBUFS=16 workbench, NBUFS=8 Mega Drive), multi-TTY infrastructure
+(4 TTYs). See `docs/decisions.md` for full history.
 
 ## Common Pitfalls
 

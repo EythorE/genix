@@ -28,5 +28,16 @@ int    printf(const char *fmt, ...);
 int    fprintf(FILE *f, const char *fmt, ...);
 int    sprintf(char *buf, const char *fmt, ...);
 int    snprintf(char *buf, unsigned int size, const char *fmt, ...);
+int    sscanf(const char *str, const char *fmt, ...);
+
+int          fputs(const char *s, FILE *f);
+unsigned int fread(void *ptr, unsigned int size, unsigned int nmemb, FILE *f);
+unsigned int fwrite(const void *ptr, unsigned int size, unsigned int nmemb, FILE *f);
+int          ungetc(int c, FILE *f);
+
+#define putchar(c) fputc((c), stdout)
+#define getchar()  fgetc(stdin)
+#define putc(c, f) fputc((c), (f))
+#define getc(f)    fgetc((f))
 
 #endif

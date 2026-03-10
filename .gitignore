@@ -30,6 +30,18 @@ apps/uniq
 apps/imshow
 apps/ls
 apps/sleep
+apps/strings
+apps/fold
+apps/expand
+apps/unexpand
+apps/paste
+apps/comm
+apps/seq
+apps/tac
+apps/grep
+apps/od
+apps/env
+apps/expr
 apps/levee/levee
 tests/test_string
 tests/test_mem
@@ -44,3 +56,4 @@ tests/test_fs
 test-md-screenshot*.png
 test-md-imshow*.png
 _levee_source/
+.plan
