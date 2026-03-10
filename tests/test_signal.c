@@ -36,6 +36,7 @@
 #define P_READY     2
 #define P_SLEEPING  3
 #define P_ZOMBIE    4
+#define P_STOPPED   6
 
 #define MAXPROC  16
 
@@ -45,6 +46,7 @@ struct proc {
     uint8_t  pid;
     uint8_t  ppid;
     int8_t   exitcode;
+    uint8_t  pgrp;
     uint32_t sig_pending;
     uint32_t sig_handler[NSIG];
 };
@@ -53,6 +55,7 @@ static struct proc proctab[MAXPROC];
 static struct proc *curproc;
 static int exit_called;
 static int exit_code;
+static int schedule_called;
 
 /* Mock do_exit for testing */
 static void do_exit(int code)
@@ -63,8 +66,44 @@ static void do_exit(int code)
         curproc->state = P_ZOMBIE;
 }
 
-/* Re-implement sig_deliver for host testing */
-static void sig_deliver(void)
+/* Mock schedule for testing SIGTSTP/SIGSTOP */
+static void schedule(void)
+{
+    schedule_called = 1;
+}
+
+/*
+ * Signal frame constants (must match kernel/proc.c).
+ *
+ * On the real 68000: 84 bytes on user stack, kstack frame is 70 bytes.
+ * On the host test: we can't dereference 32-bit "pointers" on a 64-bit
+ * host, so we test the LOGIC (decision paths, one-shot reset, pending
+ * bits, stop/continue) without actually writing to fake user memory.
+ * The actual signal frame memory layout is validated on the 68000 target
+ * via autotest.
+ */
+#define SIG_FRAME_SIZE   84
+
+/* State captured by sig_deliver when a user handler is dispatched */
+static int handler_dispatched;
+static int handler_sig;
+static uint32_t handler_addr;
+static uint32_t handler_saved_usp;
+static uint32_t handler_saved_d0;
+static uint32_t handler_saved_pc;
+
+/*
+ * Re-implement sig_deliver for host testing.
+ *
+ * Tests the logic: SIG_DFL, SIG_IGN, SIGKILL, SIGSTOP, SIGTSTP,
+ * user handler dispatch (one-shot, pending bit management, frame
+ * redirection). Doesn't write to a fake user stack (68000-specific).
+ *
+ * frame layout (conceptual, 68000 kstack):
+ *   frame[0]  = USP, frame[1] = d0, frame[2..15] = d1-d7/a0-a6
+ *   byte 64-65 = SR, byte 66-69 = PC
+ */
+static void sig_deliver(uint32_t *frame)
 {
     if (!curproc || !curproc->sig_pending)
         return;
@@ -80,8 +119,11 @@ static void sig_deliver(void)
             do_exit(128 + sig);
             return;
         }
-        if (sig == SIGSTOP)
+        if (sig == SIGSTOP) {
+            curproc->state = P_STOPPED;
+            schedule();
             continue;
+        }
 
         if (handler == SIG_IGN)
             continue;
@@ -91,20 +133,32 @@ static void sig_deliver(void)
             case SIGCHLD:
             case SIGCONT:
                 break;
-            default:
-                do_exit(128 + sig);
-                return;
-            }
-        } else {
-            /* User handler: not yet implemented */
-            switch (sig) {
-            case SIGCHLD:
-            case SIGCONT:
+            case SIGTSTP:
+                curproc->state = P_STOPPED;
+                schedule();
                 break;
             default:
                 do_exit(128 + sig);
                 return;
             }
+        } else {
+            /* User handler — record what would be done, modify frame */
+            handler_dispatched = 1;
+            handler_sig = sig;
+            handler_addr = handler;
+            handler_saved_usp = frame[0];
+            handler_saved_d0 = frame[1];
+            handler_saved_pc = *(uint32_t *)((uint8_t *)frame + 66);
+
+            /* Modify frame to redirect to handler (same as real kernel) */
+            frame[0] = (frame[0] - SIG_FRAME_SIZE) & ~1u;  /* new USP */
+            *(uint32_t *)((uint8_t *)frame + 66) = handler; /* PC → handler */
+
+            /* One-shot: reset to SIG_DFL */
+            curproc->sig_handler[sig] = SIG_DFL;
+
+            /* Only one user handler per sig_deliver call */
+            return;
         }
     }
 }
@@ -121,7 +175,7 @@ static int sys_signal(int signum, uint32_t handler)
     return (int32_t)old;
 }
 
-/* Re-implement sys_kill for host testing */
+/* Re-implement sys_kill for host testing (with SIGCONT support) */
 static int sys_kill(int pid, int sig)
 {
     if (sig < 0 || sig >= NSIG)
@@ -138,10 +192,21 @@ static int sys_kill(int pid, int sig)
     if (!target)
         return -ESRCH;
     target->sig_pending |= (1u << sig);
+    if (sig == SIGCONT && target->state == P_STOPPED) {
+        target->state = P_READY;
+        target->sig_pending &= ~((1u << SIGSTOP) | (1u << SIGTSTP));
+    }
     if (target->state == P_SLEEPING)
         target->state = P_READY;
     return 0;
 }
+
+/*
+ * Fake kstack frame for testing signal delivery.
+ * Layout matches 68000 kstack: 16 uint32_t words + SR(2) + PC(4) = 70 bytes.
+ * We allocate 72 bytes (18 uint32_t) for safe access.
+ */
+static uint32_t test_frame[18];
 
 static void init_test(void)
 {
@@ -152,8 +217,23 @@ static void init_test(void)
     }
     curproc = &proctab[0];
     curproc->state = P_RUNNING;
+    curproc->pgrp = 0;
     exit_called = 0;
     exit_code = -1;
+    schedule_called = 0;
+    handler_dispatched = 0;
+    handler_sig = 0;
+    handler_addr = 0;
+    handler_saved_usp = 0;
+    handler_saved_d0 = 0;
+    handler_saved_pc = 0;
+
+    /* Initialize fake frame with recognizable values */
+    memset(test_frame, 0, sizeof(test_frame));
+    test_frame[0] = 0x0F0000;  /* fake USP (68000-style address) */
+    test_frame[1] = 0x42;      /* d0 (mock return value) */
+    /* Set PC at byte offset 66 */
+    *(uint32_t *)((uint8_t *)test_frame + 66) = 0xDEAD;  /* mock PC */
 }
 
 /* ======== Tests ======== */
@@ -240,7 +320,7 @@ static void test_deliver_default_terminates(void)
 {
     init_test();
     curproc->sig_pending = (1u << SIGTERM);
-    sig_deliver();
+    sig_deliver(test_frame);
     ASSERT(exit_called);
     ASSERT_EQ(exit_code, 128 + SIGTERM);
 }
@@ -249,7 +329,7 @@ static void test_deliver_sigint_terminates(void)
 {
     init_test();
     curproc->sig_pending = (1u << SIGINT);
-    sig_deliver();
+    sig_deliver(test_frame);
     ASSERT(exit_called);
     ASSERT_EQ(exit_code, 128 + SIGINT);
 }
@@ -260,7 +340,7 @@ static void test_deliver_sigkill_always_terminates(void)
     /* Even with SIG_IGN set (which shouldn't be possible, but test the logic) */
     curproc->sig_handler[SIGKILL] = SIG_IGN;
     curproc->sig_pending = (1u << SIGKILL);
-    sig_deliver();
+    sig_deliver(test_frame);
     ASSERT(exit_called);
     ASSERT_EQ(exit_code, 128 + SIGKILL);
 }
@@ -270,7 +350,7 @@ static void test_deliver_ignored_signal(void)
     init_test();
     curproc->sig_handler[SIGTERM] = SIG_IGN;
     curproc->sig_pending = (1u << SIGTERM);
-    sig_deliver();
+    sig_deliver(test_frame);
     ASSERT(!exit_called);
     ASSERT_EQ(curproc->sig_pending, 0u);  /* cleared */
 }
@@ -279,7 +359,7 @@ static void test_deliver_sigchld_default_ignore(void)
 {
     init_test();
     curproc->sig_pending = (1u << SIGCHLD);
-    sig_deliver();
+    sig_deliver(test_frame);
     ASSERT(!exit_called);
     ASSERT_EQ(curproc->sig_pending, 0u);
 }
@@ -288,7 +368,7 @@ static void test_deliver_sigcont_default_ignore(void)
 {
     init_test();
     curproc->sig_pending = (1u << SIGCONT);
-    sig_deliver();
+    sig_deliver(test_frame);
     ASSERT(!exit_called);
     ASSERT_EQ(curproc->sig_pending, 0u);
 }
@@ -299,7 +379,7 @@ static void test_deliver_clears_pending(void)
     curproc->sig_handler[SIGINT] = SIG_IGN;
     curproc->sig_handler[SIGTERM] = SIG_IGN;
     curproc->sig_pending = (1u << SIGINT) | (1u << SIGTERM);
-    sig_deliver();
+    sig_deliver(test_frame);
     ASSERT(!exit_called);
     ASSERT_EQ(curproc->sig_pending, 0u);
 }
@@ -308,7 +388,7 @@ static void test_no_pending_noop(void)
 {
     init_test();
     curproc->sig_pending = 0;
-    sig_deliver();
+    sig_deliver(test_frame);
     ASSERT(!exit_called);
 }
 
@@ -318,7 +398,7 @@ static void test_deliver_multiple_first_kills(void)
     /* SIGINT and SIGTERM both pending, default action for both is terminate.
      * sig_deliver processes lowest-numbered first (SIGINT=2 before SIGTERM=15). */
     curproc->sig_pending = (1u << SIGINT) | (1u << SIGTERM);
-    sig_deliver();
+    sig_deliver(test_frame);
     ASSERT(exit_called);
     ASSERT_EQ(exit_code, 128 + SIGINT);
 }
@@ -350,6 +430,185 @@ static void test_sig_pending_bitmask(void)
     ASSERT(!(mask & 1));
 }
 
+/* ======== Phase 2d: User signal handler tests ======== */
+
+static void test_user_handler_redirects_pc(void)
+{
+    init_test();
+    sys_signal(SIGINT, 0x50000);
+    curproc->sig_pending = (1u << SIGINT);
+    sig_deliver(test_frame);
+
+    /* Should NOT have called do_exit */
+    ASSERT(!exit_called);
+    ASSERT(handler_dispatched);
+
+    /* PC should now point to handler */
+    uint32_t new_pc = *(uint32_t *)((uint8_t *)test_frame + 66);
+    ASSERT_EQ(new_pc, 0x50000u);
+}
+
+static void test_user_handler_modifies_usp(void)
+{
+    init_test();
+    uint32_t orig_usp = test_frame[0];
+    sys_signal(SIGINT, 0x50000);
+    curproc->sig_pending = (1u << SIGINT);
+    sig_deliver(test_frame);
+
+    /* USP should have decreased by SIG_FRAME_SIZE (84 bytes, even-aligned) */
+    uint32_t new_usp = test_frame[0];
+    ASSERT(new_usp < orig_usp);
+    ASSERT_EQ(orig_usp - new_usp, (uint32_t)SIG_FRAME_SIZE);
+    ASSERT_EQ(new_usp & 1, 0u);  /* even-aligned */
+}
+
+static void test_user_handler_saves_original_state(void)
+{
+    init_test();
+    uint32_t orig_usp = test_frame[0];
+    uint32_t orig_d0 = test_frame[1];
+    uint32_t orig_pc = *(uint32_t *)((uint8_t *)test_frame + 66);
+
+    sys_signal(SIGINT, 0x50000);
+    curproc->sig_pending = (1u << SIGINT);
+    sig_deliver(test_frame);
+
+    /* sig_deliver should have recorded the original state */
+    ASSERT_EQ(handler_saved_usp, orig_usp);
+    ASSERT_EQ(handler_saved_d0, orig_d0);
+    ASSERT_EQ(handler_saved_pc, orig_pc);
+}
+
+static void test_user_handler_correct_signal(void)
+{
+    init_test();
+    sys_signal(SIGTERM, 0x50000);
+    curproc->sig_pending = (1u << SIGTERM);
+    sig_deliver(test_frame);
+
+    ASSERT(handler_dispatched);
+    ASSERT_EQ(handler_sig, SIGTERM);
+    ASSERT_EQ(handler_addr, 0x50000u);
+}
+
+static void test_user_handler_one_shot(void)
+{
+    init_test();
+    sys_signal(SIGINT, 0x50000);
+    curproc->sig_pending = (1u << SIGINT);
+    sig_deliver(test_frame);
+
+    /* Handler should be reset to SIG_DFL (one-shot semantics) */
+    ASSERT_EQ(curproc->sig_handler[SIGINT], (uint32_t)SIG_DFL);
+}
+
+static void test_user_handler_doesnt_exit(void)
+{
+    init_test();
+    sys_signal(SIGINT, 0x50000);
+    sys_signal(SIGTERM, 0x60000);
+    curproc->sig_pending = (1u << SIGINT) | (1u << SIGTERM);
+    sig_deliver(test_frame);
+
+    /* User handler should NOT call do_exit */
+    ASSERT(!exit_called);
+    ASSERT(handler_dispatched);
+}
+
+static void test_user_handler_usp_even_aligned(void)
+{
+    init_test();
+    /* Set USP to an odd value to test alignment */
+    test_frame[0] = 0x0F0001;
+    sys_signal(SIGINT, 0x50000);
+    curproc->sig_pending = (1u << SIGINT);
+    sig_deliver(test_frame);
+
+    /* New USP must be even-aligned (68000 requirement) */
+    ASSERT_EQ(test_frame[0] & 1, 0u);
+}
+
+/* ======== Phase 2d: SIGTSTP / SIGCONT / P_STOPPED ======== */
+
+static void test_sigtstp_default_stops(void)
+{
+    init_test();
+    curproc->sig_pending = (1u << SIGTSTP);
+    sig_deliver(test_frame);
+
+    ASSERT(!exit_called);
+    ASSERT_EQ(curproc->state, (uint8_t)P_STOPPED);
+    ASSERT(schedule_called);
+}
+
+static void test_sigstop_always_stops(void)
+{
+    init_test();
+    /* SIGSTOP can't be caught */
+    curproc->sig_handler[SIGSTOP] = SIG_IGN;  /* should be ignored by signal() */
+    curproc->sig_pending = (1u << SIGSTOP);
+    sig_deliver(test_frame);
+
+    ASSERT(!exit_called);
+    ASSERT_EQ(curproc->state, (uint8_t)P_STOPPED);
+    ASSERT(schedule_called);
+}
+
+static void test_sigcont_wakes_stopped(void)
+{
+    init_test();
+    proctab[1].state = P_STOPPED;
+    proctab[1].pid = 1;
+
+    int rc = sys_kill(1, SIGCONT);
+    ASSERT_EQ(rc, 0);
+    ASSERT_EQ(proctab[1].state, (uint8_t)P_READY);
+}
+
+static void test_sigcont_clears_stop_signals(void)
+{
+    init_test();
+    proctab[1].state = P_STOPPED;
+    proctab[1].pid = 1;
+    proctab[1].sig_pending = (1u << SIGTSTP) | (1u << SIGSTOP);
+
+    sys_kill(1, SIGCONT);
+
+    /* SIGTSTP and SIGSTOP should be cleared */
+    ASSERT(!(proctab[1].sig_pending & (1u << SIGTSTP)));
+    ASSERT(!(proctab[1].sig_pending & (1u << SIGSTOP)));
+    /* SIGCONT should be pending */
+    ASSERT(proctab[1].sig_pending & (1u << SIGCONT));
+}
+
+/* ======== Phase 2d: Process groups ======== */
+
+static void test_pgrp_init(void)
+{
+    init_test();
+    /* Process 0 should have pgrp 0 */
+    ASSERT_EQ(curproc->pgrp, 0);
+}
+
+static void test_deliver_only_one_user_handler(void)
+{
+    /* When multiple user-handler signals are pending, sig_deliver should
+     * deliver only one at a time and return. */
+    init_test();
+    sys_signal(SIGINT, 0x50000);
+    sys_signal(SIGTERM, 0x60000);
+    curproc->sig_pending = (1u << SIGINT) | (1u << SIGTERM);
+    sig_deliver(test_frame);
+
+    ASSERT(!exit_called);
+    /* SIGINT (lower number) should be delivered first */
+    uint32_t pc = *(uint32_t *)((uint8_t *)test_frame + 66);
+    ASSERT_EQ(pc, 0x50000u);
+    /* SIGTERM should still be pending */
+    ASSERT(curproc->sig_pending & (1u << SIGTERM));
+}
+
 /* ======== Main ======== */
 
 int main(void)
@@ -376,6 +635,22 @@ int main(void)
     RUN_TEST(test_deliver_multiple_first_kills);
     RUN_TEST(test_signal_constants);
     RUN_TEST(test_sig_pending_bitmask);
+    /* Phase 2d: User signal handlers */
+    RUN_TEST(test_user_handler_redirects_pc);
+    RUN_TEST(test_user_handler_modifies_usp);
+    RUN_TEST(test_user_handler_saves_original_state);
+    RUN_TEST(test_user_handler_correct_signal);
+    RUN_TEST(test_user_handler_one_shot);
+    RUN_TEST(test_user_handler_doesnt_exit);
+    RUN_TEST(test_user_handler_usp_even_aligned);
+    /* Phase 2d: SIGTSTP/SIGCONT/P_STOPPED */
+    RUN_TEST(test_sigtstp_default_stops);
+    RUN_TEST(test_sigstop_always_stops);
+    RUN_TEST(test_sigcont_wakes_stopped);
+    RUN_TEST(test_sigcont_clears_stop_signals);
+    /* Phase 2d: Process groups */
+    RUN_TEST(test_pgrp_init);
+    RUN_TEST(test_deliver_only_one_user_handler);
 
     TEST_REPORT();
 }

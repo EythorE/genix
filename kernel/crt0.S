@@ -134,7 +134,11 @@ _vec_timer_irq:
 
     jsr     timer_interrupt
     jsr     schedule            /* may swtch to different process */
-    jsr     sig_deliver         /* deliver pending signals */
+
+    /* Deliver pending signals (pass frame pointer) */
+    move.l  %sp, -(%sp)         /* push frame pointer arg */
+    jsr     sig_deliver
+    addq.l  #4, %sp             /* pop arg */
 
     /* Restore user state (same kstack if no switch, or after being
      * resumed later if we were switched out) */
@@ -158,7 +162,11 @@ _vec_timer_irq:
  *   - SR and PC are pushed onto SSP automatically
  *
  * We save all user registers + USP on the kernel stack, dispatch
- * the syscall, then restore and RTE back to user mode. */
+ * the syscall, then restore and RTE back to user mode.
+ *
+ * SYS_SIGRETURN (119) is handled specially: it restores the saved
+ * user state from the signal frame on the user stack, bypassing
+ * normal syscall dispatch. */
     .globl _vec_syscall
 _vec_syscall:
     /* Save all user registers on the kernel stack.
@@ -169,7 +177,7 @@ _vec_syscall:
     move    %usp, %a0
     move.l  %a0, -(%sp)               /* push USP, 4 bytes */
 
-    /* Stack layout from SP:
+    /* Stack layout from SP (= "frame"):
      *   SP+0:  USP                 (4 bytes)
      *   SP+4:  d0 (syscall#)       (4 bytes)
      *   SP+8:  d1 (arg1)           (4 bytes)
@@ -181,7 +189,11 @@ _vec_syscall:
      *   SP+64: SR                  (2 bytes)
      *   SP+66: PC                  (4 bytes) */
 
-    /* Push args for C: syscall_dispatch(num, a1, a2, a3, a4) */
+    /* Check for SYS_SIGRETURN (119) — handle before normal dispatch */
+    cmpi.l  #119, 4(%sp)
+    beq     .Lsigreturn
+
+    /* Normal syscall: push args for C: syscall_dispatch(num, a1, a2, a3, a4) */
     move.l  20(%sp), -(%sp)     /* d4 = arg4 */
     move.l  20(%sp), -(%sp)     /* d3 = arg3 (shifted by push above) */
     move.l  20(%sp), -(%sp)     /* d2 = arg2 */
@@ -192,9 +204,22 @@ _vec_syscall:
 
     /* Store return value in saved d0 slot so user sees it after RTE */
     move.l  %d0, 4(%sp)
+    bra     .Lsyscall_sigdeliver
 
-    /* Deliver pending signals before returning to user mode */
+.Lsigreturn:
+    /* SYS_SIGRETURN: pass frame pointer to sys_sigreturn.
+     * It restores USP, d0-d7/a0-a6, SR, PC from the signal frame. */
+    move.l  %sp, -(%sp)         /* push frame pointer arg */
+    jsr     sys_sigreturn
+    addq.l  #4, %sp             /* pop arg */
+
+.Lsyscall_sigdeliver:
+    /* Deliver pending signals before returning to user mode.
+     * sig_deliver takes frame pointer so it can modify saved PC/USP
+     * to redirect to a signal handler if needed. */
+    move.l  %sp, -(%sp)         /* push frame pointer arg */
     jsr     sig_deliver
+    addq.l  #4, %sp             /* pop arg */
 
     /* Restore user stack pointer */
     move.l  (%sp)+, %a0

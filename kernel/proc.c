@@ -22,6 +22,7 @@ void proc_init(void)
     curproc->pid = 0;
     curproc->ppid = 0;
     curproc->cwd = 1;  /* root directory */
+    curproc->pgrp = 0;
     nproc = 1;
 
     /* Set up stdin/stdout/stderr to console */
@@ -543,9 +544,13 @@ int do_spawn(const char *path, const char **argv)
     child->ppid = curproc->pid;
     child->exitcode = 0;
     child->cwd = curproc->cwd;
+    child->pgrp = cpid;  /* own process group by default */
     child->mem_base = 0;
     child->mem_size = 0;
     child->brk = 0;
+    child->sig_pending = 0;
+    for (int i = 0; i < NSIG; i++)
+        child->sig_handler[i] = SIG_DFL;
 
     /* Copy and refcount file descriptors */
     for (int i = 0; i < MAXFD; i++) {
@@ -906,17 +911,47 @@ static int sys_dup2(uint32_t oldfd, uint32_t newfd)
 /* ======== Signals ======== */
 
 /*
+ * Signal frame layout on user stack (84 bytes, even-aligned):
+ *
+ *   Offset  Content
+ *   0       return address → trampoline (= base + 8)
+ *   4       signal number (handler's first C argument)
+ *   8       trampoline: moveq #119,%d0 (0x7077)
+ *   10      trampoline: trap #0        (0x4E40)
+ *   12      saved kstack frame (70 bytes):
+ *             [0]  USP
+ *             [4]  d0
+ *             [8]  d1 ... [32] d7
+ *             [36] a0 ... [60] a6
+ *             [64] SR (16-bit)
+ *             [66] PC (32-bit)
+ *   82      padding (2 bytes for even alignment)
+ *
+ * Total: 84 bytes.
+ *
+ * When the handler returns (RTS), execution jumps to the trampoline
+ * which does TRAP #0 with d0=SYS_SIGRETURN. The sigreturn handler
+ * copies the saved frame back over the kstack frame, restoring all
+ * user registers and the original return address.
+ */
+#define SIG_FRAME_SIZE  84
+#define SIG_FRAME_SAVED 12  /* offset of saved kstack frame within signal frame */
+#define KFRAME_SIZE     70  /* bytes: USP(4) + 15 regs(60) + SR(2) + PC(4) */
+
+/*
  * Deliver pending signals to the current process.
  *
- * Called on return from syscall (end of syscall_dispatch).
- * For now, only default actions are supported:
- *   - SIG_DFL: terminate process (most signals), or ignore (SIGCHLD, SIGCONT)
- *   - SIG_IGN: discard the signal
- *   - User handlers: not yet implemented (requires signal frame on user stack)
+ * Called on return to user mode from syscall or timer ISR.
+ * frame points to the saved user state on the kstack (see crt0.S).
+ *
+ * For user signal handlers: builds a signal frame on the user stack,
+ * saves the current kstack frame into it, and redirects execution
+ * to the handler. When the handler returns, the trampoline fires
+ * SYS_SIGRETURN which restores the original state.
  *
  * SIGKILL and SIGSTOP cannot be caught or ignored.
  */
-void sig_deliver(void)
+void sig_deliver(uint32_t *frame)
 {
     if (!curproc || !curproc->sig_pending)
         return;
@@ -928,13 +963,14 @@ void sig_deliver(void)
 
         uint32_t handler = curproc->sig_handler[sig];
 
-        /* SIGKILL/SIGSTOP: always take default action */
+        /* SIGKILL/SIGSTOP: always take default action, cannot be caught */
         if (sig == SIGKILL) {
             do_exit(128 + sig);
             return;  /* not reached */
         }
         if (sig == SIGSTOP) {
-            /* TODO: stop/continue support */
+            curproc->state = P_STOPPED;
+            schedule();
             continue;
         }
 
@@ -948,25 +984,78 @@ void sig_deliver(void)
             case SIGCONT:
                 /* Default is ignore */
                 break;
+            case SIGTSTP:
+                /* Default is stop */
+                curproc->state = P_STOPPED;
+                schedule();
+                break;
             default:
                 /* Default is terminate */
                 do_exit(128 + sig);
                 return;  /* not reached */
             }
         } else {
-            /* User handler: not yet implemented.
-             * For now, treat like SIG_DFL to avoid ignoring signals.
-             * TODO: build signal frame on user stack + sigreturn trampoline */
-            switch (sig) {
-            case SIGCHLD:
-            case SIGCONT:
-                break;
-            default:
-                do_exit(128 + sig);
-                return;
-            }
+            /* User signal handler — build signal frame on user stack.
+             *
+             * We save the entire kstack frame (70 bytes) into the signal
+             * frame, then modify the kstack frame to jump to the handler.
+             * After the handler returns, the trampoline fires SYS_SIGRETURN
+             * which restores the saved frame. */
+            uint32_t usp = frame[0];
+            uint32_t new_usp = (usp - SIG_FRAME_SIZE) & ~1u;
+            uint8_t *sf = (uint8_t *)new_usp;
+
+            /* Write return address → trampoline (at sf+8) */
+            *(uint32_t *)(sf + 0) = new_usp + 8;
+
+            /* Write signal number (handler's first argument) */
+            *(uint32_t *)(sf + 4) = (uint32_t)sig;
+
+            /* Write trampoline code (big-endian 68000 instructions):
+             *   moveq #119,%d0   = 0x7077
+             *   trap  #0         = 0x4E40  */
+            *(uint16_t *)(sf + 8)  = 0x7077;
+            *(uint16_t *)(sf + 10) = 0x4E40;
+
+            /* Save entire kstack frame into signal frame */
+            memcpy(sf + SIG_FRAME_SAVED, frame, KFRAME_SIZE);
+
+            /* Redirect execution: modify kstack frame */
+            frame[0] = new_usp;  /* new USP (below signal frame) */
+            *(uint32_t *)((uint8_t *)frame + 66) = handler;  /* PC → handler */
+
+            /* One-shot: reset handler to SIG_DFL (classic signal() semantics) */
+            curproc->sig_handler[sig] = SIG_DFL;
+
+            /* Deliver only one user-handler signal at a time.
+             * After handler returns via sigreturn, sig_deliver runs again
+             * and will catch any remaining pending signals. */
+            return;
         }
     }
+}
+
+/*
+ * sys_sigreturn — restore user state after signal handler returns.
+ *
+ * Called from _vec_syscall when syscall number is SYS_SIGRETURN.
+ * The trampoline on the user stack did:
+ *   moveq #119,%d0; trap #0
+ *
+ * At this point, USP = signal_frame_base + 4 (RTS popped return addr).
+ * We reconstruct the signal frame base and copy the saved kstack frame
+ * back over the current frame, restoring all registers, PC, and USP.
+ */
+void sys_sigreturn(uint32_t *frame)
+{
+    /* USP at trap time = signal_frame_base + 4 (after handler's RTS) */
+    uint32_t usp = frame[0];
+    uint8_t *sf = (uint8_t *)(usp - 4);  /* signal frame base */
+
+    /* Restore entire kstack frame from saved copy in signal frame */
+    memcpy(frame, sf + SIG_FRAME_SAVED, KFRAME_SIZE);
+
+    /* frame now has original USP, d0-d7, a0-a6, SR, PC */
 }
 
 /* ======== getcwd ======== */
@@ -1177,6 +1266,11 @@ int32_t syscall_dispatch(uint32_t num, uint32_t a1, uint32_t a2,
         if (!target)
             return -ESRCH;
         target->sig_pending |= (1u << sig);
+        /* SIGCONT: wake stopped processes, clear pending stop signals */
+        if (sig == SIGCONT && target->state == P_STOPPED) {
+            target->state = P_READY;
+            target->sig_pending &= ~((1u << SIGSTOP) | (1u << SIGTSTP));
+        }
         /* Wake sleeping processes so they can handle the signal */
         if (target->state == P_SLEEPING)
             target->state = P_READY;

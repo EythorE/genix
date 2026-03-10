@@ -1244,3 +1244,169 @@ Three changes make automated testing possible:
 | `kernel/main.c` | Added `IMSHOW_TEST` mode: spawn imshow, report result |
 | `Makefile` | Added `test-md-imshow` target with Xvfb + scrot capture |
 | `.gitignore` | Added `test-md-imshow*.png` |
+
+---
+
+## Decision: Phase 2c — Shell Pipes and I/O Redirection
+
+**Date:** 2026-03-10
+**Status:** Complete
+
+Implemented shell-level pipe (`|`), output redirect (`>`/`>>`), and input
+redirect (`<`) support. The shell parses commands with `parse_segment()`,
+`parse_redirections()`, and `count_pipes()`, then uses `do_spawn_fd()` to
+set up child processes with custom FDs.
+
+### Sequential Pipeline Execution
+
+The most important design decision: pipelines execute **sequentially**, not
+concurrently. Because all user processes share `USER_BASE` (no MMU), two
+user processes cannot be loaded at the same time — the second would overwrite
+the first's code and data. So `echo hello | cat` works as:
+
+1. Create pipe
+2. Spawn `echo`, redirect its stdout to pipe write end, wait for it to finish
+3. Spawn `cat`, redirect its stdin to pipe read end, wait for it to finish
+
+This works because the pipe buffer (512 bytes) holds the intermediate data.
+Pipelines that produce more than 512 bytes of output will lose data. This
+is a known limitation of the no-MMU, single-address-space design.
+
+### SIGPIPE
+
+`pipe_write()` generates SIGPIPE when writing to a pipe with no readers.
+This is the standard POSIX behavior. Two check points: once at the top of
+`pipe_write()` and once inside the write loop (reader may close while
+writer is blocked).
+
+### Pain Points
+
+1. **Pipeline data loss**: The 512-byte pipe buffer limits pipelines to
+   small outputs. `echo hello | cat` works; `cat /bin/ls | wc` would
+   overflow and lose data. Real concurrent pipelines require either an MMU
+   or a relocation-capable binary format.
+
+2. **`do_spawn_fd()` is verbose**: The FD replacement logic (decrement
+   refcount, handle pipe cleanup, set new FD, increment refcount) is
+   repeated 3 times for stdin/stdout/stderr. Could be refactored into a
+   helper, but keeping it explicit avoids abstraction for a one-use pattern.
+
+---
+
+## Decision: Phase 2d — User Signal Handlers
+
+**Date:** 2026-03-10
+**Status:** Complete
+
+Implemented the complete signal delivery mechanism: user-defined signal
+handlers, signal frame on user stack, sigreturn trampoline, SIGTSTP/SIGCONT
+for process stop/continue, and process group initialization.
+
+### Signal Frame Architecture
+
+When a user process has a signal handler registered and a signal is pending,
+`sig_deliver()` (called on return to user mode from syscall or timer ISR)
+builds an 84-byte signal frame on the user stack:
+
+```
+Offset  Content
+0       return addr → trampoline (at base+8)
+4       signal number (handler's first C argument)
+8       trampoline: moveq #119,%d0 (0x7077) + trap #0 (0x4E40)
+12      saved kstack frame (70 bytes: USP + d0-d7/a0-a6 + SR + PC)
+82      padding (2 bytes for even alignment)
+```
+
+The handler runs in user mode with the modified USP and PC. When it returns
+(RTS), execution jumps to the trampoline which does `TRAP #0` with
+`d0 = SYS_SIGRETURN (119)`. The sigreturn handler copies the saved 70-byte
+kstack frame back over the current frame, restoring all user registers and
+the original return address.
+
+### Key Design Decisions
+
+1. **Frame pointer parameter**: `sig_deliver(uint32_t *frame)` and
+   `sys_sigreturn(uint32_t *frame)` both receive a pointer to the saved
+   user state on the kstack. The asm code in `crt0.S` passes `%sp` before
+   calling these functions. This avoids fragile stack offset calculations
+   in C code.
+
+2. **SYS_SIGRETURN handled in asm**: `_vec_syscall` checks for syscall
+   number 119 before calling `syscall_dispatch`. This lets `sys_sigreturn`
+   directly modify the kstack frame without going through the normal
+   syscall return path (which would overwrite d0).
+
+3. **Full frame save/restore**: The signal frame saves all 70 bytes of
+   kstack state (USP + 15 registers + SR + PC). This is essential for
+   timer-delivered signals where the interrupt can happen at any point
+   in user code — all registers must be preserved exactly. A simpler
+   approach (saving only d0 and PC) would corrupt state for timer signals.
+
+4. **Trampoline on user stack**: The 4-byte trampoline (`moveq #119,%d0;
+   trap #0`) lives in the signal frame on the user stack. The 68000 has
+   no NX bit, so executable stack is fine. This avoids needing a fixed
+   trampoline address.
+
+5. **One-shot handlers**: `signal()` uses classic one-shot semantics —
+   after delivery, the handler resets to SIG_DFL. The process must
+   re-register the handler if it wants to catch the signal again. This
+   matches traditional Unix `signal()` behavior. Future: add `sigaction()`
+   with SA_RESTART if needed.
+
+6. **One handler per sig_deliver call**: When multiple signals are pending,
+   `sig_deliver` delivers only one user-handler signal and returns. The
+   next signal is delivered when the sigreturn syscall's return path calls
+   `sig_deliver` again. This avoids nested signal frames.
+
+### SIGTSTP / SIGCONT / P_STOPPED
+
+- SIGTSTP default action: sets process to `P_STOPPED`, calls `schedule()`
+- SIGSTOP: always stops (cannot be caught/ignored), same as SIGTSTP default
+- SIGCONT via `kill()`: wakes `P_STOPPED` process → `P_READY`, clears
+  pending SIGSTOP/SIGTSTP
+- The scheduler skips `P_STOPPED` processes
+
+### Process Groups
+
+Each process gets `pgrp = pid` by default (set in `do_spawn`). Process 0
+(kernel/shell) has `pgrp = 0`. The infrastructure is in place for future
+shell job control (`kill(-pgrp, sig)` to signal process groups).
+
+### Job Control Limitations (No-MMU)
+
+Full job control (fg/bg/jobs) is limited by the shared USER_BASE design:
+- A stopped process's code/data at USER_BASE is intact only until another
+  command runs
+- Background processes cannot truly run concurrently with the shell
+- `fg` can resume a stopped process if no other command ran since the stop
+
+This is a fundamental no-MMU limitation. Real job control requires either
+an MMU or process relocation.
+
+### Pain Points
+
+1. **Host test vs target mismatch**: The signal frame logic involves
+   writing to user memory addresses (stored as `uint32_t` on 68000).
+   Host tests on 64-bit systems can't dereference these truncated pointers.
+   Solution: test the logic (handler dispatch, one-shot reset, pending
+   bits, stop/continue) on host; test the actual memory layout on the
+   68000 target via autotest.
+
+2. **84 bytes per signal frame**: On the Mega Drive with ~28 KB user
+   space, each signal delivery consumes 84 bytes of user stack. Deeply
+   nested signals (unlikely in practice) could overflow the user stack.
+
+3. **No SA_RESTART**: Signal delivery interrupts blocking syscalls
+   (read, write, waitpid). The interrupted syscall returns -EINTR, and
+   the user program must retry. Adding SA_RESTART semantics would require
+   the kernel to re-enter the syscall after signal handler return.
+
+### What Changed
+
+| File | Change |
+|------|--------|
+| `kernel/kernel.h` | `sig_deliver(uint32_t *frame)`, `sys_sigreturn()`, `SYS_SIGRETURN=119`, `P_STOPPED=6`, `pgrp` in `struct proc` |
+| `kernel/crt0.S` | Pass frame pointer to `sig_deliver`, handle SYS_SIGRETURN before dispatch |
+| `kernel/proc.c` | Signal frame build/restore, SIGTSTP/SIGCONT, SIGCONT wakes stopped, pgrp init |
+| `kernel/main.c` | 3 new autotest cases (user handler, SIGCONT, signal returns old) |
+| `tests/test_signal.c` | 13 new tests for user handlers, SIGTSTP/SIGCONT, process groups |

@@ -448,25 +448,29 @@ Detailed technical documentation is in `docs/`:
 | Phase 1 | Workbench emulator (Musashi SBC) | **Complete** |
 | Phase 2a | Kernel core + binary loading + single-tasking exec | **Complete** |
 | Phase 2b | Multitasking (spawn, waitpid, process table, preemptive scheduler) | **Complete** |
-| Phase 2c | Pipes and I/O redirection | **Complete** (blocking pipes done, redirection planned) |
-| Phase 2d | Signals and job control | **Next** |
+| Phase 2c | Pipes and I/O redirection | **Complete** |
+| Phase 2d | Signals and job control | **Complete** (user handlers, SIGTSTP/SIGCONT, process groups) |
 | Phase 2e | TTY subsystem (port Fuzix tty.c) | Planned |
 | Phase 2f | Fuzix libc + utilities | Planned |
 | Phase 3 | Mega Drive port (PAL drivers from Fuzix) | **Complete** |
 | Phase 4 | Polish (interrupt keyboard, multi-TTY, /dev/null) | Planned |
 
 What works today: kernel boots on both workbench and Mega Drive, minifs
-filesystem with indirect blocks, exec() loads user programs (19 apps in
+filesystem with indirect blocks, exec() loads user programs (22 apps in
 /bin including hello, echo, cat, wc, head, tail, tee, basename, dirname,
-rev, nl, cmp, cut, tr, uniq, yes, imshow, levee), built-in shell with
-spawn/pipe commands, process table (16 slots) with preemptive scheduling
+rev, nl, cmp, cut, tr, uniq, yes, imshow, ls, sleep, levee), built-in
+shell with pipes (`|`), I/O redirection (`>`, `>>`, `<`), and sequential
+pipeline execution, process table (16 slots) with preemptive scheduling
 (timer-driven context switch via swtch/proc_first_run), per-process
 kernel stacks (512 bytes), user mode execution (USP/SSP separated),
 async do_spawn with blocking waitpid, blocking pipes (512-byte circular
-buffer), termios raw mode, full libc (stdio/stdlib/string/ctype/termios/
-getopt/sprintf/strtol/perror), VDP device driver with libgfx userspace
-library, levee (vi clone) on workbench, 391+ host tests, automated
-guest tests on both platforms, Saturn keyboard on Mega Drive, SRAM with
+buffer), user signal handlers (signal frame + sigreturn trampoline),
+SIGPIPE on broken pipes, SIGTSTP/SIGCONT for process stop/continue,
+process groups, termios raw mode, full libc (stdio/stdlib/string/ctype/
+termios/getopt/sprintf/strtol/perror), VDP device driver with libgfx
+userspace library, levee (vi clone) on workbench, 537+ host tests,
+automated guest tests (19 cases) on both platforms, Saturn keyboard on
+Mega Drive, SRAM with
 standard Sega mapper. See `docs/decisions.md` for full history.
 
 ## Common Pitfalls
