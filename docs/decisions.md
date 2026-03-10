@@ -387,11 +387,13 @@ lets the graphics ABI evolve without kernel changes.
 
 ---
 
-## Project Status (March 2026)
+## Project Status (March 2026 — Early)
 
-The project phases are tracked below and in the individual docs.
+_Note: This section reflects early March state. See the "Post-Merge"
+update below for current status, and `docs/status-review.md` for the
+full plan-vs-reality analysis._
 
-| Phase | Description | Status |
+| Phase | Description | Status (at this point) |
 |-------|-------------|--------|
 | **Phase 1** | Workbench emulator (Musashi SBC) | **Complete** |
 | **Phase 2a** | Kernel core + binary loading + single-tasking exec | **Complete** |
@@ -402,27 +404,6 @@ The project phases are tracked below and in the individual docs.
 | **Phase 2f** | Fuzix libc + utilities | Planned |
 | **Phase 3** | Mega Drive port (PAL drivers from Fuzix) | **Complete** |
 | **Phase 4** | Polish (interrupt keyboard, multi-TTY, /dev/null) | Planned |
-
-**What works today:**
-- Kernel boots on workbench emulator and Mega Drive (BlastEm + real hardware)
-- Filesystem (minifs) with read/write/create/delete/rename/mkdir/rmdir
-- Indirect blocks in both kernel and mkfs (files > 12 KB work)
-- exec() loads and runs user programs (hello, echo, cat, wc, head, levee) from disk
-- Built-in debug shell with ls, cat, echo, mkdir, mem, help, halt
-- Process table (16 slots) with spawn(), waitpid(), exit()
-- Pipes (512-byte circular buffer, up to 4 pipes)
-- Shell `spawn` and `pipe` commands for launching programs and piping output
-- Terminal raw mode via termios (tcgetattr/tcsetattr → ioctl)
-- Full libc: stdio (FILE*), stdlib (malloc/free), string, ctype, termios
-- Levee (vi clone) runs on workbench emulator with ANSI terminal support
-- 283 host tests passing (string, mem, exec, proc), plus automated guest tests
-- Both workbench and Mega Drive builds clean
-- Saturn keyboard input on Mega Drive, UART on workbench
-- SRAM works with standard Sega mapper on all tested targets
-
-**What's next:** Preemptive scheduling (timer-driven context switch) to
-allow true multitasking. Then signals and job control, I/O redirection,
-and TTY subsystem to get a usable interactive Unix environment.
 
 ---
 
@@ -1015,8 +996,24 @@ The kernel multitasking infrastructure is now complete:
 - **Blocking waitpid()** (parent sleeps until child exits)
 - **Blocking pipes** (reader/writer sleep when empty/full)
 - **VDP device driver** with userspace libgfx library
-- **19 user programs** in /bin (up from 8)
-- **391+ host tests** + automated guest tests on both platforms
+- **22 user programs** in /bin (up from 8)
+- **615+ host tests** (including 78 TTY tests) + automated guest tests on both platforms
+- **User signal handlers** with signal frames, sigreturn trampoline
+- **SIGTSTP/SIGCONT** for process stop/continue, process groups
+- **TTY line discipline** with cooked/raw modes, echo, line editing, signal generation
+- **Shell pipes** (`|`), I/O redirection (`>`, `>>`, `<`)
+- **SIGPIPE** on broken pipes
+
+### Current Phase Status
+
+| Phase | Status |
+|-------|--------|
+| Phases 1-2e, 3 | **All Complete** |
+| Phase 2f (libc + apps) | **In progress** — 22 apps, 14 libc modules |
+| Phase 4 (polish) | **Partial** — /dev/null done, interrupt keyboard and multi-TTY planned |
+
+See `docs/status-review.md` for the full plan-vs-reality analysis and
+porting roadmap.
 
 ### Known Limitations (BEWARE)
 
@@ -1030,15 +1027,6 @@ The kernel multitasking infrastructure is now complete:
    into the proc struct fields. If a syscall's C call chain is too deep
    (or a timer ISR nests on top), it silently corrupts `fd[]`, `cwd`,
    etc. Consider adding a canary word at kstack[0] for debug builds.
-
-3. **No user signal handlers yet**: Signal delivery works for default
-   actions (terminate, ignore) and SIG_IGN, but user-defined handlers
-   require pushing a signal frame on the user stack and returning to
-   the handler address — not yet implemented. See Phase 2d below.
-
-4. **No I/O redirection in shell**: The shell's `exec` command uses
-   `do_spawn()` but doesn't support `>`, `<`, or `2>` syntax. Pipes
-   work at the kernel level but need shell syntax support.
 
 ---
 
