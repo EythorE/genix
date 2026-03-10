@@ -123,9 +123,12 @@ int pipe_write(struct pipe *p, const void *buf, int len)
     const uint8_t *src = (const uint8_t *)buf;
     int n = 0;
 
-    /* No readers: broken pipe */
-    if (p->readers == 0)
+    /* No readers: broken pipe — send SIGPIPE to writer */
+    if (p->readers == 0) {
+        if (curproc)
+            curproc->sig_pending |= (1u << SIGPIPE);
         return -EPIPE;
+    }
 
     /* Block only when pipe is full AND we haven't written anything yet.
      * Once we write any data, return immediately (POSIX semantics). */
@@ -145,8 +148,11 @@ int pipe_write(struct pipe *p, const void *buf, int len)
 
     /* Write available space (up to len) */
     while (n < len && p->count < PIPE_SIZE) {
-        if (p->readers == 0)
+        if (p->readers == 0) {
+            if (curproc)
+                curproc->sig_pending |= (1u << SIGPIPE);
             return n > 0 ? n : -EPIPE;
+        }
         p->buf[p->write_pos] = src[n++];
         /* PIPE_SIZE is 512, power-of-2 wrap */
         p->write_pos = (p->write_pos + 1) & (PIPE_SIZE - 1);
@@ -579,6 +585,92 @@ int do_spawn(const char *path, const char **argv)
     /* Child is ready to run — scheduler will pick it up */
     child->state = P_READY;
     return cpid;
+}
+
+/*
+ * do_spawn_fd() — spawn a child with custom file descriptors.
+ *
+ * Like do_spawn(), but replaces the child's stdin/stdout/stderr with
+ * the given FDs before running. Pass -1 to keep the inherited FD.
+ * The caller's FDs are NOT consumed — they remain open (caller must
+ * close pipe endpoints it doesn't need).
+ */
+int do_spawn_fd(const char *path, const char **argv,
+                int stdin_fd, int stdout_fd, int stderr_fd)
+{
+    int pid = do_spawn(path, argv);
+    if (pid < 0)
+        return pid;
+
+    struct proc *child = &proctab[(uint8_t)pid];
+
+    /* Replace stdin (fd 0) */
+    if (stdin_fd >= 0 && stdin_fd < MAXFD && curproc->fd[stdin_fd]) {
+        if (child->fd[0]) {
+            child->fd[0]->refcount--;
+            if (child->fd[0]->refcount == 0) {
+                struct pipe *p = ofile_pipe(child->fd[0]);
+                if (p) {
+                    if (child->fd[0]->flags & OFILE_PIPE_READ)
+                        pipe_close_read(p);
+                    if (child->fd[0]->flags & OFILE_PIPE_WRITE)
+                        pipe_close_write(p);
+                    child->fd[0]->inode = NULL;
+                } else if (child->fd[0]->inode) {
+                    fs_iput(child->fd[0]->inode);
+                    child->fd[0]->inode = NULL;
+                }
+            }
+        }
+        child->fd[0] = curproc->fd[stdin_fd];
+        child->fd[0]->refcount++;
+    }
+
+    /* Replace stdout (fd 1) */
+    if (stdout_fd >= 0 && stdout_fd < MAXFD && curproc->fd[stdout_fd]) {
+        if (child->fd[1]) {
+            child->fd[1]->refcount--;
+            if (child->fd[1]->refcount == 0) {
+                struct pipe *p = ofile_pipe(child->fd[1]);
+                if (p) {
+                    if (child->fd[1]->flags & OFILE_PIPE_READ)
+                        pipe_close_read(p);
+                    if (child->fd[1]->flags & OFILE_PIPE_WRITE)
+                        pipe_close_write(p);
+                    child->fd[1]->inode = NULL;
+                } else if (child->fd[1]->inode) {
+                    fs_iput(child->fd[1]->inode);
+                    child->fd[1]->inode = NULL;
+                }
+            }
+        }
+        child->fd[1] = curproc->fd[stdout_fd];
+        child->fd[1]->refcount++;
+    }
+
+    /* Replace stderr (fd 2) */
+    if (stderr_fd >= 0 && stderr_fd < MAXFD && curproc->fd[stderr_fd]) {
+        if (child->fd[2]) {
+            child->fd[2]->refcount--;
+            if (child->fd[2]->refcount == 0) {
+                struct pipe *p = ofile_pipe(child->fd[2]);
+                if (p) {
+                    if (child->fd[2]->flags & OFILE_PIPE_READ)
+                        pipe_close_read(p);
+                    if (child->fd[2]->flags & OFILE_PIPE_WRITE)
+                        pipe_close_write(p);
+                    child->fd[2]->inode = NULL;
+                } else if (child->fd[2]->inode) {
+                    fs_iput(child->fd[2]->inode);
+                    child->fd[2]->inode = NULL;
+                }
+            }
+        }
+        child->fd[2] = curproc->fd[stderr_fd];
+        child->fd[2]->refcount++;
+    }
+
+    return pid;
 }
 
 /*

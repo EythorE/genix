@@ -333,6 +333,8 @@ void do_exit(int code);
 int  do_waitpid(int pid, int *status);
 int  do_vfork(void);
 int  do_spawn(const char *path, const char **argv);
+int  do_spawn_fd(const char *path, const char **argv,
+                 int stdin_fd, int stdout_fd, int stderr_fd);
 void schedule(void);
 
 /* Exec support (assembly in exec_asm.S) */
