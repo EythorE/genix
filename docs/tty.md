@@ -2,9 +2,10 @@
 
 ## Current Implementation
 
-Genix currently has a simple console abstraction through the PAL layer,
-not a full TTY subsystem. The planned TTY subsystem (ported from Fuzix)
-is described in the second half of this document.
+Genix has a full TTY line discipline (`kernel/tty.c`) implementing
+cooked (canonical) and raw input modes, echo, line editing, signal
+generation, and POSIX termios ioctls. The TTY layer sits between
+the device table and the PAL console drivers.
 
 ### Workbench Console
 
@@ -108,10 +109,9 @@ Source: <https://github.com/EythorE/FUZIX/tree/megadrive/Kernel/platform/platfor
 `keyboard_read()` is non-blocking — returns 0 if no key is available.
 `pal_console_getc()` polls it in a busy loop.
 
-## Planned: Full TTY Subsystem (from Fuzix)
+## TTY Line Discipline (kernel/tty.c)
 
-The PLAN.md describes porting Fuzix's `tty.c` for proper line
-discipline support. This adds:
+The TTY subsystem implements a Fuzix-inspired line discipline with:
 
 ### Three-Layer Architecture
 
@@ -164,12 +164,16 @@ deliberate optimization from Fuzix. See [68000-programming.md](68000-programming
   head/tail buffer writes are single-word (atomic on 68000)
 - **termios**: `TCGETS`/`TCSETS` ioctls, `TIOCGWINSZ` (40x28)
 
-### Implementation Phases
+### Implementation Status
 
-| Phase | Feature | Lines |
-|-------|---------|-------|
-| 1 | Port Fuzix tty.c + devtty.c + VDP + keyboard | ~500 (mostly ported) |
-| 2 | `/dev/tty` alias, `TIOCGWINSZ`, termios polish | ~50 |
-| 3 | Interrupt-driven keyboard (TH line on controller port) | ~100 asm |
-| 4 | Multiple TTY devices (port 2, EXP port) | ~200 |
-| 5 | Job control polish, `/dev/null`, `/dev/zero` | ~100 |
+| Feature | Status | Notes |
+|---------|--------|-------|
+| Line discipline (tty.c) | **Done** | ~320 lines, cooked/raw/echo/erase/kill |
+| `/dev/tty`, `/dev/console` | **Done** | Device nodes created at boot |
+| `TIOCGWINSZ` (40x28) | **Done** | Returns Mega Drive VDP dimensions |
+| termios ioctls | **Done** | TCGETS, TCSETS, TCSETSW, TCSETSF |
+| Signal generation (^C, ^\, ^Z) | **Done** | ISIG with NOFLSH support |
+| Output processing (ONLCR) | **Done** | NL→CR-NL in user writes |
+| Interrupt-driven keyboard | Planned (Phase 4) | Currently polling via PAL |
+| Multiple TTY devices | Planned (Phase 4) | NTTY=1 currently |
+| Job control (fg/bg) | Planned | Requires Phase 2d signals |

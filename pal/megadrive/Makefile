@@ -20,8 +20,8 @@ ASM_SRCS = crt0.S $(KERNEL_DIR)/divmod.S $(KERNEL_DIR)/exec_asm.S \
 C_SRCS = platform.c keyboard.c fontdata_8x8.c dev_vdp.c \
          $(KERNEL_DIR)/main.c $(KERNEL_DIR)/kprintf.c \
          $(KERNEL_DIR)/mem.c $(KERNEL_DIR)/buf.c $(KERNEL_DIR)/fs.c \
-         $(KERNEL_DIR)/dev.c $(KERNEL_DIR)/proc.c $(KERNEL_DIR)/exec.c \
-         $(KERNEL_DIR)/string.c
+         $(KERNEL_DIR)/dev.c $(KERNEL_DIR)/tty.c $(KERNEL_DIR)/proc.c \
+         $(KERNEL_DIR)/exec.c $(KERNEL_DIR)/string.c
 
 ASM_OBJS = $(notdir $(ASM_SRCS:.S=.o))
 C_OBJS = $(notdir $(C_SRCS:.c=.o))
@@ -90,6 +90,9 @@ fs.o: $(KERNEL_DIR)/fs.c
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 dev.o: $(KERNEL_DIR)/dev.c
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+tty.o: $(KERNEL_DIR)/tty.c
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 proc.o: $(KERNEL_DIR)/proc.c
