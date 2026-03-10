@@ -2,11 +2,15 @@
  * Binary loader and exec() implementation
  *
  * Loads Genix flat binaries from the filesystem and executes them.
- * Single-tasking: one user program at a time, loaded at USER_BASE.
+ * Two modes:
+ *   - Synchronous (do_exec): blocks caller until program exits.
+ *     Used by autotest and the shell's single-tasking "exec" command.
+ *   - Async (load_binary): loads binary, returns entry/sp for caller
+ *     to set up a schedulable process. Used by do_spawn.
  */
 #include "kernel.h"
 
-/* Global state for single-tasking exec */
+/* Global state for single-tasking exec (exec_enter/exec_leave) */
 int exec_exit_code;
 int exec_active = 0;
 
@@ -113,17 +117,16 @@ uint32_t exec_setup_stack(uint32_t stack_top, const char *path,
 }
 
 /*
- * Load and execute a binary from the filesystem.
+ * Load a binary from the filesystem into user memory.
  *
- * Two modes of operation:
- *  1. Single-tasking (process 0 / shell): uses exec_enter/exec_leave
- *     to block until the program exits. Returns exit code.
- *  2. After vfork(): wakes the parent and runs the binary in the
- *     child's context via exec_enter. Returns exit code when done.
+ * Reads the binary header, validates it, loads text+data at USER_BASE,
+ * zeros BSS, and sets up the user stack with argc/argv.
  *
- * Returns the program's exit code (>= 0) or negative errno.
+ * On success, fills in *entry_out and *user_sp_out and returns 0.
+ * On failure, returns negative errno.
  */
-int do_exec(const char *path, const char **argv)
+int load_binary(const char *path, const char **argv,
+                uint32_t *entry_out, uint32_t *user_sp_out)
 {
     struct inode *ip = fs_namei(path);
     if (!ip)
@@ -163,8 +166,7 @@ int do_exec(const char *path, const char **argv)
         memset((void *)(USER_BASE + hdr.load_size), 0, hdr.bss_size);
 
     /* Set up user stack */
-    uint32_t stack_top = USER_TOP;
-    uint32_t user_sp = exec_setup_stack(stack_top, path, argv);
+    uint32_t user_sp = exec_setup_stack(USER_TOP, path, argv);
 
     /* Update process info */
     if (curproc) {
@@ -176,12 +178,32 @@ int do_exec(const char *path, const char **argv)
     kprintf("[exec] %s: %d bytes loaded at 0x%x, entry 0x%x\n",
             path, hdr.load_size, USER_BASE, hdr.entry);
 
+    *entry_out = hdr.entry;
+    *user_sp_out = user_sp;
+    return 0;
+}
+
+/*
+ * Synchronous exec: load and run a binary, blocking until it exits.
+ *
+ * Uses exec_enter/exec_leave to save kernel context, enter user mode,
+ * and return when the program calls _exit(). Used by autotest and the
+ * shell's single-tasking "exec" command via do_spawn's synchronous path.
+ *
+ * Returns the program's exit code (>= 0) or negative errno.
+ */
+int do_exec(const char *path, const char **argv)
+{
+    uint32_t entry, user_sp;
+    int err = load_binary(path, argv, &entry, &user_sp);
+    if (err < 0)
+        return err;
+
     /* Transfer control to the user program.
      * exec_enter saves kernel context, switches to user mode, and jumps
-     * to the entry point. TRAP #0 uses curproc's kstack as the
-     * supervisor stack. Returns here when _exit() calls exec_leave(). */
+     * to the entry point. Returns here when _exit() calls exec_leave(). */
     exec_active = 1;
-    int exitcode = exec_enter(hdr.entry, user_sp, proc_kstack_top(curproc));
+    int exitcode = exec_enter(entry, user_sp, proc_kstack_top(curproc));
     exec_active = 0;
 
     kprintf("[exec] Program exited with code %d\n", exitcode);

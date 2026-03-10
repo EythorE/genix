@@ -250,6 +250,8 @@ struct pipe {
     uint16_t count;
     uint8_t  readers;
     uint8_t  writers;
+    uint8_t  read_waiting;   /* process waiting for data */
+    uint8_t  write_waiting;  /* process waiting for space */
 };
 
 #define MAXPIPE     4
@@ -298,6 +300,8 @@ extern struct proc *curproc;
 extern int nproc;
 
 void proc_init(void);
+int  load_binary(const char *path, const char **argv,
+                 uint32_t *entry_out, uint32_t *user_sp_out);
 int  do_exec(const char *path, const char **argv);
 void do_exit(int code);
 int  do_waitpid(int pid, int *status);
@@ -310,6 +314,13 @@ extern int exec_enter(uint32_t entry, uint32_t user_sp, uint32_t kstack_top);
 extern void exec_leave(void);
 extern int exec_exit_code;
 extern int exec_active;
+
+/* Context switch (assembly in exec_asm.S) */
+extern void swtch(uint32_t *old_ksp, uint32_t new_ksp);
+extern void proc_first_run(void);  /* trampoline for new process entry */
+
+/* Set up a process's kstack for its first context switch */
+void proc_setup_kstack(struct proc *p, uint32_t entry, uint32_t user_sp);
 
 /* Helper: get the top of a process's kernel stack */
 static inline uint32_t proc_kstack_top(struct proc *p)
