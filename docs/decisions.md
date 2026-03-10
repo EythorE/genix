@@ -1146,3 +1146,101 @@ when we need it (e.g., for a proper shell with job control).
 | `make megadrive` | ROM built (549 KB) |
 | `make test-md` | OK (300 frames, no crash) |
 | `make test-md-auto` | OK (600 frames, no crash) |
+
+---
+
+## Decision: Automated imshow Screenshot Test
+
+**Date:** 2026-03-10
+**Status:** Done, screenshot captured successfully
+
+Added `make test-md-imshow` — an automated test that spawns imshow on
+the Mega Drive (via BlastEm under Xvfb) and captures a screenshot of
+the VDP color bar test pattern. This validates the full graphics stack
+end-to-end: kernel VDP driver → ioctl interface → libgfx → userspace.
+
+### How imshow Works
+
+imshow is **not** an image viewer — it's a graphics validation tool
+ported from the FUZIX Mega Drive concept. It generates test patterns
+dynamically using the VDP's tile-based 4bpp graphics:
+
+1. Opens `/dev/vdp` for exclusive access
+2. Loads a 16-color test palette (Mega Drive format: 0000BBB0GGG0RRR0)
+3. Generates 18 tiles programmatically: 15 solid colors, 2 checkerboards,
+   1 gradient
+4. Fills the 40×28 tile screen: color bars (top), alternating solid/checker
+   stripes (middle), checkerboard and gradient (bottom)
+5. Waits for keypress (or `-n` flag: holds for 120 vsync frames then exits)
+6. Closes VDP and restores text console
+
+The original FUZIX source (EythorE/FUZIX, megadrive branch) has `fview`
+which is a BMP viewer using a completely different graphics API (GFXIOC).
+Genix's imshow uses the VDP ioctl interface directly — tile-based, not
+framebuffer-based. The test pattern serves the same purpose: validating
+that the graphics stack works.
+
+### Implementation
+
+Three changes make automated testing possible:
+
+1. **imshow `-n` flag** (`apps/imshow.c`): No-wait mode displays the
+   pattern for ~2 seconds (120 vsync frames at 60fps) then exits cleanly
+   without waiting for a keypress. This is the key enabler — without it,
+   imshow blocks on `read(0, ...)` forever in headless mode.
+
+2. **IMSHOW_TEST kernel mode** (`kernel/main.c`): When compiled with
+   `-DIMSHOW_TEST`, the kernel spawns `imshow -n` via `do_spawn()` +
+   `do_waitpid()` instead of running AUTOTEST or the shell. Prints
+   "IMSHOW_TEST PASSED/FAILED" based on exit code.
+
+3. **`make test-md-imshow` target** (`Makefile`): Builds the IMSHOW_TEST
+   ROM, boots it in BlastEm under Xvfb (display :59), waits 5 seconds
+   for imshow to render, captures via xdotool + scrot, cleans up, and
+   restores the normal ROM. Uses display :59 (not :58) to avoid conflict
+   with the existing screenshot target.
+
+### Pain Points
+
+1. **gfx_close() doesn't fully restore VDP state**: When imshow exits
+   and calls `gfx_close()`, the text font palette is restored but the
+   tile data and nametable entries from imshow remain in VRAM. The
+   screenshot shows the color bar pattern with kernel text ("IMSHOW_TEST
+   PASSED") overlaid — the text console writes on top of the lingering
+   graphics tiles. This is cosmetic, not a functional bug, but means the
+   screenshot captures a hybrid state (imshow graphics + kernel text).
+
+2. **No automated pixel comparison**: The test captures a screenshot but
+   has no reference image to compare against. It's currently visual
+   inspection only — you look at `test-md-imshow.png` to verify the
+   color bars rendered correctly. Future work: add a reference PNG and
+   a pixel-diff tool, or use BlastEm's GDB interface to inspect VRAM
+   contents directly.
+
+3. **BlastEm screenshot capture is fragile**: Can't use BlastEm's
+   native screenshot key (`p`) because SDL2's XInput2 doesn't receive
+   xdotool's synthetic key events under Xvfb. Must use external screen
+   capture (scrot) which depends on window focus working correctly.
+   Sometimes `xdotool search --name "BlastEm"` returns no window if
+   BlastEm exits before the capture delay.
+
+4. **imshow is Mega Drive only**: imshow requires `/dev/vdp` which only
+   exists on the Mega Drive platform. The workbench emulator has no VDP,
+   so `gfx_open()` returns an error. The IMSHOW_TEST can only run via
+   BlastEm, not the workbench emulator. This means the test can't be
+   part of the fast `test-emu` iteration cycle.
+
+5. **Slow rebuild cycle**: The test target rebuilds apps (for MD linker
+   script), rebuilds the ROM (with IMSHOW_TEST), runs BlastEm under
+   Xvfb, captures, then rebuilds everything again (normal ROM + workbench
+   apps). Total time ~30 seconds. This is inherent to the "special ROM"
+   approach — each test mode requires a separate kernel build.
+
+### What Changed
+
+| File | Change |
+|------|--------|
+| `apps/imshow.c` | Added `-n` flag (no-wait mode, 120 vsync frames) |
+| `kernel/main.c` | Added `IMSHOW_TEST` mode: spawn imshow, report result |
+| `Makefile` | Added `test-md-imshow` target with Xvfb + scrot capture |
+| `.gitignore` | Added `test-md-imshow*.png` |
