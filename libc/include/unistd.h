@@ -27,5 +27,11 @@ int   rename(const char *oldp, const char *newp);
 void *sbrk(int incr);
 void *brk(void *addr);
 int   isatty(int fd);
+int   rmdir(const char *path);
+char *getcwd(char *buf, int size);
+int   pipe(int pipefd[2]);
+int   vfork(void);
+int   waitpid(int pid, int *status, int options);
+int   execve(const char *path, char *const argv[], char *const envp[]);
 
 #endif
