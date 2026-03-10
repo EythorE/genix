@@ -30,6 +30,14 @@ apps/uniq
 apps/imshow
 apps/ls
 apps/sleep
+apps/strings
+apps/fold
+apps/expand
+apps/unexpand
+apps/paste
+apps/comm
+apps/seq
+apps/tac
 apps/levee/levee
 tests/test_string
 tests/test_mem
