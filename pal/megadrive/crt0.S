@@ -172,6 +172,7 @@ _vec_vblank:
     move.l  %a0, -(%sp)
 
     jsr     md_vblank_handler
+    jsr     pal_keyboard_poll
     jsr     timer_interrupt
     jsr     schedule            /* may swtch to different process */
     jsr     sig_deliver         /* deliver pending signals */
@@ -184,6 +185,7 @@ _vec_vblank:
 .Lvbl_super:
     movem.l %d0-%d1/%a0-%a1, -(%sp)
     jsr     md_vblank_handler
+    jsr     pal_keyboard_poll
     jsr     timer_interrupt
     movem.l (%sp)+, %d0-%d1/%a0-%a1
     rte

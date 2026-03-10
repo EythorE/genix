@@ -13,9 +13,19 @@ long   atol(const char *s);
 long   strtol(const char *nptr, char **endptr, int base);
 unsigned long strtoul(const char *nptr, char **endptr, int base);
 char  *getenv(const char *name);
+int    setenv(const char *name, const char *value, int overwrite);
+int    unsetenv(const char *name);
 void  *malloc(unsigned int size);
 void   free(void *ptr);
 void  *calloc(unsigned int nmemb, unsigned int size);
 void  *realloc(void *ptr, unsigned int size);
+void   qsort(void *base, unsigned int nmemb, unsigned int size,
+              int (*compar)(const void *, const void *));
+void  *bsearch(const void *key, const void *base, unsigned int nmemb,
+               unsigned int size, int (*compar)(const void *, const void *));
+int    rand(void);
+void   srand(unsigned int seed);
+
+#define RAND_MAX 32767
 
 #endif
