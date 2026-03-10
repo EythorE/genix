@@ -933,3 +933,107 @@ Pipe read/write now block when empty/full:
 | `kernel/crt0.S` | Timer ISR delegates to `schedule()`+`swtch()` (no manual ksp save) |
 | `pal/megadrive/crt0.S` | Same VBlank ISR change |
 | `tests/test_proc.c` | Added kstack layout tests, updated pipe struct |
+
+---
+
+## Decision: Three-Branch Merge (March 2026)
+
+**Date:** 2026-03-10
+**Status:** Done, all tests pass
+
+Three parallel development branches were merged into one:
+
+1. **Track A** (`claude/review-plan-strategy`): Preemptive scheduling —
+   per-process kernel stacks, user mode, `swtch()` context switch,
+   `proc_first_run` trampoline, async `do_spawn()`, blocking pipes,
+   blocking `waitpid`. 3 commits, ~760 lines changed.
+
+2. **Track B** (`claude/prepare-libc-apps`): Libc expansion + 12 new
+   apps — `getopt`, `perror`, `sprintf`, `strtol`, `isatty`, plus
+   `basename`, `cmp`, `cut`, `dirname`, `nl`, `rev`, `tail`, `tee`,
+   `tr`, `uniq`, `yes`. 336-line test suite. ~1560 lines added.
+
+3. **VDP imshow** (`claude/vdp-driver-imshow-port`): VDP device driver
+   (`dev_vdp.c`), `libgfx` userspace library, `imshow` app, graphics
+   pipeline docs, 232-line test suite. ~1300 lines added.
+
+### Merge Strategy
+
+Track A merged as fast-forward (it was ahead of master). Track B merged
+cleanly (no conflicts with Track A — different files). VDP imshow had
+5 conflicts, all in list-type files:
+
+| File | Conflict | Resolution |
+|------|----------|------------|
+| `.gitignore` | Both added app names | Combined both lists |
+| `Makefile` | Both added to `CORE_BINS` | Combined both lists |
+| `apps/Makefile` | Both added to `PROGRAMS` | Combined both lists |
+| `libc/Makefile` | Both added to `OBJS` | Combined both lists |
+| `tests/Makefile` | Both added to `TESTS` | Combined both lists |
+
+### Pain Points
+
+1. **Duplicate .gitignore entries**: `apps/levee/levee` appeared twice
+   in `.gitignore` after merge. Removed the duplicate. Easy to miss in
+   conflict resolution — always review the full file after resolving.
+
+2. **List-format Makefiles invite conflicts**: When every branch adds
+   items to the same variable (`PROGRAMS =`, `OBJS =`, `TESTS =`),
+   every branch conflicts with every other branch. This is inherent to
+   the "one variable, one line" Makefile pattern. Consider using
+   `PROGRAMS +=` in separate files or wildcard patterns to reduce
+   future conflicts.
+
+3. **No functional conflicts**: The three branches touched orthogonal
+   subsystems (kernel scheduling, libc/apps, VDP driver). No semantic
+   conflicts — only syntactic list conflicts. This validates the
+   modular architecture.
+
+### Test Results After Merge
+
+| Test | Result |
+|------|--------|
+| `make test` (host) | 391 passed, 0 failed |
+| `make kernel` | Clean cross-compilation |
+| `make test-emu` | 10 autotest passed, 0 failed |
+| `make megadrive` | ROM built (548 KB) |
+| `make test-md` | OK (300 frames, no crash) |
+| `make test-md-auto` | OK (600 frames, no crash) |
+
+---
+
+## Project Status Update (March 2026 — Post-Merge)
+
+The kernel multitasking infrastructure is now complete:
+
+- **Per-process kernel stacks** (512 bytes each, in proc struct)
+- **User mode** execution (S=0, USP/SSP separated)
+- **Preemptive timer ISR** (checks S-bit, only preempts user mode)
+- **swtch()** context switch (callee-saved regs, stack swap)
+- **proc_first_run** trampoline (enters user mode for new processes)
+- **Async do_spawn()** (non-blocking, child is P_READY immediately)
+- **Blocking waitpid()** (parent sleeps until child exits)
+- **Blocking pipes** (reader/writer sleep when empty/full)
+- **VDP device driver** with userspace libgfx library
+- **19 user programs** in /bin (up from 8)
+- **391+ host tests** + automated guest tests on both platforms
+
+### Known Limitations (BEWARE)
+
+1. **Single user memory space**: All user programs load at USER_BASE.
+   Two user processes can't coexist in memory simultaneously. The shell
+   runs in supervisor mode (no USER_BASE conflict), so shell + one child
+   works. For `prog1 | prog2` to work, we need memory partitioning,
+   swapping, or relocation.
+
+2. **kstack overflow has no guard**: The 512-byte kstack grows down
+   into the proc struct fields. If a syscall's C call chain is too deep
+   (or a timer ISR nests on top), it silently corrupts `fd[]`, `cwd`,
+   etc. Consider adding a canary word at kstack[0] for debug builds.
+
+3. **No signals yet**: `SYS_SIGNAL` and `SYS_KILL` are stubs. Job
+   control (^C, ^Z, fg/bg) requires signal delivery. This is Phase 2d.
+
+4. **No I/O redirection in shell**: The shell's `exec` command uses
+   `do_spawn()` but doesn't support `>`, `<`, or `2>` syntax. Pipes
+   work at the kernel level but need shell syntax support.
