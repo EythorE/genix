@@ -11,6 +11,9 @@ void shell_write(const char *arg);
 #ifdef AUTOTEST
 static void autotest(void);
 #endif
+#ifdef IMSHOW_TEST
+static void imshow_test(void);
+#endif
 
 /* Timer frequency */
 #define TIMER_HZ 100
@@ -106,7 +109,11 @@ void kmain(void)
 
     kputs("Starting shell...\n");
 
-#ifdef AUTOTEST
+#ifdef IMSHOW_TEST
+    imshow_test();
+    for (;;)
+        __asm__ volatile("nop");
+#elif defined(AUTOTEST)
     autotest();
     /* Spin with interrupts enabled so VBlank keeps firing.
      * If we call pal_halt() (STOP #0x2700), some BlastEm versions
@@ -324,6 +331,34 @@ static void autotest(void)
         kputs("AUTOTEST FAILED\n");
     else
         kputs("AUTOTEST PASSED\n");
+}
+#endif
+
+#ifdef IMSHOW_TEST
+/*
+ * IMSHOW_TEST — spawn imshow in no-wait mode for screenshot capture.
+ * Used by `make test-md-imshow` to validate the full VDP graphics stack
+ * (kernel driver → ioctl → libgfx → userspace) and produce a reference
+ * screenshot of the color bar test pattern.
+ */
+static void imshow_test(void)
+{
+    kputs("=== IMSHOW_TEST: spawning imshow -n ===\n");
+    const char *argv[] = { "/bin/imshow", "-n", NULL };
+    int pid = do_spawn("/bin/imshow", argv);
+    if (pid > 0) {
+        int status = -1;
+        do_waitpid(pid, &status);
+        int exitcode = (status >> 8) & 0xFF;
+        kprintf("imshow exited with code %d\n", exitcode);
+        if (exitcode == 0)
+            kputs("IMSHOW_TEST PASSED\n");
+        else
+            kputs("IMSHOW_TEST FAILED\n");
+    } else {
+        kprintf("imshow spawn failed: %d\n", pid);
+        kputs("IMSHOW_TEST FAILED\n");
+    }
 }
 #endif
 

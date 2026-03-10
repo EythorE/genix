@@ -8,9 +8,13 @@
  * screen with tiles. Press any key to exit and restore the console.
  *
  * Ported from the FUZIX Mega Drive imshow concept.
+ *
+ * Options:
+ *   -n   No-wait mode: display for ~2 seconds then exit (for automated tests)
  */
 #include <gfx.h>
 #include <stdio.h>
+#include <string.h>
 #include <unistd.h>
 
 /* 16-color test palette (Mega Drive format: 0000BBB0GGG0RRR0) */
@@ -83,7 +87,12 @@ static void make_gradient_tile(uint8_t *out, int base_color)
 
 int main(int argc, char **argv)
 {
-    (void)argc; (void)argv;
+    int nowait = 0;
+
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "-n") == 0)
+            nowait = 1;
+    }
 
     int r = gfx_open();
     if (r < 0) {
@@ -163,8 +172,15 @@ int main(int argc, char **argv)
     /* Sync to ensure display is updated */
     gfx_vsync();
 
-    /* Wait for keypress */
-    read(0, tile_buf, 1);
+    if (nowait) {
+        /* Automated test mode: hold the display for ~2 seconds (120 frames
+         * at 60 fps) so BlastEm renders enough frames for a screenshot. */
+        for (int f = 0; f < 120; f++)
+            gfx_vsync();
+    } else {
+        /* Interactive mode: wait for keypress */
+        read(0, tile_buf, 1);
+    }
 
     /* Close VDP — restores text console */
     gfx_close();
