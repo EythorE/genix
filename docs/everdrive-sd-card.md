@@ -8,14 +8,23 @@ CPU, but through very different mechanisms.**
 
 ## Open EverDrive — Bit-Bang SPI
 
-The Open EverDrive is a discrete-logic cartridge (no FPGA, no MCU) that
-exposes the SD card's SPI bus directly through its control register at
-`0xA13000`. The 68000 must bit-bang the SPI protocol entirely in
-software.
+The Open EverDrive is a discrete-logic cartridge (no FPGA, no MCU —
+just 74HC logic chips, 8 MB NOR flash, 128 KB SRAM, and an SD card
+slot) that exposes the SD card's SPI bus directly through a control
+register in the `$A130xx` range. The 68000 must bit-bang the SPI
+protocol entirely in software.
 
 ### Hardware Interface
 
-The control register at `0xA13000` maps individual SPI signals to bits:
+The control register responds to any access in `0xA13000-0xA130FF`
+(the 68000's `!TIME` signal range). The open-ed menu firmware
+conventionally uses address `0xA130E0`. Since the entire `$A130xx`
+range is decoded to the same register, this also means the standard
+Sega mapper register at `0xA130F1` aliases to the same hardware — on
+the open-ed, writing `0xA130F1` writes the CTRL_REG, not a separate
+mapper. (In `ROM_2M+RAM` mode SRAM is always on, so this is harmless.)
+
+The control register maps individual SPI signals to bits:
 
 **Write bits:**
 
@@ -44,57 +53,62 @@ a positive clock pulse on the SPI_CLK line. This means you can clock out
 data by just reading the register repeatedly instead of toggling clock
 bits manually. This roughly doubles the effective SPI throughput.
 
-### Bit-Bang SPI Transfer (conceptual)
+### Bit-Bang SPI Transfer
+
+From the open-ed menu firmware source (`menu/everdrive.c`):
 
 ```c
-#define CTRL_REG  (*(volatile uint16_t *)0xA13000)
+#define CTRL_REG  *((vu16 *) 0xA130E0)
 
-/* Base state: SRAM on, SD chip selected (active low = 0), clock low */
-#define SPI_BASE  (0x0001)  /* SRM_ON=1, SDC_SS=0 (selected) */
+/* ed_cfg holds the current non-SPI bits (SRM_ON, LED, etc.) */
 
-/* Send/receive one byte over SPI (mode 0, MSB first) */
-static uint8_t spi_xfer(uint8_t out) {
-    uint8_t in = 0;
-    for (int i = 7; i >= 0; i--) {
-        uint16_t mosi = (out >> i) & 1 ? 0x0080 : 0x0000;
-        /* Clock low, set MOSI */
-        CTRL_REG = SPI_BASE | mosi;
-        /* Clock high — latch data */
-        CTRL_REG = SPI_BASE | mosi | 0x0040;
-        /* Read MISO */
-        in = (in << 1) | (CTRL_REG & 1);
+/* Write one byte over SPI */
+void spi_w(u8 val) {
+    for (u16 i = 0; i < 8; i++) {
+        CTRL_REG = ed_cfg | (val & CTRL_SPI_MOSI);                /* MOSI + CLK low */
+        CTRL_REG = ed_cfg | (val & CTRL_SPI_MOSI) | CTRL_SPI_CLK; /* CLK high */
+        CTRL_REG = ed_cfg | (val & CTRL_SPI_MOSI);                /* CLK low */
+        val <<= 1;
     }
-    /* Clock low */
-    CTRL_REG = SPI_BASE;
-    return in;
+}
+
+/* Read one byte over SPI */
+u8 spi_r() {
+    u8 ret = 0;
+    CTRL_REG = ed_cfg | CTRL_SPI_MOSI;  /* MOSI high (idle) */
+    for (u16 i = 0; i < 8; i++) {
+        CTRL_REG = ed_cfg | CTRL_SPI_MOSI | CTRL_SPI_CLK;  /* CLK high */
+        ret <<= 1;
+        ret |= CTRL_REG;                                     /* sample MISO */
+        CTRL_REG = ed_cfg | CTRL_SPI_MOSI;                  /* CLK low */
+    }
+    return ret;
 }
 ```
 
-With the auto-clock trick, the read path can be faster:
-
-```c
-/* Fast read: set SPI_CLK=0, then each read auto-pulses clock */
-static uint8_t spi_read_fast(void) {
-    uint8_t in = 0;
-    CTRL_REG = SPI_BASE | 0x0080;  /* MOSI high (0xFF), CLK=0 */
-    for (int i = 0; i < 8; i++) {
-        in = (in << 1) | (CTRL_REG & 1);  /* read + auto-clock */
-    }
-    return in;
-}
-```
+The menu firmware also has a fast 512-byte read in 68000 assembly
+(`menu/spi.s`) that exploits the auto-clock feature: each read of
+CTRL_REG auto-pulses SPI_CLK (when the CLK bit is 0), so the inner
+loop is just `lsl.w #1, d0; or.w (a0), d0` repeated 8 times per byte,
+fully unrolled.
 
 ### Performance Estimate
 
-Each SPI bit requires at least 2 register accesses (write + read) at
-~4-8 68000 cycles each through the cartridge bus. That's roughly:
+Each SPI bit requires ~3 register writes (MOSI + CLK high + CLK low)
+through the cartridge bus. Each 16-bit write to the `$A130xx` range
+takes ~8 68000 cycles (4 cycles for the instruction + wait states):
 
-- **Per byte**: ~64-128 cycles (bit-bang) or ~32-64 cycles (auto-clock read)
-- **Per 512-byte sector**: ~16,384-65,536 cycles
-- **At 7.67 MHz**: ~2-8 KB/s for bit-bang, potentially faster with auto-clock
+- **Per byte (write)**: ~24 register accesses = ~192 cycles
+- **Per byte (read)**: ~16 register accesses = ~128 cycles
+- **Per byte (auto-clock read)**: ~8 register reads = ~64 cycles
+- **Per 512-byte sector**: ~32K-98K cycles
+- **Theoretical max at 7.67 MHz**: ~78-120 KB/s (auto-clock read)
 
-This is slow but usable for a simple OS. The SD card itself in SPI mode
-is limited to ~400 KB/s theoretical max, and the bus overhead dominates.
+Real-world performance from the open-ed menu: loading a 4 MB ROM
+takes 15-35 seconds (multi-block reads with CMD18), giving ~115-270
+KB/s effective throughput. For single-sector reads (CMD17) the
+overhead per command is higher, but even 20 KB/s is usable for a
+command-line OS loading small files.
 
 ### What You Need to Implement
 
@@ -105,11 +119,36 @@ is limited to ~400 KB/s theoretical max, and the bus overhead dominates.
 5. **FAT16/FAT32 filesystem**: To read files from the SD card
 6. **Integration with Genix**: `/dev/sd0` block device or mount at `/sd`
 
+### Address Space Compatibility
+
+The open-ed's CTRL_REG at `$A130xx` does **not** conflict with
+Genix's SRAM enable register at `$A130F1` because on the open-ed,
+they are the **same register**. The open-ed decodes the entire
+`$A130xx` range to one 8-bit latch. This means:
+
+- Genix's existing `*(volatile uint8_t *)0xA130F1 = 0x03` writes to
+  the same CTRL_REG — harmless in `ROM_2M+RAM` mode (SRAM already on)
+- The SD card SPI pins (bits 4-7) and SRAM control (bit 0) share one
+  register — SD card access code must preserve the SRM_ON bit
+
+On a standard cartridge (no open-ed), the `$A130F0-$A130FF` range is
+the Sega mapper and `$A130E0` is open bus. So open-ed-specific SPI
+writes to `$A130E0` are harmless on non-open-ed hardware.
+
+### SD Card Protocol
+
+The open-ed menu firmware (`menu/disk.c`) implements standard SD card
+SPI initialization: CMD0 (reset), CMD8 (voltage check), CMD55+ACMD41
+loop (initialization), CMD58 (SDHC detection). Block reads via CMD17
+(single) and CMD18 (multi-block). This is well-documented protocol
+that Genix can implement directly.
+
 ### Source References
 
 - Hardware: [open-ed.v](https://github.com/krikzz/open-ed/blob/master/open-ed.v) (Verilog)
+- Menu firmware: [open-ed/menu/](https://github.com/krikzz/open-ed/tree/master/menu) (SPI, SD, FAT code)
 - Mapper doc: [open-ed-mapper.txt](https://github.com/krikzz/open-ed/blob/master/open-ed-mapper.txt)
-- Schematics: [open-ed repository](https://github.com/krikzz/open-ed)
+- Schematics: [open-ed repository](https://github.com/krikzz/open-ed) (MIT license)
 
 ## Mega EverDrive Pro — FPGA Command Interface (FIFO)
 
@@ -243,9 +282,9 @@ actual SPI clocking is handled by hardware — much faster than bit-bang.
 | **ROM header requirement** | None (standard mode) | `SEGA SSF` | `SEGA SSF` |
 | **FAT filesystem** | Must implement on 68000 | Handled by MCU | Must implement on 68000 |
 | **Open source** | Yes (MIT) | Partial (SDK is GPL-3) | Partial (SDK) |
-| **Throughput** | ~2-8 KB/s | Fast (MCU-limited) | Medium (HW SPI) |
+| **Throughput** | ~20-270 KB/s | Fast (MCU-limited) | Medium (HW SPI) |
 | **Code complexity** | High (SPI + SD + FAT) | Low (file API) | Medium (SD + FAT) |
-| **Detection** | Check `0xA13000` | `REG_SYS_STAT & 0xFFF0 == 0x55A0` | `IO_STAT` check |
+| **Detection** | SD card responds to CMD0 | `REG_SYS_STAT & 0xFFF0 == 0x55A0` | `IO_STAT` check |
 
 ## Recommendations for Genix
 
