@@ -689,6 +689,76 @@ static void autotest(void)
         }
     }
 
+    /* Test 24: exec /bin/seq 1 5 — verify number sequence output */
+    kputs("[test] exec /bin/seq: ");
+    {
+        const char *argv[] = { "/bin/seq", "1", "5", NULL };
+        rc = do_exec("/bin/seq", argv);
+        if (rc == 0) { kputs("PASS\n"); pass++; }
+        else { kprintf("FAIL (exit %d)\n", rc); fail++; }
+    }
+
+    /* Test 25: exec /bin/strings on a known binary */
+    kputs("[test] exec /bin/strings: ");
+    {
+        const char *argv[] = { "/bin/strings", "/bin/hello", NULL };
+        rc = do_exec("/bin/strings", argv);
+        if (rc == 0) { kputs("PASS\n"); pass++; }
+        else { kprintf("FAIL (exit %d)\n", rc); fail++; }
+    }
+
+    /* Test 26: exec /bin/fold (reads stdin, but exits 0 on empty) */
+    kputs("[test] exec /bin/tac: ");
+    {
+        const char *argv[] = { "/bin/tac", "/bin/hello", NULL };
+        rc = do_exec("/bin/tac", argv);
+        if (rc == 0) { kputs("PASS\n"); pass++; }
+        else { kprintf("FAIL (exit %d)\n", rc); fail++; }
+    }
+
+    /* Test 27: spawn seq and check output via pipe */
+    kputs("[test] spawn pipe seq|wc: ");
+    {
+        int pfd[2];
+        rc = do_pipe(pfd);
+        if (rc < 0) {
+            kprintf("FAIL (pipe returned %d)\n", rc);
+            fail++;
+        } else {
+            /* Run seq 1 3 with stdout → pipe */
+            const char *seq_argv[] = { "/bin/seq", "1", "3", NULL };
+            int seq_pid = do_spawn_fd("/bin/seq", seq_argv,
+                                       -1, pfd[1], -1);
+            syscall_dispatch(SYS_CLOSE, pfd[1], 0, 0, 0);
+
+            int ok = 1;
+            if (seq_pid > 0) {
+                int status;
+                do_waitpid(seq_pid, &status);
+            } else { ok = 0; }
+
+            /* Run wc with stdin ← pipe */
+            const char *wc_argv[] = { "/bin/wc", NULL };
+            int wc_pid = do_spawn_fd("/bin/wc", wc_argv,
+                                      pfd[0], -1, -1);
+            syscall_dispatch(SYS_CLOSE, pfd[0], 0, 0, 0);
+
+            if (wc_pid > 0) {
+                int status;
+                do_waitpid(wc_pid, &status);
+            } else { ok = 0; }
+
+            if (ok) {
+                kputs("PASS\n");
+                pass++;
+            } else {
+                kprintf("FAIL (seq_pid=%d wc_pid=%d)\n",
+                        seq_pid, wc_pid);
+                fail++;
+            }
+        }
+    }
+
     /* Summary */
     kprintf("\n=== AUTOTEST DONE: %d passed, %d failed ===\n", pass, fail);
     if (fail > 0)

@@ -1502,3 +1502,82 @@ PAL: pal_console_putc()/pal_console_getc()
 | `pal/megadrive/Makefile` | Added tty.c + tty.o build rule |
 | `tests/test_tty.c` | New — 78 host unit tests |
 | `tests/Makefile` | Added test_tty |
+
+---
+
+## Phase 2f: Tier 1 Utility Porting (2026-03-10)
+
+### Decision: Write Custom Utilities vs. Port Fuzix Source
+
+Chose to write custom implementations of the Tier 1 utilities rather than
+directly porting Fuzix source files. The Fuzix utilities use Fuzix-specific
+libc headers and calling conventions that would require more adaptation work
+than writing simple tools from scratch. Each utility is under 100 lines and
+follows the established Genix app pattern (raw syscall declarations, static
+buffers with even sizes, no dynamic allocation).
+
+### Programs Added (8 new utilities → 30 total)
+
+| Program | Size (bytes) | Description |
+|---------|-------------|-------------|
+| strings | 1,253 | Extract printable strings from binary files |
+| fold    | 1,134 | Wrap lines to specified width (default 80) |
+| expand  | 1,322 | Convert tabs to spaces |
+| unexpand | 1,560 | Convert leading spaces to tabs |
+| paste   | 1,164 | Merge lines from multiple files |
+| comm    | 1,624 | Compare two sorted files line by line |
+| seq     | 1,398 | Print number sequences |
+| tac     | 949   | Reverse cat (print file lines in reverse) |
+
+All programs are well under the Mega Drive's ~28 KB user space limit.
+Largest new utility is comm at 1,624 bytes.
+
+### Pain Points
+
+1. **tac uses a 4 KB static buffer** — the `static char data[BUF_SIZE]`
+   in `tac.c` consumes 4,099 bytes of BSS. On the Mega Drive this is fine
+   (the buffer lives in user space, ~28 KB available), but it means tac
+   can only reverse files up to 4 KB. For the Mega Drive use case this is
+   acceptable — most text files will be much smaller.
+
+2. **paste reads one byte at a time** — the `read_line()` helper does
+   `read(fd, &c, 1)` per character, which is slow (one syscall per byte).
+   This is the same pattern as cut, tr, and other existing apps. It's
+   simple and correct. Buffered I/O would require stdio (fgets), which
+   is available in libc but the existing app style uses raw syscalls.
+   **Decision:** Keep the raw syscall style for consistency. If performance
+   becomes an issue, migrate apps to libc stdio.
+
+3. **expand uses modulo for tab stops** — `col % tabstop` generates a
+   division instruction. The tabstop is always a small constant (default 8)
+   so DIVU.W is used (fits in 16 bits). Annotated with comment per the
+   division guidelines.
+
+4. **No cross-compiler pre-installed** — the CI/dev environment requires
+   running `scripts/fetch-toolchain.sh` to get `m68k-elf-gcc`. This adds
+   ~10s to first-time setup. The script downloads both the cross-compiler
+   and BlastEm from pre-built releases.
+
+### Testing
+
+- All 99 host tests pass (no regressions)
+- Workbench AUTOTEST: 31 passed, 0 failed (was 27, added 4 new cases)
+- New autotest cases: exec seq, exec strings, exec tac, spawn pipe seq|wc
+- Mega Drive build: clean compile, BlastEm headless 300-frame boot passes
+- Strict alignment checking: no alignment violations in new utilities
+
+### What Changed
+
+| File | Change |
+|------|--------|
+| `apps/strings.c` | New — extract printable strings |
+| `apps/fold.c` | New — line folding |
+| `apps/expand.c` | New — tab expansion |
+| `apps/unexpand.c` | New — space to tab compression |
+| `apps/paste.c` | New — merge file lines |
+| `apps/comm.c` | New — sorted file comparison |
+| `apps/seq.c` | New — number sequence generator |
+| `apps/tac.c` | New — reverse cat |
+| `apps/Makefile` | Added 8 new programs to PROGRAMS list |
+| `Makefile` | Added 8 programs to CORE_BINS |
+| `kernel/main.c` | 4 new autotest cases (tests 24-27) |
