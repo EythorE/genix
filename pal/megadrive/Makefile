@@ -17,7 +17,7 @@ ASM_SRCS = crt0.S $(KERNEL_DIR)/divmod.S $(KERNEL_DIR)/exec_asm.S \
            keyboard_read.S vdp.S devvt.S dbg_output.S
 
 # C sources (Mega Drive platform + kernel)
-C_SRCS = platform.c keyboard.c fontdata_8x8.c \
+C_SRCS = platform.c keyboard.c fontdata_8x8.c dev_vdp.c \
          $(KERNEL_DIR)/main.c $(KERNEL_DIR)/kprintf.c \
          $(KERNEL_DIR)/mem.c $(KERNEL_DIR)/buf.c $(KERNEL_DIR)/fs.c \
          $(KERNEL_DIR)/dev.c $(KERNEL_DIR)/proc.c $(KERNEL_DIR)/exec.c \
@@ -113,6 +113,9 @@ keyboard.o: keyboard.c keyboard.h keycode.h
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 fontdata_8x8.o: fontdata_8x8.c
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+dev_vdp.o: dev_vdp.c ../../kernel/dev_vdp.h
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 clean:

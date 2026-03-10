@@ -90,7 +90,7 @@ typedef int bool;
 
 /* User memory layout — platform-provided, set at boot by kmain().
  * Workbench: 0x040000-0x0F0000 (704 KB in 1 MB RAM)
- * Mega Drive: 0xFF8000-0xFFFE00 (~31 KB in 64 KB RAM)  */
+ * Mega Drive: 0xFF9000-0xFFFE00 (~27.5 KB in 64 KB RAM)  */
 extern uint32_t USER_BASE;   /* user programs load here */
 extern uint32_t USER_TOP;    /* user stack starts here (grows down) */
 extern uint32_t USER_SIZE;   /* USER_TOP - USER_BASE */
@@ -234,7 +234,8 @@ struct device {
 
 #define DEV_CONSOLE  0
 #define DEV_DISK     1
-#define NDEV         2
+#define DEV_VDP      2
+#define NDEV         3
 
 extern struct device devtab[];
 void dev_init(void);
@@ -250,6 +251,8 @@ struct pipe {
     uint16_t count;
     uint8_t  readers;
     uint8_t  writers;
+    uint8_t  read_waiting;   /* process waiting for data */
+    uint8_t  write_waiting;  /* process waiting for space */
 };
 
 #define MAXPIPE     4
@@ -270,21 +273,27 @@ void pipe_close_write(struct pipe *p);
 #define P_ZOMBIE    4
 #define P_VFORK     5      /* parent waiting for child vfork */
 
+/* Per-process kernel stack size in bytes.
+ * Must hold: exception frame (6) + saved regs (60) + USP (4) +
+ * syscall args (20) + C call chain (~120) = ~210 bytes minimum.
+ * The deepest path is TRAP→syscall_dispatch→sys_write→con_write→kputc→pal_putc.
+ * 512 bytes gives comfortable headroom for nested timer ISR. */
+#define KSTACK_SIZE   512
+#define KSTACK_WORDS  (KSTACK_SIZE / 4)  /* 64 uint32_t entries */
+
 struct proc {
     uint8_t  state;
     uint8_t  pid;
     uint8_t  ppid;
     int8_t   exitcode;
-    uint32_t sp;           /* saved stack pointer */
-    uint32_t pc;           /* saved program counter */
-    uint32_t regs[16];     /* d0-d7, a0-a7 saved registers */
-    uint16_t sr;           /* saved status register */
+    uint32_t ksp;          /* saved kernel stack pointer (into kstack[]) */
     uint32_t mem_base;     /* start of process memory */
     uint32_t mem_size;     /* size of allocated memory */
     uint32_t brk;          /* current break (top of data) */
     uint32_t vfork_ctx[13]; /* vfork_save context (d2-d7,a2-a6,sp,retaddr) */
     uint16_t cwd;          /* current working directory inode */
     struct ofile *fd[MAXFD];
+    uint32_t kstack[KSTACK_WORDS]; /* per-process kernel stack */
 };
 
 extern struct proc proctab[];
@@ -292,6 +301,8 @@ extern struct proc *curproc;
 extern int nproc;
 
 void proc_init(void);
+int  load_binary(const char *path, const char **argv,
+                 uint32_t *entry_out, uint32_t *user_sp_out);
 int  do_exec(const char *path, const char **argv);
 void do_exit(int code);
 int  do_waitpid(int pid, int *status);
@@ -300,10 +311,23 @@ int  do_spawn(const char *path, const char **argv);
 void schedule(void);
 
 /* Exec support (assembly in exec_asm.S) */
-extern int exec_enter(uint32_t entry, uint32_t sp);
+extern int exec_enter(uint32_t entry, uint32_t user_sp, uint32_t kstack_top);
 extern void exec_leave(void);
 extern int exec_exit_code;
 extern int exec_active;
+
+/* Context switch (assembly in exec_asm.S) */
+extern void swtch(uint32_t *old_ksp, uint32_t new_ksp);
+extern void proc_first_run(void);  /* trampoline for new process entry */
+
+/* Set up a process's kstack for its first context switch */
+void proc_setup_kstack(struct proc *p, uint32_t entry, uint32_t user_sp);
+
+/* Helper: get the top of a process's kernel stack */
+static inline uint32_t proc_kstack_top(struct proc *p)
+{
+    return (uint32_t)&p->kstack[KSTACK_WORDS];
+}
 
 /* vfork support (assembly in exec_asm.S) — setjmp/longjmp for kernel */
 extern int vfork_save(uint32_t *regs);

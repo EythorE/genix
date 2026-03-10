@@ -31,7 +31,9 @@ apps-md: libc tools
 	$(MAKE) -C apps LDSCRIPT=user-md.ld
 
 # Core app binaries (built for both workbench and Mega Drive)
-CORE_BINS = apps/hello apps/echo apps/cat apps/wc apps/head apps/true apps/false
+CORE_BINS = apps/hello apps/echo apps/cat apps/wc apps/head apps/true apps/false \
+            apps/tail apps/tee apps/yes apps/basename apps/dirname \
+            apps/rev apps/nl apps/cmp apps/cut apps/tr apps/uniq apps/imshow
 
 # All app binaries (levee is workbench-only — too large for MD 31KB user space)
 APP_BINS = $(CORE_BINS) $(wildcard apps/levee/levee)

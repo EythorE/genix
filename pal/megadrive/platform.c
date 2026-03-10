@@ -194,7 +194,11 @@ uint32_t pal_mem_end(void)
 
 uint32_t pal_user_base(void)
 {
-    return 0xFF8000;  /* ~32 KB for kernel .data+.bss+heap below */
+    /* Per-process kstacks (512 bytes × 16 procs) push _end past 0xFF8000.
+     * USER_BASE must match user-md.ld link address exactly because
+     * binaries have absolute entry points. 0xFF9000 gives ~1.5 KB
+     * for heap and ~27.5 KB for user programs. */
+    return 0xFF9000;
 }
 
 uint32_t pal_user_top(void)

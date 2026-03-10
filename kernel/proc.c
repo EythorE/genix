@@ -83,19 +83,38 @@ int pipe_read(struct pipe *p, void *buf, int len)
     uint8_t *dst = (uint8_t *)buf;
     int n = 0;
 
-    while (n < len) {
-        if (p->count == 0) {
-            /* Empty pipe: if no writers remain, return EOF */
-            if (p->writers == 0)
-                return n;
-            /* Otherwise return what we have (non-blocking for now) */
-            break;
+    /* Block only when pipe is empty AND we have no data yet.
+     * Once we have any data, return immediately (POSIX semantics). */
+    while (p->count == 0 && p->writers > 0) {
+        /* Wake any blocked writer before sleeping */
+        if (p->write_waiting && p->write_waiting <= MAXPROC) {
+            struct proc *wp = &proctab[p->write_waiting - 1];
+            if (wp->state == P_SLEEPING)
+                wp->state = P_READY;
+            p->write_waiting = 0;
         }
+        p->read_waiting = curproc->pid + 1;  /* 1-based to distinguish from 0 */
+        curproc->state = P_SLEEPING;
+        schedule();
+        p->read_waiting = 0;
+    }
+
+    /* Read available data (up to len) */
+    while (n < len && p->count > 0) {
         dst[n++] = p->buf[p->read_pos];
         /* PIPE_SIZE is 512, use & (PIPE_SIZE-1) for power-of-2 wrap */
         p->read_pos = (p->read_pos + 1) & (PIPE_SIZE - 1);
         p->count--;
     }
+
+    /* Wake blocked writer if we freed space */
+    if (p->write_waiting && p->write_waiting <= MAXPROC) {
+        struct proc *wp = &proctab[p->write_waiting - 1];
+        if (wp->state == P_SLEEPING)
+            wp->state = P_READY;
+        p->write_waiting = 0;
+    }
+
     return n;
 }
 
@@ -108,17 +127,41 @@ int pipe_write(struct pipe *p, const void *buf, int len)
     if (p->readers == 0)
         return -EPIPE;
 
-    while (n < len) {
-        if (p->count >= PIPE_SIZE) {
-            /* Pipe full — return what we wrote (non-blocking for now) */
-            break;
+    /* Block only when pipe is full AND we haven't written anything yet.
+     * Once we write any data, return immediately (POSIX semantics). */
+    while (p->count >= PIPE_SIZE && p->readers > 0) {
+        /* Wake any blocked reader before sleeping */
+        if (p->read_waiting && p->read_waiting <= MAXPROC) {
+            struct proc *rp = &proctab[p->read_waiting - 1];
+            if (rp->state == P_SLEEPING)
+                rp->state = P_READY;
+            p->read_waiting = 0;
         }
+        p->write_waiting = curproc->pid + 1;
+        curproc->state = P_SLEEPING;
+        schedule();
+        p->write_waiting = 0;
+    }
+
+    /* Write available space (up to len) */
+    while (n < len && p->count < PIPE_SIZE) {
+        if (p->readers == 0)
+            return n > 0 ? n : -EPIPE;
         p->buf[p->write_pos] = src[n++];
         /* PIPE_SIZE is 512, power-of-2 wrap */
         p->write_pos = (p->write_pos + 1) & (PIPE_SIZE - 1);
         p->count++;
     }
-    return n > 0 ? n : -EAGAIN;
+
+    /* Wake blocked reader if we added data */
+    if (p->read_waiting && p->read_waiting <= MAXPROC) {
+        struct proc *rp = &proctab[p->read_waiting - 1];
+        if (rp->state == P_SLEEPING)
+            rp->state = P_READY;
+        p->read_waiting = 0;
+    }
+
+    return n > 0 ? n : -EPIPE;
 }
 
 void pipe_close_read(struct pipe *p)
@@ -153,6 +196,8 @@ int do_pipe(int *fds)
     p->count = 0;
     p->readers = 1;
     p->writers = 1;
+    p->read_waiting = 0;
+    p->write_waiting = 0;
 
     /* Allocate read end */
     struct ofile *of_r = ofile_alloc();
@@ -212,7 +257,65 @@ static struct pipe *ofile_pipe(struct ofile *of)
     return &pipe_table[idx];
 }
 
-/* do_exec() is implemented in exec.c */
+/* do_exec() and load_binary() are implemented in exec.c */
+
+/*
+ * Set up a process's kernel stack for its first context switch.
+ *
+ * Builds two stacked frames so that swtch() + proc_first_run can
+ * enter user mode at the given entry point with user_sp as USP.
+ *
+ * Kstack layout (growing down from kstack top):
+ *
+ *   [RTE frame]        PC (entry), SR (0x0000 = user mode)
+ *   [user regs]        d0-d7, a0-a6 (all zero)
+ *   [USP]              user stack pointer
+ *   [swtch frame]      return addr → proc_first_run
+ *   [callee-saved]     d2-d7, a2-a6 (all zero)
+ *   ← ksp points here
+ */
+void proc_setup_kstack(struct proc *p, uint32_t entry, uint32_t user_sp)
+{
+    /* Build the initial kstack frame using byte-level pointer math.
+     * The exception frame has a 2-byte SR followed by a 4-byte PC,
+     * which doesn't align to 4-byte boundaries. We must pack carefully.
+     *
+     * Total frame size from top of kstack:
+     *   RTE:        6 bytes (SR=2 + PC=4)
+     *   user regs: 60 bytes (d0-d7, a0-a6 = 15 × 4)
+     *   USP:        4 bytes
+     *   retaddr:    4 bytes (→ proc_first_run)
+     *   swtch:     44 bytes (d2-d7, a2-a6 = 11 × 4)
+     *   Total:    118 bytes */
+    uint8_t *top = (uint8_t *)&p->kstack[KSTACK_WORDS];
+    uint8_t *bp = top;
+
+    /* RTE exception frame (6 bytes): SR then PC */
+    bp -= 4;
+    *(uint32_t *)bp = entry;        /* PC */
+    bp -= 2;
+    *(uint16_t *)bp = 0x0000;       /* SR: user mode, interrupts on */
+
+    /* User registers: 15 × 4 = 60 bytes (all zero) */
+    bp -= 60;
+    memset(bp, 0, 60);
+
+    /* Saved USP */
+    bp -= 4;
+    *(uint32_t *)bp = user_sp;
+
+    /* --- swtch frame --- */
+
+    /* Return address for swtch's RTS */
+    bp -= 4;
+    *(uint32_t *)bp = (uint32_t)proc_first_run;
+
+    /* Callee-saved registers: 11 × 4 = 44 bytes (all zero) */
+    bp -= 44;
+    memset(bp, 0, 44);
+
+    p->ksp = (uint32_t)bp;
+}
 
 void do_exit(int code)
 {
@@ -234,9 +337,17 @@ void do_exit(int code)
             curproc->fd[i] = NULL;
             of->refcount--;
             if (of->refcount == 0) {
-                if (of->inode)
+                struct pipe *p = ofile_pipe(of);
+                if (p) {
+                    if (of->flags & OFILE_PIPE_READ)
+                        pipe_close_read(p);
+                    if (of->flags & OFILE_PIPE_WRITE)
+                        pipe_close_write(p);
+                    of->inode = NULL;
+                } else if (of->inode) {
                     fs_iput(of->inode);
-                of->inode = NULL;
+                    of->inode = NULL;
+                }
             }
         }
     }
@@ -284,16 +395,13 @@ void do_exit(int code)
  * pid > 0:  wait for specific child
  *
  * Returns child PID on success, -ECHILD if no children.
- * For now, this is non-blocking: if no zombie child exists,
- * it busy-waits (cooperative multitasking step).
+ * Blocks (sleeps) if the child hasn't exited yet. The child's
+ * do_exit() wakes us by setting P_SLEEPING → P_READY.
  */
 int do_waitpid(int pid, int *status)
 {
-    /* Check that we have at least one child */
-    int has_child = 0;
-
     for (;;) {
-        has_child = 0;
+        int has_child = 0;
         for (int i = 0; i < MAXPROC; i++) {
             if (proctab[i].state == P_FREE)
                 continue;
@@ -321,11 +429,9 @@ int do_waitpid(int pid, int *status)
         if (!has_child)
             return -ECHILD;
 
-        /* Child exists but hasn't exited yet — yield and retry.
-         * In single-tasking exec mode, the child can't be running
-         * concurrently, so we'd deadlock. For now, with vfork+exec
-         * the child will have already exited or exec'd before
-         * parent reaches here. In true multitasking, schedule(). */
+        /* Child exists but hasn't exited yet — sleep until woken.
+         * do_exit() sets our state to P_READY when child exits. */
+        curproc->state = P_SLEEPING;
         schedule();
     }
 }
@@ -403,12 +509,16 @@ int do_vfork(void)
 }
 
 /*
- * do_spawn() — combined vfork+exec: create a child, load a binary,
- * run it to completion, and leave the child as a zombie.
+ * do_spawn() — create a child process and load a binary into it.
  *
- * This avoids the problematic vfork_save/vfork_restore "return twice"
- * pattern, which crashes because the child's exec stack frames
- * overlap with the parent's saved SP.
+ * Asynchronous: loads the binary, sets up the child's kstack for
+ * first context switch, marks it P_READY, and returns the child PID.
+ * The child runs when the scheduler picks it (via timer preemption
+ * or when the parent sleeps in do_waitpid).
+ *
+ * Only one user process can be in memory at a time (no MMU, shared
+ * USER_BASE). The shell (process 0) runs in supervisor mode so it
+ * doesn't compete for user memory.
  *
  * Returns child PID on success (caller uses do_waitpid to reap).
  * Returns negative errno on failure.
@@ -419,86 +529,73 @@ int do_spawn(const char *path, const char **argv)
     if (cpid == 0xFF)
         return -EAGAIN;
 
-    struct proc *parent = curproc;
     struct proc *child = &proctab[cpid];
 
-    /* Copy parent's process state to child */
-    *child = *parent;
+    /* Initialize child from parent */
+    child->state = P_FREE;  /* not yet ready */
     child->pid = cpid;
-    child->ppid = parent->pid;
-    child->state = P_RUNNING;
+    child->ppid = curproc->pid;
     child->exitcode = 0;
+    child->cwd = curproc->cwd;
+    child->mem_base = 0;
+    child->mem_size = 0;
+    child->brk = 0;
 
-    /* Increment refcounts on inherited file descriptors */
+    /* Copy and refcount file descriptors */
     for (int i = 0; i < MAXFD; i++) {
+        child->fd[i] = curproc->fd[i];
         if (child->fd[i])
             child->fd[i]->refcount++;
     }
     nproc++;
 
-    /* Switch to child context */
+    /* Save current curproc — load_binary updates curproc->mem_base etc. */
+    struct proc *parent = curproc;
     curproc = child;
 
-    /* Load and run the binary. do_exec() calls exec_enter() which
-     * blocks until the user program calls _exit() via exec_leave().
-     * The return value is the program's exit code (or negative errno). */
-    int rc = do_exec(path, argv);
+    /* Load binary into user memory */
+    uint32_t entry, user_sp;
+    int rc = load_binary(path, argv, &entry, &user_sp);
 
-    /* If exec failed (e.g. file not found), clean up the child */
+    /* Restore curproc to parent */
+    curproc = parent;
+
     if (rc < 0) {
-        /* Close child's inherited FDs */
+        /* Clean up child's inherited FDs */
         for (int i = 0; i < MAXFD; i++) {
             if (child->fd[i]) {
-                struct ofile *of = child->fd[i];
+                child->fd[i]->refcount--;
                 child->fd[i] = NULL;
-                of->refcount--;
-                /* Don't release the underlying inode/pipe here —
-                 * parent still holds a reference */
             }
         }
         child->state = P_FREE;
         nproc--;
-        curproc = parent;
         return rc;
     }
 
-    /* Program ran and exited. Make child a zombie for waitpid. */
-    child->exitcode = rc;
-    child->state = P_ZOMBIE;
+    /* Build the child's kstack so swtch() can resume it */
+    proc_setup_kstack(child, entry, user_sp);
 
-    /* Close child's file descriptors */
-    for (int i = 0; i < MAXFD; i++) {
-        if (child->fd[i]) {
-            struct ofile *of = child->fd[i];
-            child->fd[i] = NULL;
-            of->refcount--;
-            if (of->refcount == 0) {
-                struct pipe *p = ofile_pipe(of);
-                if (p) {
-                    if (of->flags & OFILE_PIPE_READ)
-                        pipe_close_read(p);
-                    if (of->flags & OFILE_PIPE_WRITE)
-                        pipe_close_write(p);
-                    of->inode = NULL;
-                } else if (of->inode) {
-                    fs_iput(of->inode);
-                    of->inode = NULL;
-                }
-            }
-        }
-    }
-
-    /* Switch back to parent */
-    curproc = parent;
+    /* Child is ready to run — scheduler will pick it up */
+    child->state = P_READY;
     return cpid;
 }
 
 /*
- * Round-robin scheduler.
+ * Round-robin scheduler with context switch.
  *
- * Picks the next READY process after the current one. If no other
- * process is runnable, returns immediately (cooperative: the caller
- * keeps running). Called from timer interrupt and blocking syscalls.
+ * Picks the next READY process after the current one. If another
+ * runnable process exists, performs a context switch via swtch().
+ *
+ * Called from:
+ *   - Timer ISR (after saving user state on kstack)
+ *   - Blocking syscalls (waitpid, pipe read/write)
+ *   - do_exit (after marking process as zombie)
+ *
+ * swtch() saves callee-saved registers and SP, loads the new
+ * process's SP, restores its callee-saved registers, and returns
+ * to wherever the new process was (either kernel code or
+ * proc_first_run for a brand-new process).
  */
 void schedule(void)
 {
@@ -519,8 +616,12 @@ void schedule(void)
     if (curproc->state == P_RUNNING)
         curproc->state = P_READY;
 
+    struct proc *old = curproc;
     next->state = P_RUNNING;
     curproc = next;
+
+    swtch(&old->ksp, next->ksp);
+    /* Returns here when this process is scheduled again */
 }
 
 /* ======== Syscall implementations ======== */

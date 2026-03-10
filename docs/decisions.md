@@ -728,3 +728,312 @@ The levee port proves that Genix's libc, kernel, and filesystem are
 mature enough to run real Unix software — not just toy programs. The
 full stack (raw terminal I/O, file I/O, dynamic memory, ANSI escape
 codes) works correctly on the workbench emulator.
+
+---
+
+## Decision: User Mode + Per-Process Kernel Stacks
+
+**Date:** 2026-03-09
+**Status:** Done, all tests pass
+
+User programs now run in 68000 user mode (S=0 in SR) with separated
+USP/SSP stacks. This is required infrastructure for preemptive
+scheduling — the timer ISR needs to know if it interrupted kernel or
+user code (by checking the S bit in the saved SR on the exception frame).
+
+### Architecture
+
+- Each process gets a 512-byte kernel stack (`kstack[]` in `struct proc`)
+- `exec_enter()` saves callee-saved regs on the main supervisor stack,
+  switches SSP to the process's `kstack_top`, sets USP from the argument,
+  then enters user mode via RTE with SR=0x0000
+- TRAP #0 handler saves all user registers (d0-d7/a0-a6) + USP on the
+  kstack, pushes syscall args, calls `syscall_dispatch`, restores USP
+  and regs, then RTEs back to user mode
+- `exec_leave()` abandons the kstack and longjmps back to `exec_enter`'s
+  caller via `saved_ksp`
+
+### Pain points discovered
+
+#### Kernel stack overflow corrupts proc struct (BEWARE)
+
+The kstack is at the END of the proc struct and grows downward. If a
+syscall's C call chain is too deep, the stack overflows into `fd[]`,
+`cwd`, `vfork_ctx`, etc. — silently corrupting process state.
+
+**Symptom:** `do_pipe()` returned -EMFILE (-24) even though only 3 fds
+were open. Debug output showed all 16 fd[] slots contained garbage
+values like `0xa4760000`.
+
+**Root cause:** 256 bytes was not enough for the deepest syscall path:
+TRAP frame (6 + 60 + 4 = 70 bytes) + syscall args (20) + JSR (4) +
+`syscall_dispatch` → `sys_write` → `con_write` → `kputc` →
+`pal_console_putc` (6 levels of C calls, ~120 bytes). Total ~214 bytes
+leaves only 42 bytes of headroom — not enough for GCC's callee-saved
+register saves.
+
+**Fix:** Increased KSTACK_SIZE from 256 to 512 bytes. This costs 4 KB
+more RAM for the 16-entry process table (8 KB total for kstacks).
+
+**Lesson:** When embedding a stack inside a struct, overflows corrupt
+adjacent fields silently. The 68000 has no stack guard pages. Consider
+adding a stack canary (magic word at kstack[0]) for debug builds.
+
+**Future concern:** With preemptive scheduling, a timer ISR can fire
+while a syscall is in progress on the kstack, nesting another exception
+frame + ISR register saves (~40 bytes). The "don't preempt kernel mode"
+rule prevents this. If we ever need to preempt kernel code, kstacks
+must grow larger.
+
+#### Mega Drive USER_BASE collision
+
+Adding 512-byte kstacks pushed kernel BSS from ~25 KB to ~35 KB,
+past the old USER_BASE of 0xFF8000 (32 KB from RAM start). User
+programs loaded at 0xFF8000 would overlay kernel data.
+
+**Fix:** Bumped Mega Drive USER_BASE to 0xFF9000 (36 KB from RAM
+start). Updated both `user-md.ld` and `pal_user_base()`. This leaves
+~27.5 KB for user programs (was ~31 KB). Also needed `-n` (nmagic)
+linker flag to prevent ELF segment page alignment from inflating
+binaries.
+
+**Lesson:** `user-md.ld` link address and `pal_user_base()` return
+value MUST match exactly. The binary format uses absolute entry points.
+Any mismatch causes `exec_validate_header` to reject the binary with
+-ENOEXEC. When we add relocation, entry points should become offsets.
+
+### What changed
+
+| File | Change |
+|------|--------|
+| `kernel/kernel.h` | Added `kstack[128]`, `ksp` to proc; KSTACK_SIZE=512 |
+| `kernel/exec_asm.S` | `exec_enter` enters user mode via RTE, sets USP, uses kstack |
+| `kernel/exec.c` | Passes `proc_kstack_top(curproc)` to `exec_enter` |
+| `kernel/crt0.S` | TRAP #0 saves d0-d7/a0-a6 + USP on kstack |
+| `pal/megadrive/crt0.S` | Same TRAP #0 changes as workbench |
+| `pal/megadrive/platform.c` | USER_BASE bumped to 0xFF9000 |
+| `apps/user-md.ld` | Link address bumped to 0xFF9000 |
+| `apps/Makefile` | Added `-n` linker flag to disable page alignment |
+
+---
+
+## Decision: Kernel Context Switch via swtch() + Async Spawn
+
+**Date:** 2026-03-10
+**Status:** Done, all tests pass
+
+### Problem
+
+The original `do_spawn()` was synchronous: it called `do_exec()` which
+called `exec_enter()`, blocking the parent until the child exited. This
+meant no true concurrent execution — the scheduler infrastructure
+(preemptive timer ISR, per-process kstacks) existed but was never
+actually switching between processes.
+
+For blocking pipes, waitpid, and eventually signals, we need the parent
+and child to run concurrently. The parent needs to sleep while waiting,
+and the child needs to be independently schedulable.
+
+### Design: Two-Level Context Switching
+
+1. **`swtch(old_ksp, new_ksp)`** — Assembly function that saves
+   callee-saved registers (d2-d7, a2-a6) on the current stack, saves
+   SP to `*old_ksp`, loads `new_ksp` as SP, restores callee-saved
+   registers, and RTS. This is the core kernel context switch — used
+   by both preemptive (timer ISR) and voluntary (sleep/waitpid) paths.
+
+2. **`proc_first_run`** — Trampoline for a brand-new process. When
+   `swtch()` resumes a process for the first time, RTS lands here.
+   It pops the user-mode state frame (USP, d0-d7/a0-a6, SR, PC)
+   and does RTE to enter user mode.
+
+3. **`proc_setup_kstack(proc, entry, user_sp)`** — Builds the initial
+   kstack frame for a new process:
+   ```
+   [swtch frame]    d2-d7/a2-a6 (zero), retaddr → proc_first_run
+   [user state]     USP, d0-d7/a0-a6 (zero)
+   [exception]      SR=0x0000 (user mode), PC=entry
+   ```
+   Total: 118 bytes. With 512-byte kstacks, 394 bytes remain for
+   syscall call chains.
+
+### How It Works
+
+**Timer ISR (preemptive):**
+ISR saves user state on kstack → calls `schedule()` → schedule calls
+`swtch()` → saves callee-saved + SP → loads new SP → restores
+callee-saved → RTS to schedule → schedule returns to ISR → ISR
+restores user state → RTE to user mode.
+
+**Voluntary yield (sleep/waitpid):**
+Kernel code sets state to P_SLEEPING → calls `schedule()` → schedule
+calls `swtch()` → saves kernel state → loads new process → new process
+runs. When the sleeping process is woken and scheduled again, swtch
+returns → schedule returns → kernel code continues where it left off.
+
+**New process first run:**
+swtch loads the crafted kstack → RTS to `proc_first_run` → pops user
+state → RTE to user mode at entry point.
+
+### Async do_spawn
+
+`do_spawn()` is now non-blocking:
+1. Allocates process slot, copies parent FDs
+2. Calls `load_binary()` to load code into USER_BASE
+3. Calls `proc_setup_kstack()` to build initial kstack
+4. Marks child `P_READY` and returns child PID
+
+The parent continues immediately. The child runs when the scheduler
+picks it up (either via timer preemption or when parent calls
+`do_waitpid` which sleeps).
+
+### Blocking waitpid
+
+`do_waitpid()` now sleeps when the child hasn't exited:
+- Scans for zombie child → if found, reap and return
+- If child exists but isn't zombie → set P_SLEEPING, schedule()
+- `do_exit()` wakes parent by setting P_SLEEPING → P_READY
+
+### Blocking Pipes
+
+Pipe read/write now block when empty/full:
+- `pipe_read`: if pipe empty and writers exist, sleep until data arrives
+- `pipe_write`: if pipe full and readers exist, sleep until space freed
+- Each side wakes the other after transferring data
+- POSIX partial read/write semantics: return once any data transferred
+
+### Pain Points
+
+1. **Blocking pipe + single-threaded test**: The autotest pipe test
+   writes 5 bytes then reads 8. With blocking pipes, the reader would
+   block forever waiting for 3 more bytes from itself. Fixed by using
+   POSIX partial-read semantics: return immediately once any data is
+   available, don't try to fill the entire buffer.
+
+2. **Single user memory space**: All user programs load at USER_BASE.
+   Two user processes can't coexist in memory. For now, the shell
+   (process 0) runs in supervisor mode and doesn't use user memory,
+   so shell + one child work. For `prog1 | prog2`, we'd need memory
+   partitioning or swapping.
+
+3. **kstack layout must match ISR exactly**: The byte offsets in
+   `proc_setup_kstack` must match what `proc_first_run` expects.
+   The 68000 exception frame is 6 bytes (2-byte SR + 4-byte PC),
+   creating a misalignment with the 4-byte register slots. Used
+   byte-level pointer math to build the frame correctly.
+
+### What Changed
+
+| File | Change |
+|------|--------|
+| `kernel/exec_asm.S` | Added `swtch()` and `proc_first_run` |
+| `kernel/exec.c` | Extracted `load_binary()` from `do_exec()` |
+| `kernel/proc.c` | Async `do_spawn`, `proc_setup_kstack`, blocking waitpid/pipes |
+| `kernel/kernel.h` | Added `swtch`, `proc_first_run`, `load_binary`, pipe wait fields |
+| `kernel/crt0.S` | Timer ISR delegates to `schedule()`+`swtch()` (no manual ksp save) |
+| `pal/megadrive/crt0.S` | Same VBlank ISR change |
+| `tests/test_proc.c` | Added kstack layout tests, updated pipe struct |
+
+---
+
+## Decision: Three-Branch Merge (March 2026)
+
+**Date:** 2026-03-10
+**Status:** Done, all tests pass
+
+Three parallel development branches were merged into one:
+
+1. **Track A** (`claude/review-plan-strategy`): Preemptive scheduling —
+   per-process kernel stacks, user mode, `swtch()` context switch,
+   `proc_first_run` trampoline, async `do_spawn()`, blocking pipes,
+   blocking `waitpid`. 3 commits, ~760 lines changed.
+
+2. **Track B** (`claude/prepare-libc-apps`): Libc expansion + 12 new
+   apps — `getopt`, `perror`, `sprintf`, `strtol`, `isatty`, plus
+   `basename`, `cmp`, `cut`, `dirname`, `nl`, `rev`, `tail`, `tee`,
+   `tr`, `uniq`, `yes`. 336-line test suite. ~1560 lines added.
+
+3. **VDP imshow** (`claude/vdp-driver-imshow-port`): VDP device driver
+   (`dev_vdp.c`), `libgfx` userspace library, `imshow` app, graphics
+   pipeline docs, 232-line test suite. ~1300 lines added.
+
+### Merge Strategy
+
+Track A merged as fast-forward (it was ahead of master). Track B merged
+cleanly (no conflicts with Track A — different files). VDP imshow had
+5 conflicts, all in list-type files:
+
+| File | Conflict | Resolution |
+|------|----------|------------|
+| `.gitignore` | Both added app names | Combined both lists |
+| `Makefile` | Both added to `CORE_BINS` | Combined both lists |
+| `apps/Makefile` | Both added to `PROGRAMS` | Combined both lists |
+| `libc/Makefile` | Both added to `OBJS` | Combined both lists |
+| `tests/Makefile` | Both added to `TESTS` | Combined both lists |
+
+### Pain Points
+
+1. **Duplicate .gitignore entries**: `apps/levee/levee` appeared twice
+   in `.gitignore` after merge. Removed the duplicate. Easy to miss in
+   conflict resolution — always review the full file after resolving.
+
+2. **List-format Makefiles invite conflicts**: When every branch adds
+   items to the same variable (`PROGRAMS =`, `OBJS =`, `TESTS =`),
+   every branch conflicts with every other branch. This is inherent to
+   the "one variable, one line" Makefile pattern. Consider using
+   `PROGRAMS +=` in separate files or wildcard patterns to reduce
+   future conflicts.
+
+3. **No functional conflicts**: The three branches touched orthogonal
+   subsystems (kernel scheduling, libc/apps, VDP driver). No semantic
+   conflicts — only syntactic list conflicts. This validates the
+   modular architecture.
+
+### Test Results After Merge
+
+| Test | Result |
+|------|--------|
+| `make test` (host) | 391 passed, 0 failed |
+| `make kernel` | Clean cross-compilation |
+| `make test-emu` | 10 autotest passed, 0 failed |
+| `make megadrive` | ROM built (548 KB) |
+| `make test-md` | OK (300 frames, no crash) |
+| `make test-md-auto` | OK (600 frames, no crash) |
+
+---
+
+## Project Status Update (March 2026 — Post-Merge)
+
+The kernel multitasking infrastructure is now complete:
+
+- **Per-process kernel stacks** (512 bytes each, in proc struct)
+- **User mode** execution (S=0, USP/SSP separated)
+- **Preemptive timer ISR** (checks S-bit, only preempts user mode)
+- **swtch()** context switch (callee-saved regs, stack swap)
+- **proc_first_run** trampoline (enters user mode for new processes)
+- **Async do_spawn()** (non-blocking, child is P_READY immediately)
+- **Blocking waitpid()** (parent sleeps until child exits)
+- **Blocking pipes** (reader/writer sleep when empty/full)
+- **VDP device driver** with userspace libgfx library
+- **19 user programs** in /bin (up from 8)
+- **391+ host tests** + automated guest tests on both platforms
+
+### Known Limitations (BEWARE)
+
+1. **Single user memory space**: All user programs load at USER_BASE.
+   Two user processes can't coexist in memory simultaneously. The shell
+   runs in supervisor mode (no USER_BASE conflict), so shell + one child
+   works. For `prog1 | prog2` to work, we need memory partitioning,
+   swapping, or relocation.
+
+2. **kstack overflow has no guard**: The 512-byte kstack grows down
+   into the proc struct fields. If a syscall's C call chain is too deep
+   (or a timer ISR nests on top), it silently corrupts `fd[]`, `cwd`,
+   etc. Consider adding a canary word at kstack[0] for debug builds.
+
+3. **No signals yet**: `SYS_SIGNAL` and `SYS_KILL` are stubs. Job
+   control (^C, ^Z, fg/bg) requires signal delivery. This is Phase 2d.
+
+4. **No I/O redirection in shell**: The shell's `exec` command uses
+   `do_spawn()` but doesn't support `>`, `<`, or `2>` syntax. Pipes
+   work at the kernel level but need shell syntax support.
