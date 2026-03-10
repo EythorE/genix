@@ -3,7 +3,7 @@
 ## Project Overview
 
 Genix is a minimal, single-user, POSIX-enough operating system for the Motorola 68000,
-targeting the Sega Mega Drive. It replaces the FUZIX kernel with ~3000 lines of new code
+targeting the Sega Mega Drive. It replaces the FUZIX kernel with ~5400 lines of new code
 while reusing proven Mega Drive drivers from
 [EythorE/FUZIX](https://github.com/EythorE/FUZIX/tree/megadrive).
 
@@ -451,9 +451,9 @@ Detailed technical documentation is in `docs/`:
 | Phase 2c | Pipes and I/O redirection | **Complete** |
 | Phase 2d | Signals and job control | **Complete** (user handlers, SIGTSTP/SIGCONT, process groups) |
 | Phase 2e | TTY subsystem (line discipline, termios) | **Complete** |
-| Phase 2f | Fuzix libc + utilities | Planned |
+| Phase 2f | Fuzix libc + utilities | **In progress** (22 apps, custom libc with 14 modules) |
 | Phase 3 | Mega Drive port (PAL drivers from Fuzix) | **Complete** |
-| Phase 4 | Polish (interrupt keyboard, multi-TTY, /dev/null) | Planned |
+| Phase 4 | Polish (interrupt keyboard, multi-TTY, /dev/null) | Partial (/dev/null done) |
 
 What works today: kernel boots on both workbench and Mega Drive, minifs
 filesystem with indirect blocks, exec() loads user programs (22 apps in

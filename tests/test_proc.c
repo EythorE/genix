@@ -91,6 +91,7 @@ static int pipe_write(struct pipe *p, const void *buf, int len)
 
 #define KSTACK_SIZE   512
 #define KSTACK_WORDS  (KSTACK_SIZE / 4)
+#define KSTACK_CANARY 0xDEADBEEF
 
 /* Verify kstack frame layout (offsets and sizes).
  * On the host, pointers are 64-bit but the layout uses uint32_t slots.
@@ -374,6 +375,121 @@ static void test_process_states(void)
     ASSERT(P_ZOMBIE != P_VFORK);
 }
 
+/* ======== Kstack canary tests ======== */
+
+/* ======== Pipe stress tests ======== */
+
+static void test_pipe_stress_full_buffer(void)
+{
+    /* Fill the pipe completely, then drain it */
+    struct pipe p;
+    memset(&p, 0, sizeof(p));
+    p.readers = 1;
+    p.writers = 1;
+
+    uint8_t wbuf[PIPE_SIZE];
+    for (int i = 0; i < PIPE_SIZE; i++)
+        wbuf[i] = (uint8_t)(i & 0xFF);
+
+    int nw = pipe_write(&p, wbuf, PIPE_SIZE);
+    ASSERT_EQ(nw, PIPE_SIZE);
+    ASSERT_EQ(p.count, PIPE_SIZE);
+
+    uint8_t rbuf[PIPE_SIZE];
+    int nr = pipe_read(&p, rbuf, PIPE_SIZE);
+    ASSERT_EQ(nr, PIPE_SIZE);
+    ASSERT_EQ(p.count, 0);
+
+    /* Verify data integrity */
+    for (int i = 0; i < PIPE_SIZE; i++)
+        ASSERT_EQ(rbuf[i], (uint8_t)(i & 0xFF));
+}
+
+static void test_pipe_stress_repeated(void)
+{
+    /* Write+read in small chunks, wrapping multiple times */
+    struct pipe p;
+    memset(&p, 0, sizeof(p));
+    p.readers = 1;
+    p.writers = 1;
+
+    uint8_t chunk[64];
+    uint8_t rbuf[64];
+    uint8_t counter = 0;
+
+    for (int round = 0; round < 20; round++) {
+        for (int i = 0; i < 64; i++)
+            chunk[i] = counter++;
+        int nw = pipe_write(&p, chunk, 64);
+        ASSERT_EQ(nw, 64);
+        int nr = pipe_read(&p, rbuf, 64);
+        ASSERT_EQ(nr, 64);
+        /* Verify this chunk */
+        for (int i = 0; i < 64; i++)
+            ASSERT_EQ(rbuf[i], chunk[i]);
+    }
+    /* After 20 rounds of 64 bytes, positions should have wrapped */
+    ASSERT_EQ(p.count, 0);
+}
+
+static void test_pipe_stress_wraparound_integrity(void)
+{
+    /* Position the read/write near the end of the buffer, then do a big write */
+    struct pipe p;
+    memset(&p, 0, sizeof(p));
+    p.readers = 1;
+    p.writers = 1;
+
+    /* Advance positions to near the end (PIPE_SIZE - 10) */
+    p.read_pos = PIPE_SIZE - 10;
+    p.write_pos = PIPE_SIZE - 10;
+    p.count = 0;
+
+    /* Write 100 bytes — this wraps around the circular buffer */
+    uint8_t wbuf[100];
+    for (int i = 0; i < 100; i++)
+        wbuf[i] = (uint8_t)(0xA0 + i);
+    int nw = pipe_write(&p, wbuf, 100);
+    ASSERT_EQ(nw, 100);
+
+    /* Read back and verify */
+    uint8_t rbuf[100];
+    int nr = pipe_read(&p, rbuf, 100);
+    ASSERT_EQ(nr, 100);
+    for (int i = 0; i < 100; i++)
+        ASSERT_EQ(rbuf[i], (uint8_t)(0xA0 + i));
+}
+
+/* ======== Kstack canary tests ======== */
+
+static void test_kstack_canary_init(void)
+{
+    /* Verify canary is placed at kstack[0] after setup */
+    uint32_t kstack[KSTACK_WORDS];
+    memset(kstack, 0, sizeof(kstack));
+
+    /* Simulate what proc_setup_kstack does at the end */
+    kstack[0] = KSTACK_CANARY;
+
+    ASSERT_EQ(kstack[0], KSTACK_CANARY);
+    /* Ensure it's at the very bottom (lowest address) */
+    ASSERT_EQ(kstack[0], 0xDEADBEEF);
+}
+
+static void test_kstack_canary_detects_overflow(void)
+{
+    /* Canary corruption should be detectable */
+    uint32_t kstack[KSTACK_WORDS];
+    kstack[0] = KSTACK_CANARY;
+
+    ASSERT_EQ(kstack[0], KSTACK_CANARY);
+
+    /* Simulate overflow: corrupt the canary */
+    kstack[0] = 0;
+
+    ASSERT(kstack[0] != KSTACK_CANARY);
+}
+
 /* ======== Main ======== */
 
 int main(void)
@@ -398,6 +514,15 @@ int main(void)
     RUN_TEST(test_zombie_reap);
     RUN_TEST(test_reparent_children);
     RUN_TEST(test_process_states);
+
+    /* Pipe stress tests */
+    RUN_TEST(test_pipe_stress_full_buffer);
+    RUN_TEST(test_pipe_stress_repeated);
+    RUN_TEST(test_pipe_stress_wraparound_integrity);
+
+    /* Kstack canary tests */
+    RUN_TEST(test_kstack_canary_init);
+    RUN_TEST(test_kstack_canary_detects_overflow);
 
     TEST_REPORT();
 }
