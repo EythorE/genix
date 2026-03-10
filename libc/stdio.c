@@ -291,3 +291,42 @@ int printf(const char *fmt, ...)
     }
     return total;
 }
+
+int fputs(const char *s, FILE *f)
+{
+    int n;
+    if (!f || !s) return -1;
+    n = strlen(s);
+    return write(f->fd, s, n) == n ? n : -1;
+}
+
+unsigned int fread(void *ptr, unsigned int size, unsigned int nmemb, FILE *f)
+{
+    unsigned int total = size * nmemb;
+    int n;
+    if (!f || total == 0) return 0;
+    n = read(f->fd, ptr, total);
+    if (n <= 0) {
+        f->flags |= _FILE_EOF;
+        return 0;
+    }
+    /* DIVU.W safe: size is typically small (1-1024) */
+    return (unsigned int)n / size;
+}
+
+unsigned int fwrite(const void *ptr, unsigned int size, unsigned int nmemb, FILE *f)
+{
+    unsigned int total = size * nmemb;
+    int n;
+    if (!f || total == 0) return 0;
+    n = write(f->fd, ptr, total);
+    if (n <= 0) return 0;
+    /* DIVU.W safe: size is typically small (1-1024) */
+    return (unsigned int)n / size;
+}
+
+int ungetc(int c, FILE *f)
+{
+    (void)f; (void)c;
+    return -1;  /* Not implemented — most apps don't need it */
+}

@@ -922,6 +922,19 @@ static void shell_exec_cmd(char *cmdline)
             }
         }
 
+        /* If command doesn't start with '/', try /bin/ prefix */
+        char pathbuf[64];  /* even size for 68000 alignment */
+        if (argv[0][0] != '/') {
+            /* Build /bin/progname path */
+            int plen = 0;
+            const char *prefix = "/bin/";
+            while (prefix[plen]) { pathbuf[plen] = prefix[plen]; plen++; }
+            int ii = 0;
+            while (argv[0][ii] && plen < 62) { pathbuf[plen++] = argv[0][ii++]; }
+            pathbuf[plen] = '\0';
+            argv[0] = pathbuf;
+        }
+
         int pid = do_spawn_fd(argv[0], (const char **)argv,
                               in_fd, out_fd, -1);
         if (pid > 0) {
@@ -1033,6 +1046,19 @@ static void shell_exec_cmd(char *cmdline)
             child_stdout = out_fd;
         }
 
+        /* If command doesn't start with '/', try /bin/ prefix */
+        char pathbuf[64];  /* even size for 68000 alignment */
+        if (argv[0][0] != '/') {
+            /* Build /bin/progname path */
+            int plen = 0;
+            const char *prefix = "/bin/";
+            while (prefix[plen]) { pathbuf[plen] = prefix[plen]; plen++; }
+            int ii = 0;
+            while (argv[0][ii] && plen < 62) { pathbuf[plen++] = argv[0][ii++]; }
+            pathbuf[plen] = '\0';
+            argv[0] = pathbuf;
+        }
+
         int pid = do_spawn_fd(argv[0], (const char **)argv,
                                prev_read_fd, child_stdout, -1);
 
@@ -1105,6 +1131,12 @@ void builtin_shell(void)
         } else if (strncmp(line, "echo ", 5) == 0) {
             kputs(line + 5);
             kputc('\n');
+        } else if (strncmp(line, "cd ", 3) == 0) {
+            if (syscall_dispatch(SYS_CHDIR, (uint32_t)(line + 3), 0, 0, 0) < 0)
+                kputs("cd: no such directory\n");
+        } else if (strcmp(line, "cd") == 0) {
+            /* cd with no args — go to root */
+            syscall_dispatch(SYS_CHDIR, (uint32_t)"/", 0, 0, 0);
         } else if (strncmp(line, "exec ", 5) == 0) {
             char *cmdline = line + 5;
             while (*cmdline == ' ') cmdline++;
@@ -1119,7 +1151,8 @@ void builtin_shell(void)
             if (fs_mkdir(line + 6) < 0)
                 kputs("mkdir failed\n");
         } else {
-            kputs("Unknown command. Type 'help'.\n");
+            /* Try running as a program (implicit exec) */
+            shell_exec_cmd(line);
         }
     }
 }
