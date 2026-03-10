@@ -1160,7 +1160,7 @@ void builtin_shell(void)
 /* Shell: ls [path] */
 void shell_ls(const char *cmd)
 {
-    const char *path = "/";
+    const char *path = ".";
     if (cmd[2] == ' ' && cmd[3] != '\0')
         path = cmd + 3;
 
