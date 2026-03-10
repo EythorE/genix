@@ -56,3 +56,4 @@ tests/test_fs
 test-md-screenshot*.png
 test-md-imshow*.png
 _levee_source/
+.plan
