@@ -53,6 +53,9 @@ tests/test_signal
 tests/test_redir
 tests/test_tty
 tests/test_fs
+tests/test_buf
+tests/test_kprintf
+tests/test_pipe
 test-md-screenshot*.png
 test-md-imshow*.png
 _levee_source/
