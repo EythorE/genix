@@ -10,7 +10,8 @@ CFLAGS = -m68000 -nostdlib -nostartfiles -ffreestanding \
 # 68000 instructions. The system libgcc may contain 68020-only BSR.L
 # in these routines, causing illegal instruction faults on real 68000.
 # By including divmod.o in libc.a, our safe versions take priority.
-OBJS = syscalls.o string.o stdio.o stdlib.o ctype.o termios.o divmod.o
+OBJS = syscalls.o string.o stdio.o stdlib.o ctype.o termios.o gfx.o divmod.o \
+       getopt.o strtol.o perror.o sprintf.o isatty.o
 TARGET = libc.a
 
 all: $(TARGET)

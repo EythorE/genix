@@ -164,9 +164,9 @@ ROM (cartridge):
 0x000000  Vectors + Sega header + kernel .text + .rodata + .romdisk
 
 Main RAM (64 KB):
-0xFF0000  Kernel .data + .bss (~25 KB)
-~0xFF6300 Kernel heap (~1 KB)
-~0xFF6800 USER_BASE — user programs load here (~32 KB available)
+0xFF0000  Kernel .data + .bss (~35 KB, includes per-process kstacks)
+~0xFF8A00 Kernel heap (~1.5 KB)
+0xFF9000  USER_BASE — user programs load here (~27.5 KB available)
 ~0xFFFE00 USER_TOP — user stack starts here (grows down)
 0xFFFFFF  Top of RAM / kernel stack
 
@@ -174,8 +174,9 @@ SRAM (optional, cartridge-dependent):
 0x200000  Read-write filesystem and/or extended user RAM
 ```
 
-Kernel uses ~25 KB of the 64 KB main RAM, leaving ~40 KB for heap + user
-programs. User programs run entirely in main RAM without SRAM. SRAM provides
+Kernel uses ~35 KB of the 64 KB main RAM (including 8 KB for 16
+per-process kernel stacks), leaving ~28 KB for heap + user programs.
+User programs run entirely in main RAM without SRAM. SRAM provides
 persistent storage and optional extra RAM for larger programs.
 
 See `docs/megadrive.md` for cartridge configurations and SRAM details.
@@ -445,8 +446,8 @@ Detailed technical documentation is in `docs/`:
 |-------|-------------|--------|
 | Phase 1 | Workbench emulator (Musashi SBC) | **Complete** |
 | Phase 2a | Kernel core + binary loading + single-tasking exec | **Complete** |
-| Phase 2b | Multitasking (spawn, waitpid, process table) | **Complete** |
-| Phase 2c | Pipes and I/O redirection | **Complete** (pipes done, redirection planned) |
+| Phase 2b | Multitasking (spawn, waitpid, process table, preemptive scheduler) | **Complete** |
+| Phase 2c | Pipes and I/O redirection | **Complete** (blocking pipes done, redirection planned) |
 | Phase 2d | Signals and job control | **Next** |
 | Phase 2e | TTY subsystem (port Fuzix tty.c) | Planned |
 | Phase 2f | Fuzix libc + utilities | Planned |
@@ -454,12 +455,18 @@ Detailed technical documentation is in `docs/`:
 | Phase 4 | Polish (interrupt keyboard, multi-TTY, /dev/null) | Planned |
 
 What works today: kernel boots on both workbench and Mega Drive, minifs
-filesystem with indirect blocks, exec() loads user programs (hello, echo,
-cat, wc, head, levee), built-in shell with spawn/pipe commands, process
-table (16 slots) with spawn/waitpid/exit, pipes (512-byte circular buffer),
-termios raw mode, full libc (stdio/stdlib/string/ctype/termios), levee
-(vi clone) on workbench, 283+ host tests, Saturn keyboard on Mega Drive,
-SRAM with standard Sega mapper. See `docs/decisions.md` for full history.
+filesystem with indirect blocks, exec() loads user programs (19 apps in
+/bin including hello, echo, cat, wc, head, tail, tee, basename, dirname,
+rev, nl, cmp, cut, tr, uniq, yes, imshow, levee), built-in shell with
+spawn/pipe commands, process table (16 slots) with preemptive scheduling
+(timer-driven context switch via swtch/proc_first_run), per-process
+kernel stacks (512 bytes), user mode execution (USP/SSP separated),
+async do_spawn with blocking waitpid, blocking pipes (512-byte circular
+buffer), termios raw mode, full libc (stdio/stdlib/string/ctype/termios/
+getopt/sprintf/strtol/perror), VDP device driver with libgfx userspace
+library, levee (vi clone) on workbench, 391+ host tests, automated
+guest tests on both platforms, Saturn keyboard on Mega Drive, SRAM with
+standard Sega mapper. See `docs/decisions.md` for full history.
 
 ## Common Pitfalls
 

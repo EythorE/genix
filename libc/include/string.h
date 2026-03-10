@@ -20,5 +20,6 @@ char        *strchr(const char *s, int c);
 char        *strrchr(const char *s, int c);
 char        *strdup(const char *s);
 char        *strtok(char *s, const char *delim);
+const char  *strerror(int errnum);
 
 #endif

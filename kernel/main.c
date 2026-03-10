@@ -96,7 +96,7 @@ void kmain(void)
     kputs("All subsystems initialized.\n");
 
     /* Don't start timer yet — test basic shell first */
-    /* pal_timer_init(TIMER_HZ); */
+    pal_timer_init(TIMER_HZ);
 
     /* Enable interrupts */
     __asm__ volatile("move.w #0x2000, %%sr" ::: "cc");
