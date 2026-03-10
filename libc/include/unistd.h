@@ -26,5 +26,6 @@ int   unlink(const char *path);
 int   rename(const char *oldp, const char *newp);
 void *sbrk(int incr);
 void *brk(void *addr);
+int   isatty(int fd);
 
 #endif

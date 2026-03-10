@@ -2,7 +2,7 @@
 CC = gcc
 CFLAGS = -Wall -Wextra -g -O0 -Wno-builtin-declaration-mismatch -I../pal
 
-TESTS = test_string test_mem test_exec test_proc
+TESTS = test_string test_mem test_exec test_proc test_libc
 
 all: $(TESTS)
 
@@ -17,6 +17,9 @@ test_exec: test_exec.c testutil.h
 
 test_proc: test_proc.c testutil.h
 	$(CC) $(CFLAGS) -o $@ test_proc.c
+
+test_libc: test_libc.c testutil.h ../libc/strtol.c ../libc/getopt.c ../libc/perror.c ../libc/sprintf.c ../libc/isatty.c
+	$(CC) $(CFLAGS) -I../libc/include -o $@ test_libc.c
 
 check: $(TESTS)
 	@fail=0; \
