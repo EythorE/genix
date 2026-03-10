@@ -4,10 +4,6 @@
  */
 #include <termios.h>
 
-/* ioctl commands */
-#define TCGETS  0x5401
-#define TCSETS  0x5402
-
 extern int ioctl(int fd, int cmd, void *arg);
 
 int tcgetattr(int fd, struct termios *tp)
@@ -17,6 +13,11 @@ int tcgetattr(int fd, struct termios *tp)
 
 int tcsetattr(int fd, int action, const struct termios *tp)
 {
-    (void)action;  /* We always apply immediately */
-    return ioctl(fd, TCSETS, (void *)tp);
+    int cmd;
+    switch (action) {
+    case TCSADRAIN: cmd = TCSETSW; break;
+    case TCSAFLUSH: cmd = TCSETSF; break;
+    default:        cmd = TCSETS;   break;
+    }
+    return ioctl(fd, cmd, (void *)tp);
 }
