@@ -1,14 +1,43 @@
-# Genix Status Review — Plan vs. Reality
+# Genix Status Review — Plan vs. Reality (Second Review)
 
-_Review date: 2026-03-09_
+_Review date: 2026-03-10_
+_Previous review: 2026-03-09_
 
 This document compares the original PLAN.md (from the FUZIX repo) against
-what Genix actually implemented, identifies divergences, assesses their
-impact on porting Fuzix apps, and lays out the path forward.
+what Genix actually implemented, analyzes FUZIX design decisions vs. Genix's
+divergences, identifies testing gaps, and lays out the path to completing
+remaining phases and porting apps.
 
 ---
 
-## 1. Plan vs. Reality — Phase by Phase
+## 1. Progress Since Last Review
+
+The last review (2026-03-09) identified three **High** severity gaps:
+vfork/spawn, preemptive scheduling, and blocking pipes. It also noted
+signals and TTY as not started. All five have been resolved:
+
+| Gap (last review) | Status now | How resolved |
+|-------------------|-----------|--------------|
+| spawn() instead of vfork() | **Both exist** | Real vfork() implemented (setjmp/longjmp). spawn() kept as convenience. |
+| Cooperative scheduling | **Preemptive** | Timer ISR calls schedule()+swtch(). S-bit check prevents kernel preemption. |
+| Non-blocking pipes | **Blocking** | pipe_read/write sleep when empty/full, wake on data arrival. |
+| Signals (stubs only) | **Complete** | 21 signals, user handlers, signal frames, sigreturn, SIGTSTP/SIGCONT. |
+| TTY (not started) | **Complete** | Full line discipline: cooked/raw, echo, erase, kill, signal generation, OPOST. |
+
+Additionally since the last review:
+- **Phase 2c** (I/O redirection): Shell pipes (`|`), output redirect (`>`/`>>`), input redirect (`<`)
+- **Phase 2d** (Signals): User signal handlers with 84-byte signal frames, process groups
+- **Phase 2e** (TTY): 320-line line discipline, 78 host tests
+- **22 user programs** (was 8 at last review)
+- **615+ host tests** (was 283 at last review)
+- **19+ autotest cases** on both platforms
+
+The project has moved dramatically since the last review. The three
+interconnected "High" blockers are all resolved.
+
+---
+
+## 2. Plan vs. Reality — Phase by Phase
 
 ### Phase 1: Workbench Emulator — COMPLETE, matches plan
 
@@ -18,810 +47,557 @@ This is exactly what was built. No meaningful divergence.
 ### Phase 2a: Single-tasking Kernel — COMPLETE, matches plan
 
 Boot, console I/O, minifs filesystem, exec(), built-in shell — all done.
-The kernel is ~3000 lines as planned. minifs matches the planned on-disk
-format closely (48-byte inodes instead of 64-byte, but the same concept).
 
-### Phase 2b: Multitasking — COMPLETE, diverged from plan
+### Phase 2b: Multitasking — COMPLETE, matches plan (now)
 
-**What the plan said:**
-- Process table (8–16 slots), round-robin preemptive scheduling via timer
-- vfork()+exec() as the process creation model
-- PIC ELF or bFLT binary format for position-independent loading
+**What the plan said:** Process table (8-16 slots), round-robin preemptive
+scheduling via timer, vfork()+exec().
 
-**What was actually built:**
+**What was built:**
 - Process table (16 slots) — matches
-- `spawn()` (combined vfork+exec) instead of separate vfork()/exec() — **divergence**
-- Cooperative scheduling, not preemptive — **divergence**
+- Preemptive timer-driven scheduling — matches (was cooperative, now fixed)
+- Per-process kernel stacks (512 bytes) — matches (not in plan but necessary)
+- vfork() implemented (setjmp/longjmp) — matches
+- spawn() as additional convenience — bonus, not in plan
 - Genix flat binary (fixed load address) instead of PIC/bFLT — **divergence**
 
-**Why it diverged:** The return-twice semantics of vfork() crashed on the
-68000 stack. `spawn()` was pragmatic — it works for the built-in shell. But
-it's not POSIX, so ported programs that do `vfork(); exec()` or
-`fork(); exec()` won't work without modification.
+**Binary format divergence:** The plan called for PIC ELF or bFLT.
+Genix uses a custom 32-byte flat binary at a fixed load address. This
+means only one user process can be loaded at a time (they all map to
+USER_BASE). This is the single biggest remaining architectural limitation.
 
-**Impact:** Medium. Most Fuzix utilities don't fork — they're simple
-filter programs. But `sh`, `make`, and anything that spawns subprocesses
-will need the real vfork() or a posix_spawn() wrapper.
+### Phase 2c: Pipes — COMPLETE, matches plan
 
-### Phase 2c: Pipes — COMPLETE, partially diverged
+pipe() with blocking I/O, 512-byte circular buffer. SIGPIPE on broken
+pipes. Shell-level pipe syntax (`|`). Sequential pipeline execution
+(no-MMU limitation).
 
-**What the plan said:** pipe(), with blocking I/O.
+### Phase 2d: Signals — COMPLETE, matches plan
 
-**What was built:** pipe() with non-blocking semantics (returns immediately
-if empty/full). This works for single-command pipelines in the built-in
-shell but won't work for real shell pipelines like `cat file | grep foo`
-where the reader must block waiting for the writer.
+21 signals, user handlers, signal frames on user stack, sigreturn
+trampoline, SIGTSTP/SIGCONT for job control, process groups, Ctrl+C
+and Ctrl+Z from TTY.
 
-**Impact:** High for ported apps. Blocking pipes require preemptive
-scheduling (Phase 2b divergence compounds here).
+### Phase 2e: TTY Subsystem — COMPLETE, matches plan
 
-### Phase 2d: Signals — NOT STARTED
+Full line discipline (320 lines), cooked/raw modes, echo/erase/kill,
+signal generation, OPOST/ONLCR, termios ioctls, /dev/tty and /dev/console
+device nodes, 78 host unit tests.
 
-**What the plan said:** kill(), signal()/sigaction() for basic signal handling.
+### Phase 2f: Fuzix libc + Utilities — PARTIALLY DONE
 
-**What exists:** Stubs only. `SYS_SIGNAL` stores a handler pointer but
-never delivers. `SYS_KILL` returns -ENOSYS.
+**What the plan said:** Use newlib for C library, port GNU tools.
 
-**Impact:** Medium. Most simple utilities don't use signals. But any
-program that catches SIGINT (Ctrl+C), or any shell that does job control,
-needs this.
+**What was built:** Custom minimal libc (1900+ lines, 14 modules) with
+stdio, stdlib, string, ctype, termios, getopt, sprintf, strtol, perror,
+dirent, isatty. 22 user programs including levee (vi clone).
 
-### Phase 2e: TTY Subsystem — NOT STARTED
-
-Console I/O works (cooked and raw mode via termios ioctl), but there's no
-proper TTY layer. No line discipline, no job control signals, no /dev/ttyN.
-
-**Impact:** Low for simple utilities. Levee already works with what exists.
-Needed for proper shell job control and multi-terminal support.
-
-### Phase 2f: Fuzix libc + Utilities — NOT STARTED
-
-This is the app-porting phase. The plan called for using newlib. Genix
-instead built a custom minimal libc. This is actually fine — see Section 3.
+**Assessment:** The plan's newlib goal was wrong — newlib is 50-100 KB,
+too large for the Mega Drive's 64 KB RAM. The custom libc is the right
+choice. It's smaller, we control it, and it's proven (levee works).
+Remaining gaps are documented in Section 7.
 
 ### Phase 3: Mega Drive Port — COMPLETE, matches plan
 
-VDP text output, Saturn keyboard, SRAM, ROM disk — all working. The PAL
-abstraction works exactly as planned. BlastEm tests pass.
+VDP text output, Saturn keyboard, SRAM, ROM disk. PAL abstraction works.
+BlastEm tests pass. The Mega Drive drivers were reused from FUZIX as planned.
 
-### Phase 4: Polish — NOT STARTED
+### Phase 4: Polish — PARTIALLY DONE
 
-Interrupt-driven keyboard, /dev/null, multi-TTY — all planned, none done.
-
----
-
-## 2. Key Divergences Summary
-
-| Area | Plan | Reality | Severity |
-|------|------|---------|----------|
-| Process creation | vfork()+exec() | spawn() only | **High** |
-| Scheduling | Preemptive (timer) | Cooperative | **High** |
-| Binary format | PIC ELF / bFLT | Fixed-address flat | Medium |
-| Pipe blocking | Blocking I/O | Non-blocking | **High** |
-| C library | newlib | Custom minimal libc | Low (better) |
-| Signals | Basic delivery | Stubs only | Medium |
-| TTY | Full subsystem | Minimal cooked/raw | Low |
-
-The three **High** items (vfork, preemptive scheduling, blocking pipes)
-are all interconnected. You can't have blocking pipes without preemptive
-scheduling, and you can't port programs that spawn children without
-vfork()+exec().
+- /dev/null: **Done**
+- Interrupt-driven keyboard: **Not done** (still polling)
+- Multi-TTY: **Not done** (NTTY=1, structure supports more)
 
 ---
 
-## 3. Impact on Porting Fuzix Apps
+## 3. Divergences From Plan — Impact Assessment
 
-### What CAN be ported today (no kernel changes needed)
+### 3.1 Binary Format (Medium impact, plan to address)
 
-Simple filter programs that read stdin, process, write stdout:
+**Plan:** PIC ELF or bFLT with relocation support.
+**Reality:** Fixed-address flat binary ("GENX" header).
 
-- **Already done:** hello, echo, cat, wc, head, true, false, levee
-- **Easy ports (~1 hour each):** tail, tee, yes, sleep, basename, dirname,
-  od, rev, strings, nl, fold, paste, expand, unexpand, comm, cmp
+**Impact:** Only one user process in memory at a time. Pipelines execute
+sequentially (echo runs, fills pipe buffer, exits; then cat runs and reads).
+Pipelines producing >512 bytes of output lose data.
 
-These programs need only: read/write/open/close/lseek/stat/exit and
-basic libc (stdio, string, stdlib). Genix has all of this.
+**Should we switch to Fuzix a.out?** The decisions.md planned this
+migration. Analysis:
 
-### What CANNOT be ported until kernel work is done
+| Factor | Genix flat binary | Fuzix a.out |
+|--------|-------------------|-------------|
+| Header size | 32 bytes | 16 bytes |
+| Relocation | None | Kernel-applied, ~30 lines C |
+| Ecosystem | 22 custom apps | 143+ Fuzix utilities |
+| Multiple processes in memory | No | Yes (with relocation) |
+| Complexity | Trivial loader | Simple loader + reloc table |
 
-| Program | Missing Feature | Blocker |
-|---------|----------------|---------|
-| sh (any real shell) | vfork+exec, signals, blocking pipes | Phase 2d work |
-| grep | Works, but needs getopt() in libc | Libc gap |
-| sort | Large memory, vfork for -o flag | May work without -o |
-| find | opendir/readdir (SYS_GETDENTS) | Syscall gap |
-| ls -l | stat() works, but needs getdents for dirs | Syscall gap |
-| make | vfork+exec, pipes, signals | Phase 2d work |
-| sed | regex library | Libc gap |
-| ed | signals, terminal control | Phase 2d-2e |
-| ps | /proc or kernel query syscall | Needs new syscall |
-| kill | SYS_KILL not implemented | Phase 2d work |
-| tar | Large memory, may need SRAM | Memory constraint |
+**Recommendation:** Keep Genix flat binary for now. Add relocation support
+later when we need concurrent user processes in memory. The 512-byte pipe
+buffer limit is the real pain point, and it's a no-MMU fundamental
+limitation regardless of binary format — two processes sharing the same
+RAM can corrupt each other without an MMU.
 
-### Libc gaps for porting
+For app porting, recompiling Fuzix utility source code against Genix
+libc + Genix binary format is simpler than implementing Fuzix a.out
+compatibility. The utilities are standalone .c files — just build them
+with the Genix toolchain.
+
+### 3.2 C Library (Low impact, divergence is beneficial)
+
+**Plan:** newlib (standard bare-metal C library).
+**Reality:** Custom minimal libc.
+
+**This divergence is a win.** newlib would be 50-100 KB — it wouldn't
+even fit in Mega Drive RAM. The custom libc is ~5 KB and growing
+incrementally as apps need functions. It borrows pure-C functions from
+Fuzix libc (getopt, strtol) without taking the syscall layer.
+
+### 3.3 Process Creation Model (Low impact now, was High)
+
+**Plan:** vfork()+exec() as sole model.
+**Reality:** Both vfork()+exec() and spawn() exist.
+
+spawn() was implemented first because vfork's return-twice semantics
+crashed on the 68000 stack. Real vfork() was added later with per-process
+kernel stacks. Both work. spawn() is still useful as a convenience for
+the built-in shell. No negative impact.
+
+### 3.4 No GNU Toolchain Target (Expected, not a problem)
+
+**Plan Phase 4** aimed for GCC/binutils/make running on the Mega Drive.
+This was always aspirational — GCC needs far more RAM than 64 KB.
+Cross-compilation from a Linux host is the practical workflow. The plan
+acknowledged this: "Native compilation is a stretch goal."
+
+---
+
+## 4. FUZIX Design Philosophy vs. Genix Divergences
+
+### 4.1 What FUZIX Does That Genix Doesn't (and whether it matters)
+
+| FUZIX feature | Genix status | Impact |
+|---------------|-------------|--------|
+| Multi-user (UIDs, permissions) | Deliberately omitted | None — single-user system |
+| fork() | Deliberately omitted | Correct for no-MMU |
+| 32 signals (Linux-compatible) | 21 signals | Sufficient for all current apps |
+| CONFIG_LEVEL_2 job control | Basic (SIGTSTP/SIGCONT) | Adequate for single-terminal use |
+| swap/banking memory | Not applicable | 68000 Mega Drive has flat memory |
+| Multiple filesystem types | minifs only | Sufficient — simpler is better |
+| ptys | Not implemented | Not needed (single console) |
+| Network stack | Not implemented | Not planned (no hardware) |
+
+**Verdict:** Genix correctly omits FUZIX features that don't apply to a
+single-user, single-terminal, no-MMU system. The omissions reduce code
+from ~15,000 lines to ~5,400 lines while keeping all features that
+matter for running Unix utilities.
+
+### 4.2 What FUZIX Does Better (and what Genix should learn)
+
+**1. Circular buffer optimization (ADOPTED)**
+
+FUZIX uses 256-byte circular buffers with `uint8_t` indices that wrap
+naturally — no modulo, no division. Genix's TTY already uses this
+pattern. Good.
+
+**2. `tty_inproc()` ISR-safe character injection**
+
+FUZIX's TTY is designed for interrupt-driven input: `tty_inproc()` can
+be called from an ISR to inject a character into the input queue. Genix's
+TTY also has this architecture (single-byte atomic writes to `inq_head`).
+Ready for interrupt-driven keyboard when Phase 4 happens.
+
+**3. Block buffer external allocation (CONFIG_BLKBUF_EXTERNAL)**
+
+FUZIX can allocate block buffers externally to save BSS space. Genix
+uses statically allocated buffers (16 blocks × 1024 bytes = 16 KB in
+the buffer cache). On the Mega Drive with 64 KB RAM, this is a
+significant fraction. Consider reducing MAXBUF or making it configurable
+per platform.
+
+**4. Smaller `p_tab` structure**
+
+FUZIX's process table entry is more compact. Genix's `struct proc`
+includes a 512-byte kstack inside the struct — 16 procs × 512 bytes =
+8 KB just for kernel stacks. FUZIX keeps the kernel stack separate.
+On the Mega Drive, 8 KB for kstacks is a real cost. Options:
+- Reduce MAXPROC to 8 (saves 4 KB)
+- Reduce KSTACK_SIZE to 256 (risky — deepest syscall path was 214 bytes)
+- Move kstacks to a separate array (no memory saving, but cleaner)
+
+**5. `doexec` register clearing**
+
+FUZIX's `doexec` clears all user registers (D0-D7, A0-A6) to zero before
+entering user mode. This is a minor security/cleanliness measure — prevents
+kernel data from leaking into user registers. Genix's `exec_enter` doesn't
+clear registers. Not a functional issue but good practice.
+
+**6. Trap handler design — dedicated entry points**
+
+FUZIX uses dedicated entry points for each exception type, pushing a trap
+number before branching to common code. This avoids conditional logic in
+the handler. Genix uses a single `_vec_syscall` entry. For the current
+scope (only TRAP #0), this is fine. If more exception types are added,
+FUZIX's approach is cleaner.
+
+### 4.3 What Genix Does Better Than FUZIX
+
+**1. Readability and size**
+
+Genix kernel: ~5,400 lines. FUZIX kernel: ~15,000+ lines (platform-independent)
+plus ~2,000 per platform. One person can read the entire Genix kernel in
+a sitting. This was the primary goal and it's achieved.
+
+**2. Testing infrastructure**
+
+Genix has 615+ host unit tests covering every subsystem (mem, string,
+exec, proc, signal, TTY, redirection, VDP, libc). FUZIX has no
+equivalent host-side test suite — testing happens on-target only. Genix's
+host tests catch logic bugs before cross-compilation, which is a
+significant productivity advantage.
+
+**3. Workbench emulator for rapid iteration**
+
+The Musashi-based emulator gives 2-second edit-compile-run cycles.
+FUZIX development on the Mega Drive requires BlastEm with Xvfb, which
+is slower and more complex. The workbench was not in FUZIX's design —
+it's a Genix innovation.
+
+**4. STRICT_ALIGN emulator mode**
+
+Genix's workbench emulator can catch unaligned accesses that would
+fault on real 68000 hardware. FUZIX relies on BlastEm or real hardware
+to find alignment bugs. This catches an entire class of bugs earlier.
+
+**5. Clean PAL separation**
+
+Genix has a clean two-directory PAL split (workbench/ and megadrive/)
+with identical interfaces. FUZIX's platform code is spread across
+`platform-megadrive/`, `cpu-68000/`, and generic kernel code with
+`#ifdef` conditionals. Genix's approach is simpler to understand.
+
+**6. Automated testing ladder**
+
+The six-step testing ladder (host tests → cross-compile → workbench
+autotest → megadrive build → BlastEm headless → BlastEm autotest) with
+`make test-all` is well-documented and enforced. FUZIX has no equivalent
+CI-friendly testing pipeline for the Mega Drive.
+
+**7. Custom libc tuned for 68000**
+
+Genix's libc includes `divmod.S` (pure 68000 division) linked before
+libgcc, preventing 68020 illegal instructions. FUZIX relies on the
+toolchain's libgcc, which can contain BSR.L and other 68020 instructions.
+
+---
+
+## 5. Testing Gaps
+
+### 5.1 Host Test Coverage
+
+| Subsystem | Tests | Lines | Assessment |
+|-----------|-------|-------|------------|
+| String functions | 237 | test_string.c | Good coverage |
+| Memory allocator | 228 | test_mem.c | Good — first-fit, coalescing, fragmentation |
+| Exec/binary loading | 355 | test_exec.c | Good — header validation, argv layout |
+| Process management | 403 | test_proc.c | Good — spawn, waitpid, process groups |
+| Signals | 656 | test_signal.c | Good — handlers, frames, stop/continue |
+| I/O redirection | 325 | test_redir.c | Good — pipes, dup/dup2, refcounting |
+| TTY line discipline | 970 | test_tty.c | **Excellent** — 78 cases, edge cases |
+| VDP graphics | 232 | test_vdp.c | OK — basic validation |
+| Libc functions | 336 | test_libc.c | OK — getopt, sprintf, strtol |
+
+**Gaps identified:**
+
+1. **No filesystem host tests.** `fs.c` (633 lines) has zero host test
+   coverage. The filesystem is tested only via autotest (guest tests).
+   This is a significant gap — inode allocation, directory operations,
+   indirect blocks, free list management, rename atomicity, and
+   unlink-while-open should all have host tests.
+
+2. **No buffer cache tests.** `buf.c` (69 lines) is untested on host.
+   LRU eviction, dirty writeback, and cache pressure scenarios are
+   untested.
+
+3. **No kprintf tests.** `kprintf.c` (96 lines) format string handling
+   is untested on host.
+
+4. **No context switch tests.** The swtch()/proc_first_run assembly is
+   tested only via autotest. Host tests can't easily test assembly, but
+   the kstack layout construction (`proc_setup_kstack`) could be tested.
+
+5. **No error path testing for exec.** The autotest tests successful
+   exec and one ENOENT case. Missing: corrupt header, oversized binary,
+   BSS overflow, entry point outside binary, zero-length file.
+
+6. **No pipe stress tests.** The autotest pipe test writes 5 bytes.
+   Missing: full buffer (512 bytes), partial reads, reader close during
+   write, writer close during read, SIGPIPE race conditions.
+
+7. **No multi-process autotest.** The autotest spawns individual programs
+   but doesn't test scenarios where multiple processes interact: a shell
+   pipeline that exercises preemptive scheduling, a process that catches
+   signals while doing I/O, etc.
+
+8. **No kstack overflow detection.** The 512-byte kstack has no canary.
+   A deeply nested syscall path silently corrupts the proc struct.
+   Adding a canary (magic word at kstack[0], checked on syscall return)
+   would catch this.
+
+### 5.2 Autotest Coverage
+
+The 19+ autotest cases cover the happy path well but miss error
+paths and edge cases. Adding these would strengthen the quality gate:
+
+- exec with corrupt binary (should return -ENOEXEC)
+- pipe buffer overflow (512+ bytes)
+- signal during blocking read
+- Multiple spawns exhausting process table (should return -EAGAIN)
+- SRAM read/write validation (on Mega Drive)
+- /dev/null behavior (write discards, read returns 0)
+- getcwd after chdir
+- stat on /dev/tty (should return device type)
+
+### 5.3 Testing Recommendations
+
+**Priority 1 (do now):**
+- Add `tests/test_fs.c` — filesystem logic tests on host
+- Add kstack canary for debug builds
+
+**Priority 2 (do soon):**
+- Add exec error path autotests
+- Add pipe stress autotests
+- Add multi-process interaction autotests
+
+**Priority 3 (do eventually):**
+- Automated pixel comparison for VDP screenshot tests
+- Performance benchmarks (context switch time, syscall overhead)
+- Memory high-water-mark tracking
+
+---
+
+## 6. Remaining Phases — What's Left
+
+### Phase 2f: Fuzix libc + Utilities — THE MAIN EVENT
+
+This is the last major phase before the project achieves its goal of
+running Unix utilities on the Mega Drive. The kernel infrastructure is
+complete. What remains is:
+
+1. Filling libc gaps (Section 7)
+2. Porting utilities from Fuzix (Section 8)
+3. Testing each utility on both platforms
+
+### Phase 4: Polish
+
+| Item | Effort | Value | Priority |
+|------|--------|-------|----------|
+| Interrupt-driven keyboard | Medium | Eliminates polling overhead | Medium |
+| Multi-TTY (NTTY>1) | Low | Infrastructure exists, just add devices | Low |
+| kstack canary | Trivial | Catches silent corruption bugs | High |
+| Block buffer tuning | Low | Reduce MAXBUF on Mega Drive | Medium |
+| SRAM filesystem | Medium | Writable persistent storage | Medium |
+
+---
+
+## 7. Libc Gaps for App Porting
 
 Genix libc has: stdio (FILE*, fopen, fgets, fprintf, puts), stdlib
-(malloc, atoi, exit, qsort), string, ctype, termios, unistd.
+(malloc/free, atoi, atol, exit, qsort, rand, getenv, strtol, strtoul),
+string, ctype, termios, unistd, getopt, sprintf, perror, strerror,
+dirent (opendir/readdir/closedir), isatty, gfx (VDP).
 
-**Missing for Fuzix apps:**
-- `getopt()` / `getopt_long()` — needed by almost every utility
-- `opendir()` / `readdir()` / `closedir()` — needs SYS_GETDENTS
-- `sprintf()` / `snprintf()` — currently only fprintf to a FILE*
-- `sscanf()` / `scanf()` — not implemented
-- `strtol()` / `strtoul()` — needed by many utilities
-- `perror()` / `strerror()` — error reporting
-- `glob()` — shell globbing
-- `regex` — needed by grep, sed
-- `time()` / `localtime()` / `strftime()` — timestamps
-- `getenv()` / `setenv()` — environment variables (getenv exists but returns NULL)
-- `isatty()` — terminal detection
+**Still missing for porting Fuzix apps:**
 
----
-
-## 4. C Library Strategy: Custom libc vs. Newlib vs. Fuzix libc
-
-The plan called for newlib. Genix chose a custom libc. Here's the assessment:
-
-**Newlib** (original plan):
-- Pro: Complete stdio, stdlib, string, math — everything "just works"
-- Con: Large (~200 KB .text), designed for 32-bit systems with more RAM
-- Con: Needs ~15 syscall stubs that must exactly match newlib's expectations
-- Verdict: Too big for Mega Drive's 64 KB. Would work on workbench only.
-
-**Fuzix libc** (plan phase 2f):
-- Pro: Designed for tiny systems (Z80, 6502, 68000), small footprint
-- Pro: Already has 68000 support, already tested with Fuzix apps
-- Pro: All Fuzix apps are written against it — zero porting friction
-- Con: Tightly coupled to Fuzix syscall numbers and conventions
-- Verdict: Best option for porting Fuzix apps, needs a syscall shim.
-
-**Custom Genix libc** (current):
-- Pro: Tiny, we control everything, proven to work
-- Pro: Already supports levee (non-trivial real app)
-- Con: Missing many functions needed by ported apps
-- Verdict: Keep as foundation, incrementally add what's needed.
-
-### Recommendation: Grow the Genix libc, borrowing from Fuzix libc
-
-Don't wholesale replace — incrementally pull functions from Fuzix libc
-into Genix libc as apps need them. The syscall stubs stay Genix-native.
-The library functions (getopt, strtol, regex, etc.) are pure C and can
-be copied directly.
-
-This gives us:
-1. No ABI/syscall compatibility headaches
-2. Incremental, testable growth
-3. Each new function is immediately useful for a concrete app port
+| Function | Needed by | Source | Effort |
+|----------|-----------|--------|--------|
+| `sscanf()` | od, sort, many | Write (extend sprintf parser) | Medium |
+| `regex` (re_comp/re_exec) | grep, sed, expr | Copy from Fuzix libc | Medium |
+| `glob()` | shell, find | Copy from Fuzix libc | Medium |
+| `time()/ctime()` | ls -l, find, make | Write (wrap SYS_TIME) | Low |
+| `getenv()/setenv()` | shell, many | Write (environment block) | Medium |
+| `mktime()` | Utilities needing timestamps | Write | Low |
+| `strftime()` | ls -l timestamp formatting | Write | Low |
+| `signal()/sigaction()` wrappers | Ported apps expecting libc API | Write (wrap SYS_SIGNAL) | Low |
+| `wait()/waitpid()` wrappers | Shell, make | Write (wrap SYS_WAITPID) | Low |
+| `execve()` wrapper | Shell | Write (wrap SYS_EXEC) | Low |
+| `vfork()` wrapper | Shell, make | Exists in libc/syscalls.S | Done |
 
 ---
 
-## 5. Plan to Finish Remaining Phases
+## 8. App Porting Strategy
 
-### Phase 2d-LITE: Minimum viable vfork + signals (prerequisite for apps)
+### 8.1 Source: Fuzix Applications
 
-This is the critical blocker. Without vfork()+exec(), we can't port any
-program that spawns children (shells, make, find -exec, etc.).
+Fuzix organizes apps in `Applications/` with 32 subdirectories:
+util/ (core utilities), levee/ (vi clone, already ported), games/,
+MWC/ (tools from Mark Williams C), CC/ (C compiler), basic/, etc.
 
-**Step 1: Implement real vfork()**
-- Save parent's full register set (d0-d7, a0-a7, sr, pc) in proc table
-- Mark parent P_VFORK (sleeping), switch to child
-- Child shares parent memory (stack + heap)
-- On child's exec() or _exit(), restore parent from saved state
-- The vfork stub in libc already handles the return-address trick
+Most utilities in `util/` are standalone .c files that need only
+stdio, stdlib, string, and getopt. They compile against Fuzix libc
+but the code is portable — changing `#include` paths and linking
+against Genix libc is straightforward.
 
-**Step 2: Make exec() work from vfork'd child**
-- exec() must detect it's in a vfork'd child
-- Load new binary, set up new stack, wake parent, jump to new program
-- Parent resumes where vfork() returned, with child's PID in d0
+### 8.2 Porting Process
 
-**Step 3: Preemptive scheduling (timer-driven)**
-- Workbench: use the existing timer interrupt (SIGALRM-based)
-- Mega Drive: use VBlank interrupt (50/60 Hz)
-- Timer ISR calls scheduler() if current process has run long enough
-- This automatically fixes blocking pipes — sleeping processes get woken
+For each Fuzix utility:
 
-**Step 4: Blocking pipe I/O**
-- pipe_read(): if buffer empty and writers exist, sleep (P_SLEEPING)
-- pipe_write(): if buffer full and readers exist, sleep
-- Wake sleeping readers/writers when data arrives or space frees
+1. Copy the .c file(s) to `apps/`
+2. Change `#include` paths (Fuzix uses `<` includes that map to its libc)
+3. Check for missing libc functions — add to Genix libc if needed
+4. Add to `PROGRAMS` list in `apps/Makefile`
+5. Build and test on workbench (`make run`)
+6. Verify on Mega Drive (`make megadrive`, `make test-md`)
+7. Add autotest case if the program is testable non-interactively
+8. If binary > 28 KB, mark as workbench-only
 
-**Step 5: Basic signals**
-- Process flag field for pending signals
-- Default handlers: SIGTERM→exit, SIGKILL→exit, SIGINT→exit
-- signal() stores user handler; delivery on return from kernel
-- kill() sets the flag; scheduler delivers on context switch
+### 8.3 Porting Tiers (Updated)
 
-### Phase 2e-LITE: Minimal TTY improvements
+**Tier 0 — Already done (22 programs):**
+hello, echo, cat, wc, head, true, false, tail, tee, yes, basename,
+dirname, rev, nl, cmp, cut, tr, uniq, imshow, ls, sleep, levee.
 
-- Ctrl+C generates SIGINT to foreground process (needs signals first)
-- isatty() syscall (or just hardcode fd 0/1/2 as terminal)
-- /dev/null (trivially: read returns 0, write discards)
+**Tier 1 — No kernel changes needed, minimal libc additions:**
 
-### Phase 2f: App porting (the main event)
+| Program | Fuzix source | Libc needed | Notes |
+|---------|-------------|-------------|-------|
+| od | util/od.c | sscanf | Octal/hex dump |
+| strings | util/strings.c | None | Extract printable strings |
+| fold | util/fold.c | None | Line folding |
+| paste | util/paste.c | None | Merge file lines |
+| expand | util/expand.c | None | Tab expansion |
+| unexpand | util/unexpand.c | None | Space to tab |
+| comm | util/comm.c | None | Compare sorted files |
+| env | util/env.c | setenv | Print/set environment |
+| seq | Write new | None | Number sequence generator |
+| tac | Write new | None | Reverse cat |
 
-See Section 6 below.
+**Tier 2 — Needs regex library:**
 
----
+| Program | Fuzix source | Notes |
+|---------|-------------|-------|
+| grep | util/grep.c | Core utility, high value |
+| sed | MWC/cmd/sed/ | Stream editor |
+| expr | MWC/cmd/expr.c | Expression evaluator |
 
-## 6. App Porting Strategy and Build Organization
+**Tier 3 — Needs shell improvements (vfork+exec from shell):**
 
-### Directory structure
+| Program | Fuzix source | Notes |
+|---------|-------------|-------|
+| sh | Write minimal or port | Real shell with job control |
+| xargs | util/xargs.c | Needs exec |
+| time | util/time.c | Needs vfork+exec+waitpid |
+| nohup | util/nohup.c | Needs signals |
 
-```
-genix/
-├── apps/                    # Genix-native programs (current)
-│   ├── hello.c
-│   ├── echo.c
-│   ├── cat.c
-│   ├── ...
-│   ├── crt0.S
-│   ├── user.ld
-│   ├── user-md.ld
-│   └── Makefile
-├── apps/ports/              # Ported Fuzix utilities
-│   ├── grep.c              # Copied + adapted from Fuzix
-│   ├── ls.c
-│   ├── sort.c
-│   ├── ...
-│   └── Makefile            # Same build pattern as apps/
-└── libc/                    # Grows as apps need functions
-    ├── getopt.c            # Pulled from Fuzix libc
-    ├── strtol.c
-    ├── ...
-```
+**Tier 4 — Larger programs, may not fit on Mega Drive:**
 
-**Alternative (simpler):** Just put everything in `apps/`. The Fuzix
-utilities are simple standalone .c files. There's no real need for a
-subdirectory — it's one .c file per program. Add them to the PROGRAMS
-list in apps/Makefile and they build automatically.
+| Program | Fuzix source | Size estimate | Notes |
+|---------|-------------|---------------|-------|
+| ed | ue/ or MWC/cmd/ed.c | ~15 KB | Line editor |
+| diff | util/diff.c | ~10 KB | File comparison |
+| sort | util/sort.c | ~8 KB | Needs temp files |
+| make | MWC/cmd/make/ | ~20 KB | Build system |
 
-### Recommendation: Flat apps/ directory
+### 8.4 Build Organization
 
-```
-apps/Makefile:
-PROGRAMS = hello echo cat wc head true false \
-           tail tee yes sleep grep sort ls find sed ...
-```
-
-Each program is one .c file. The existing build system (crt0 + libc +
-mkbin) handles everything. No new Makefiles, no new build steps.
-
-For multi-file programs (like levee), keep a subdirectory with its own
-Makefile, as is already done for levee.
-
-### Porting tiers
-
-**Tier 0 — No kernel changes needed, minimal libc additions (do first):**
-
-Add `getopt.c`, `strtol.c`, `perror.c` to libc, then port:
-
-| Program | Source | Notes |
-|---------|--------|-------|
-| tail | Fuzix util/tail.c | read + lseek |
-| tee | Fuzix util/tee.c | read + write to multiple fds |
-| yes | Fuzix util/yes.c | trivial |
-| sleep | Fuzix util/sleep.c | needs time() or busy-wait |
-| basename | Fuzix util/basename.c | pure string manipulation |
-| dirname | Fuzix util/dirname.c | pure string manipulation |
-| od | Fuzix util/od.c | read + formatted output |
-| strings | Fuzix util/strings.c | read + filter |
-| rev | Fuzix util/rev.c | line reversal |
-| nl | Fuzix util/nl.c | line numbering |
-| cmp | Fuzix util/cmp.c | byte-by-byte file compare |
-| cut | Fuzix util/cut.c | field extraction |
-| tr | Fuzix util/tr.c | character translation |
-| uniq | Fuzix util/uniq.c | duplicate line filter |
-| paste | Fuzix util/paste.c | merge file lines |
-| env | Fuzix util/env.c | print/set environment |
-
-**Tier 1 — Needs SYS_GETDENTS + opendir/readdir in libc:**
-
-| Program | Source | Notes |
-|---------|--------|-------|
-| ls | Fuzix util/ls.c | Directory listing, stat() |
-| find | Fuzix util/find.c | Directory traversal |
-| rmdir | Already a kernel builtin | Move to user program |
-| du | Fuzix util/du.c | Directory size |
-| mkdir | Already a kernel builtin | Move to user program |
-
-**Tier 2 — Needs vfork+exec (Phase 2d-LITE):**
-
-| Program | Source | Notes |
-|---------|--------|-------|
-| sh | Write minimal or port Fuzix sh | The big one |
-| xargs | Fuzix util/xargs.c | Needs exec |
-| time | Fuzix util/time.c | Needs vfork+exec+waitpid |
-| nohup | Fuzix util/nohup.c | Needs signals |
-
-**Tier 3 — Needs regex library:**
-
-| Program | Source | Notes |
-|---------|--------|-------|
-| grep | Fuzix util/grep.c | Core utility |
-| sed | Fuzix MWC/cmd/sed.c | Stream editor |
-| expr | Fuzix MWC/cmd/expr.y | Needs yacc output |
-
-**Tier 4 — Nice to have, bigger programs:**
-
-| Program | Source | Notes |
-|---------|--------|-------|
-| ed | Fuzix Applications/ue or MWC/cmd/ed.c | Line editor |
-| make | Fuzix MWC/cmd/make.c | Build system |
-| ar | Fuzix util/ar.c | Archive tool |
-| diff | Fuzix util/diff.c | File comparison |
-| patch | Large, needs careful porting | |
-
-### Build process changes needed
-
-**Minimal changes to apps/Makefile:**
-
-1. Add ported .c files to PROGRAMS list
-2. Some programs need `-I ../libc/include` (already the case)
-3. Some multi-file programs (like levee) get their own subdirectory
-4. No other build system changes — the existing pattern rules handle it
-
-**Libc additions** (in order of priority):
-
-1. `getopt.c` — almost every utility needs this
-2. `strtol.c` / `strtoul.c` / `atol.c` — numeric conversion
-3. `perror.c` / `strerror.c` — error messages
-4. `opendir.c` / `readdir.c` / `closedir.c` — directory reading (needs SYS_GETDENTS)
-5. `sprintf.c` / `snprintf.c` — string formatting (extend existing fprintf)
-6. `isatty.c` — terminal detection
-7. `regex.c` — regular expressions (for grep, sed)
-8. `glob.c` — filename globbing (for shell)
-9. `time.c` / `ctime.c` — time formatting
-
-### What to copy from Fuzix vs. write fresh
-
-**Copy from Fuzix libc** (pure C, no Fuzix dependencies):
-- getopt.c, strtol.c, regex.c, glob.c, qsort.c — library functions
-- Most utility programs themselves — they're standalone .c files
-
-**Write fresh** (Genix-specific):
-- opendir/readdir/closedir — wraps SYS_GETDENTS
-- isatty — wraps SYS_IOCTL
-- Syscall stubs — already Genix-native
-
-**Adapt from Fuzix** (needs minor changes):
-- Programs that use Fuzix-specific headers: change `#include` paths
-- Programs that call fork(): change to vfork()+exec() or spawn()
-- Programs that assume Fuzix errno globals: use Genix return convention
-
----
-
-## 7. Recommended Execution Order
-
-```
-NOW (no kernel changes):
-  1. Add getopt.c, strtol.c, perror.c to libc
-  2. Port Tier 0 utilities (tail, tee, yes, basename, etc.)
-  3. Add to AUTOTEST to validate on Mega Drive
-  4. Implement SYS_GETDENTS + opendir/readdir
-  5. Port ls, find (Tier 1)
-
-NEXT (kernel work — Phase 2d-LITE):
-  6. Implement real vfork() in kernel
-  7. Implement preemptive scheduling (timer interrupt)
-  8. Make pipes blocking
-  9. Basic signals (SIGINT, SIGTERM, SIGKILL)
- 10. Port/write a real shell (Tier 2)
-
-THEN (library enrichment):
- 11. Add regex library to libc
- 12. Port grep, sed (Tier 3)
- 13. Add remaining libc functions as apps demand them
- 14. Port ed, make, diff (Tier 4)
-
-ONGOING:
- - Every ported app gets a host test if possible
- - Every ported app gets added to AUTOTEST
- - Verify on Mega Drive (make test-md-auto) after each batch
-```
-
----
-
-## 8. Mega Drive Considerations for Ported Apps
-
-The Mega Drive has ~31 KB for user programs (0xFF8000–0xFFFE00). Most
-simple Fuzix utilities compile to 4–8 KB, so they fit comfortably. But:
-
-- **levee** (44 KB) already doesn't fit on Mega Drive — workbench only
-- **grep with regex** may be tight depending on regex library size
-- **make, ed, sed** are borderline — need measurement
-- Programs are loaded one-at-a-time from ROM disk, so total ROM size is
-  not a constraint (ROM can be up to 4 MB)
-
-**Rule of thumb:** If a program's .text + .data + .bss + stack exceeds
-~28 KB, it's workbench-only (or needs SRAM for extended user RAM).
-
-The apps/Makefile already handles separate builds for workbench (linked
-at 0x040000) and Mega Drive (linked at 0xFF8000). The PROGRAMS list can
-have platform-specific exclusions:
+**Keep the flat `apps/` directory.** Each program is one .c file.
+The existing build system handles everything:
 
 ```makefile
-PROGRAMS = hello echo cat wc head true false tail tee grep ls ...
-# Programs too large for Mega Drive
+PROGRAMS = hello echo cat wc head true false tail tee yes \
+           basename dirname rev nl cmp cut tr uniq ls sleep \
+           od strings fold paste expand unexpand comm grep sed ...
+
+# Programs too large for Mega Drive (>28 KB binary)
 PROGRAMS_WB_ONLY = levee
 ```
 
----
-
-## 9. SRAM as Extended RAM
-
-The Mega Drive's 64 KB main RAM is the single biggest constraint. With
-SRAM, we can dramatically expand what's possible.
-
-### Current SRAM state
-
-Genix already enables SRAM via the standard Sega mapper (write 0x03 to
-0xA130F1). The Everdrive Pro has **64 KB SRAM** at 0x200000–0x20FFFF
-(though only odd bytes are accessible on standard mappers, giving 32 KB
-usable). Some Everdrive configurations provide full 16-bit access.
-
-### SRAM usage plan
-
-**Tier 1 — Persistent filesystem (already partially working):**
-- minifs on SRAM for writable storage (config files, user data)
-- ROM disk stays read-only for /bin, /usr
-
-**Tier 2 — Extended user program memory:**
-- Move USER_BASE to SRAM: programs load at 0x200000 instead of 0xFF8000
-- This gives ~32–64 KB for user programs (vs. ~31 KB in main RAM)
-- Main RAM freed up for kernel heap, buffers, process tables
-- PAL already abstracts USER_BASE/USER_TOP — this is a config change
-
-**Tier 3 — SRAM as general-purpose heap extension:**
-- User malloc() allocates from SRAM when main RAM is exhausted
-- sbrk() can be taught to switch to SRAM region after main RAM fills
-- Allows programs like levee (44 KB) to run on Mega Drive
-
-### Implementation approach
-
-```
-Main RAM (64 KB):
-0xFF0000  Kernel .data + .bss (~25 KB)
-~0xFF6300 Kernel heap (~1 KB)
-~0xFF6800 Small scratch / stack area
-0xFFFFFF  Kernel stack
-
-SRAM (32–64 KB, Everdrive Pro):
-0x200000  USER_BASE — user programs load here
-~0x20F000 USER_TOP — stack starts here (grows down)
-```
-
-The PAL layer detects SRAM size at boot (probe write/readback) and
-sets USER_BASE/USER_TOP accordingly. If no SRAM, fall back to main RAM
-layout. This is fully backward-compatible.
-
-**SRAM access quirk:** On standard Sega mappers, SRAM is 8-bit (odd bytes
-only). The Everdrive Pro mapper can provide 16-bit access. Genix should
-detect which mode is available and adjust:
-- 8-bit mode: byte-at-a-time access, no word/long loads (slow but works)
-- 16-bit mode: normal access, full speed
-
-### Memory budget with SRAM
-
-| Config | User program space | Can run |
-|--------|-------------------|---------|
-| No SRAM (64 KB only) | ~31 KB | hello, cat, wc, small utils |
-| 32 KB SRAM (odd-byte) | ~28 KB usable | Same + medium utils |
-| 64 KB SRAM (16-bit) | ~56 KB usable | levee, grep, sed, ed |
+For multi-file programs (levee, sed), keep a subdirectory with its
+own Makefile. The pattern is already established with levee.
 
 ---
 
-## 10. Device Driver Model
+## 9. Remaining Work — Execution Plan
 
-### Current state
-
-The kernel has a simple device table (`kernel/dev.c`) with
-function-pointer dispatch:
-
-```c
-struct device {
-    int (*open)(int minor);
-    int (*close)(int minor);
-    int (*read)(int minor, void *buf, int len);
-    int (*write)(int minor, const void *buf, int len);
-    int (*ioctl)(int minor, int cmd, void *arg);
-};
-
-struct device devtab[NDEV];  // DEV_CONSOLE=0, DEV_DISK=1
-```
-
-This is the standard Unix approach. Fuzix uses the same pattern across
-30+ platforms. The interface is stable — new drivers are added by
-implementing the five functions and registering a slot in `devtab`.
-
-### Planned drivers
-
-| Device | Major | Interface | Status |
-|--------|-------|-----------|--------|
-| Console (TTY) | 0 | read/write/ioctl (termios) | Working |
-| Disk (block) | 1 | read/write via buffer cache | Working |
-| VDP (graphics) | 2 | ioctl (tiles, sprites, palette) | Planned |
-| Null/Zero | 3 | read→0, write→discard | Planned |
-| Keyboard | — | Input fed through TTY layer | Working (polled) |
-| Sound (YM2612/PSG) | — | Future | Not planned yet |
-| SD card (flash cart) | — | Block device via SPI | Future |
-
-The keyboard is not a separate device — it feeds characters into the
-TTY input queue, as in Fuzix. On the Mega Drive, the VBlank ISR polls
-`keyboard_read()` and injects characters via `tty_inproc()`. On the
-workbench, the UART serves the same role.
-
-### Design principles
-
-The kernel provides the minimum abstraction needed to interface
-hardware at full capability and speed. It does not implement graphics
-logic or sprite management — those belong in userspace libraries.
-
-Separation of concerns:
+### Phase 2f: App Porting (the main event)
 
 ```
-Userspace library (libgfx.a)  — C ABI for graphics programs
-        │ ioctl() / write()
-Kernel driver (dev_vdp.c)     — hardware access, exclusive open,
-        │                       state save/restore on context switch
-PAL assembly (vdp.S, devvt.S) — raw VDP register manipulation
-        │
-VDP hardware                  — 0xC00000 data, 0xC00004 control
+Step 1: Tier 1 utilities (no kernel changes)
+  - Port 8-10 simple utilities (od, strings, fold, paste, expand, etc.)
+  - Add each to AUTOTEST where possible
+  - Verify on Mega Drive
+  Estimated: 10-15 new apps in /bin
+
+Step 2: regex library
+  - Port Fuzix re_comp/re_exec to Genix libc
+  - Port grep (highest-value single utility)
+  - Port sed
+  Estimated: 3 apps, ~500 lines libc addition
+
+Step 3: Shell improvements
+  - The built-in shell already supports pipes and redirects
+  - Add glob expansion (*, ?)
+  - Add environment variables ($PATH, $HOME)
+  - Add command-not-found with PATH search
+  - Consider porting Fuzix sh or writing minimal POSIX sh
+  Estimated: ~300 lines shell code or port
+
+Step 4: Remaining utilities
+  - Port ed, diff, sort, make as demand requires
+  - Each one tested on both platforms
+  - Large programs marked workbench-only
 ```
 
-The kernel driver handles:
-- Exclusive access (only one process owns the VDP at a time)
-- Mode switching (text console ↔ graphics)
-- State save/restore on process suspend/resume
-- VBlank synchronization (blocking ioctl)
+### Phase 4: Polish
 
-The userspace library handles:
-- Tile and sprite data layout
-- Nametable coordinate math
-- Color format conversion
-- Any higher-level abstractions (sprite sheets, tilemaps, etc.)
+```
+Step 5: Interrupt-driven keyboard (Mega Drive)
+  - Move Saturn keyboard polling from read loop to VBlank ISR
+  - ISR calls tty_inproc() to inject characters
+  - Already architecturally ready (TTY supports it)
 
-This means the kernel VDP driver is small (~100-150 lines) and
-the userspace ABI can evolve without kernel changes.
+Step 6: kstack canary
+  - Add magic word at kstack[0]
+  - Check on every syscall return
+  - Panic on corruption (debug builds only)
+
+Step 7: Block buffer tuning
+  - Reduce MAXBUF from 16 to 8 on Mega Drive (saves 8 KB RAM)
+  - Platform-configurable via PAL
+
+Step 8: SRAM persistent filesystem
+  - minifs on SRAM for writable storage
+  - ROM disk stays read-only for /bin
+  - PAL detects SRAM size at boot
+```
 
 ---
 
-## 11. VDP Driver and Graphics ABI
+## 10. Summary — Where We Stand
 
-### Kernel driver: /dev/vdp
+**The kernel is done.** Phases 1 through 2e and Phase 3 are complete.
+The remaining work is in userspace: libc enrichment and app porting
+(Phase 2f) plus optional polish (Phase 4).
 
-Following Fuzix's `devvdp.c`, the kernel exposes the VDP as a
-character device with exclusive open semantics:
+**Key metrics:**
 
-```c
-/* dev_vdp.c — kernel VDP driver */
+| Metric | Value |
+|--------|-------|
+| Kernel lines of code | ~5,400 |
+| Host unit tests | 615+ |
+| Autotest cases | 19+ |
+| User programs | 22 |
+| Libc modules | 14 |
+| Syscalls implemented | 31 |
+| Platforms | 2 (workbench + Mega Drive) |
 
-static uint8_t vdp_owner = 0;  /* PID of process that opened /dev/vdp, 0=none */
+**Biggest remaining risk:** The single user memory space (no relocation)
+limits pipelines to 512 bytes of buffered data. This is a no-MMU
+fundamental limitation. For the current use case (simple filter programs,
+interactive shell), it's adequate. If we ever need true concurrent
+pipelines, we'll need relocation.
 
-static int vdp_open(int minor) {
-    if (vdp_owner) return -EBUSY;
-    vdp_owner = curproc->pid;
-    return 0;
-}
-
-static int vdp_close(int minor) {
-    vdp_owner = 0;
-    VDP_reinit();  /* restore text console */
-    return 0;
-}
-```
-
-The ioctl interface exposes VDP capabilities without imposing
-policy. Each ioctl maps to a small number of VDP register writes:
-
-```c
-#define VDP_IOC_LOADTILES   1  /* bulk write tile patterns to VRAM */
-#define VDP_IOC_SETMAP      2  /* write nametable entries */
-#define VDP_IOC_SETSPRITE   3  /* write sprite attribute table entries */
-#define VDP_IOC_SETPAL      4  /* write CRAM palette entries */
-#define VDP_IOC_SCROLL      5  /* write scroll registers (VSRAM / VDP regs) */
-#define VDP_IOC_WAITVBLANK  6  /* block until next VBlank interrupt */
-#define VDP_IOC_CLEAR       7  /* zero nametable + sprite table */
-```
-
-The driver validates arguments (bounds on tile IDs, sprite count,
-palette indices) but does not interpret them beyond what the hardware
-requires. The assembly routines in `vdp.S` do the actual port writes.
-
-### VDP state and job control
-
-When a process holding `/dev/vdp` is stopped (SIGTSTP), the kernel
-must save enough VDP state to restore the text console, then restore
-the graphics state when the process resumes (SIGCONT).
-
-```c
-struct vdp_state {
-    uint8_t  regs[24];      /* VDP register shadow */
-    uint16_t cram[64];      /* Color RAM (4 palettes × 16 colors) */
-    uint16_t vsram[40];     /* Vertical scroll values */
-    uint8_t  sat[640];      /* Sprite Attribute Table (80 × 8 bytes) */
-    uint8_t  active;        /* 1 if process was using graphics mode */
-};  /* ~872 bytes, allocated from kernel heap on open */
-```
-
-Nametable and tile pattern data remain in VRAM. The text console
-uses different VRAM regions (Plane B for debug overlay, font tiles
-at 0x0000), so the two don't conflict if the graphics program uses
-the standard layout (Plane A at 0xC000, user tiles at 0x2000+).
-
-The save/restore sequence:
-
-1. Process receives SIGTSTP → kernel calls `vdp_save()` → reads
-   registers, CRAM, VSRAM, SAT into `vdp_state`
-2. Kernel calls `VDP_reinit()` to restore text console
-3. On SIGCONT → kernel calls `vdp_restore()` → writes state back
-4. Process resumes where it left off
-
-This follows the Unix model: the VDP is a shared resource owned by
-the foreground process, like the terminal.
-
-### Userspace graphics library (libgfx)
-
-The userspace library wraps kernel ioctls into a C ABI. This is a
-regular userspace library linked into applications — not part of the
-kernel.
-
-```c
-/* gfx.h — userspace graphics library */
-int  gfx_open(void);                                        /* open /dev/vdp */
-void gfx_close(void);                                       /* restore console */
-void gfx_tiles(int id, const uint8_t *data, int count);     /* upload tiles */
-void gfx_map(int x, int y, int tile);                       /* set nametable */
-void gfx_sprite(int id, int x, int y, int tile, int flags); /* set sprite */
-void gfx_palette(int pal, int idx, uint16_t color);         /* set color */
-void gfx_scroll(int plane, int sx, int sy);                 /* scroll plane */
-void gfx_vsync(void);                                       /* wait VBlank */
-void gfx_cls(void);                                         /* clear screen */
-```
-
-Each function is a thin wrapper: pack arguments into a struct, call
-`ioctl(vdp_fd, VDP_IOC_*, &args)`. The library is ~200 lines and
-lives in `libc/` (or a separate `libgfx/`).
-
-This ABI is intentionally similar to other tile+sprite libraries
-(GBA Tonc, devkitSMS) so that porting sprite-based programs is
-straightforward. The library can grow (sprite sheets, palette fading,
-DMA helpers) without touching the kernel.
-
-### imshow — first graphics application
-
-Port of the Fuzix `imshow` program. Validates the full stack: kernel
-driver, ioctl interface, userspace library, and the `tools/png2tiles`
-asset converter.
-
-```c
-#include <gfx.h>
-extern const uint8_t image_tiles[];
-extern const uint16_t image_pal[];
-
-int main(void) {
-    gfx_open();
-    gfx_palette(0, 0, image_pal, 16);
-    gfx_tiles(0, image_tiles, 40 * 28);
-    for (int y = 0; y < 28; y++)
-        for (int x = 0; x < 40; x++)
-            gfx_map(x, y, y * 40 + x);
-    gfx_vsync();
-    getchar();
-    gfx_close();
-    return 0;
-}
-```
-
-Reference: <https://github.com/EythorE/FUZIX/tree/megadrive/Kernel/platform/platform-megadrive>
-
-### Fuzix reference
-
-Fuzix handled graphics on the Mega Drive the same way:
-
-- `devvdp.c` — kernel driver with `VDPCLEAR` and `VDPRESET` ioctls
-- `devvt.S` — assembly routines for VDP port writes (Genix already
-  has these, adapted from Fuzix)
-- `imshow` — userspace program using the driver
-- TTY and graphics are separate devices; the line discipline in
-  `tty.c` does not know about VDP tile layout
-
-The same pattern appears across Fuzix platforms: ZX Spectrum, MSX,
-TRS-80 — text console through TTY, optional graphics through a
-platform-specific device driver.
-
----
-
-## 12. Remaining Kernel Work
-
-The original plan called for multitasking with preemptive scheduling,
-signals, and job control. The process table, round-robin scheduler,
-and spawn/waitpid are done. What remains is completing the planned
-phases.
-
-### Phase 2d — Signals and job control
-
-This was always the next phase. The proc struct already has fields
-for saved registers and state. What needs to be added:
-
-1. **Signal delivery** (~150 lines) — trampoline frame on user stack,
-   `sigreturn` via TRAP. Reference: Fuzix `lowlevel-68000.S`.
-2. **Process groups** — `pgrp` field in proc, `setpgrp()` syscall.
-3. **P_STOPPED state** — SIGTSTP transitions process to P_STOPPED,
-   SIGCONT transitions back to P_READY.
-4. **Preemptive scheduling** — VBlank ISR (Mega Drive) or timer ISR
-   (workbench) calls `schedule()`. ~30 lines of assembly for context
-   switch using MOVEM.L. Reference: Fuzix `lowlevel-68000.S`.
-5. **Blocking pipes** — `pipe_read()` sleeps when empty (P_SLEEPING),
-   woken by `pipe_write()`. Requires preemptive scheduling.
-6. **Real vfork()** — parent blocks in P_VFORK, child shares memory.
-   The assembly (`vfork_save`/`vfork_restore`) exists; the issue was
-   stack corruption, which preemptive scheduling with separate kernel
-   stacks resolves.
-
-### Phase 2e — TTY subsystem
-
-Port Fuzix `tty.c` (~500 lines). This provides:
-
-- Line discipline (cooked mode with echo, erase, kill)
-- Signal generation (^C → SIGINT, ^Z → SIGTSTP to foreground pgrp)
-- Interrupt-driven keyboard input via VBlank ISR
-- `tty_inproc()` for ISR-safe character injection
-- 256-byte circular input buffer with uint8_t indices (no division)
-
-The TTY layer connects the keyboard driver to job control. Without
-it, ^C and ^Z have no effect.
-
-### Phase 2f — Libc enrichment and app porting
-
-See Sections 4-6 for the libc gap analysis and porting tiers.
-
-### Phase 3b — VDP driver
-
-See Section 11 above. Depends on signals (2d) for VDP state
-save/restore on job control.
-
-### Phase 3d — SRAM expansion
-
-See Section 9.
-
-### Dependencies
-
-```
-Preemptive scheduling (2d.4)
-        ↓
-Blocking pipes (2d.5) + Real vfork (2d.6)
-        ↓
-Signal delivery (2d.1-3) → TTY (2e) → Shell job control (2f)
-        ↓
-VDP driver (3b) — needs signals for state save/restore
-```
-
-### What diverged and why
-
-- **spawn() instead of vfork()**: Pragmatic. The return-twice semantics
-  of vfork crashed on the 68000 stack. spawn() proved the process
-  model works. Real vfork() is planned with separate kernel stacks.
-- **Cooperative scheduling**: Got multitasking working without the
-  complexity of timer-driven context switch. Preemptive scheduling
-  is the next step, using the existing VBlank interrupt.
-- **Custom libc instead of newlib**: Newlib is too large for 64 KB.
-  The custom libc is small and grows incrementally as apps need it.
-
-### Fuzix development order (reference)
-
-Fuzix built these subsystems in this order on the 68000:
-
-1. Process management (`process.c`) — fork/exec/wait/exit
-2. Signals (`signal.c`) — delivery, trampoline, sigreturn
-3. TTY (`tty.c`) — line discipline, signal generation, termios
-4. Platform drivers — VDP, keyboard, SRAM
-5. Userspace — shell, utilities
-
-Source references:
-- Context switch: `Kernel/cpu-68000/lowlevel-68000.S`
-- Signal delivery: `Kernel/cpu-68000/lowlevel-68000.S`
-- TTY: `Kernel/tty.c`
-- Process groups: `Kernel/process.c`
-- VDP: `Kernel/platform/platform-megadrive/devvdp.c`
-
-See `docs/fuzix-heritage.md` for the full reference map.
+**What to do next:** Port Tier 1 utilities (Section 8.3). Each one is
+a standalone .c file that takes ~30 minutes to port. After 10 more
+utilities, Genix becomes a genuinely useful Unix-like environment on the
+Mega Drive.
