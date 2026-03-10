@@ -148,6 +148,9 @@ void kputs(const char *s);
 void kprintf(const char *fmt, ...);
 int  kgetc(void);
 
+/* ======== TTY subsystem ======== */
+/* Full declarations in tty.h — include it where needed */
+
 /* ======== Memory allocator ======== */
 
 void  mem_init(uint32_t start, uint32_t end);

@@ -1401,12 +1401,116 @@ an MMU or process relocation.
    the user program must retry. Adding SA_RESTART semantics would require
    the kernel to re-enter the syscall after signal handler return.
 
+---
+
+## Decision: Phase 2e — TTY Subsystem (Line Discipline)
+
+**Date:** Phase 2e
+**Status:** Complete
+
+### What We Did
+
+Ported a simplified Fuzix-style TTY line discipline as `kernel/tty.c`
+(~320 lines). This replaces the ad-hoc console I/O in `kernel/dev.c`
+with a proper three-layer architecture:
+
+```
+User: read()/write()/ioctl()
+  ↓
+tty.c: Line discipline (cooked/raw, echo, erase, signals)
+  ↓
+PAL: pal_console_putc()/pal_console_getc()
+```
+
+### Key Design Decisions
+
+1. **256-byte circular buffer with uint8_t head/tail** — wraps at 256
+   naturally, no modulo instruction needed on the 68000. This is a
+   proven optimization from Fuzix.
+
+2. **Separate canonical buffer** — in cooked mode, characters accumulate
+   in `canon_buf[]` where they can be erased/killed before being
+   transferred to the input queue. This separates "editing" from
+   "available to read", which is how real Unix TTYs work.
+
+3. **Polling-based input** — `tty_read()` polls `pal_console_ready()`
+   while waiting for input. This matches the existing architecture
+   (no interrupt-driven keyboard yet). When interrupt-driven keyboard
+   is added (Phase 4), `tty_inproc()` will be called from the ISR
+   instead of the polling loop.
+
+4. **Output processing (OPOST/ONLCR)** — `tty_write()` maps NL to
+   CR-NL when OPOST+ONLCR are set. The shell's `kputc()` still goes
+   directly to `pal_console_putc()` for kernel output (before TTY
+   is initialized), but user writes go through the TTY layer.
+
+5. **Single TTY for now** — `NTTY=1`. The structure supports multiple
+   TTYs (Phase 4), but we don't need them yet. Each TTY device has
+   its own buffer, termios, and winsize.
+
+6. **Device nodes** — `/dev/tty` and `/dev/console` both point to
+   `DEV_CONSOLE` major, minor 0. They're created at boot in
+   `dev_create_nodes()`.
+
+### What Works
+
+- Cooked mode: line buffering, echo, backspace erase (^H/DEL),
+  kill (^U), ^D EOF (flush or 0-length read)
+- Raw mode: immediate character delivery
+- Signal generation: ^C→SIGINT, ^\ →SIGQUIT, ^Z→SIGTSTP
+- NOFLSH flag (preserve input on signal)
+- Echo control: ECHO, ECHOE (BS-SP-BS), ECHOK, ECHONL
+- Input mapping: ICRNL, INLCR, IGNCR
+- Output processing: OPOST, ONLCR (NL→CR-NL)
+- termios ioctls: TCGETS, TCSETS, TCSETSW, TCSETSF
+- Window size: TIOCGWINSZ (40x28), TIOCSWINSZ
+- Process group: TIOCGPGRP, TIOCSPGRP (stored, not enforced yet)
+- `/dev/tty` and `/dev/console` device nodes
+- 78 host unit tests covering all line discipline features
+- Autotest: 4 TTY tests in both workbench and BlastEm autotests
+
+### Pain Points
+
+1. **Kernel shell now goes through TTY** — the built-in shell's
+   `builtin_shell()` used to do its own line editing (backspace, ^C).
+   After the TTY change, it reads through `devtab[DEV_CONSOLE].read()`
+   which calls `tty_read()` which handles all that. This simplified
+   the shell code significantly, but required testing both paths.
+
+2. **Double echo risk** — the old `con_read()` echoed characters itself,
+   AND the shell echoed them too. With the TTY layer, echo happens in
+   `tty_inproc()` only. Had to make sure the shell doesn't double-echo.
+
+3. **kputc vs tty_write output paths** — kernel diagnostic output
+   (`kputs`, `kprintf`) goes through `kputc()→pal_console_putc()`
+   directly, bypassing OPOST processing. User writes go through
+   `tty_write()` which applies ONLCR. This is correct (kernel output
+   shouldn't be processed) but means NL→CRNL handling differs between
+   kernel and user output.
+
+4. **Incomplete element type** — tried to add `extern struct tty
+   tty_table[]` to `kernel.h` as a forward declaration, but C requires
+   complete type for extern arrays. Fixed by keeping the declaration in
+   `tty.h` only and having files that need it include `tty.h` directly.
+   **Rule:** Never put extern arrays of incomplete types in shared headers.
+
+5. **SIGTSTP delivery** — `^Z` generates SIGTSTP. With Phase 2d now
+   complete, SIGTSTP correctly stops the process (P_STOPPED state)
+   and SIGCONT resumes it. The TTY layer generates the signal;
+   the signal subsystem handles stop/continue semantics.
+
 ### What Changed
 
 | File | Change |
 |------|--------|
-| `kernel/kernel.h` | `sig_deliver(uint32_t *frame)`, `sys_sigreturn()`, `SYS_SIGRETURN=119`, `P_STOPPED=6`, `pgrp` in `struct proc` |
-| `kernel/crt0.S` | Pass frame pointer to `sig_deliver`, handle SYS_SIGRETURN before dispatch |
-| `kernel/proc.c` | Signal frame build/restore, SIGTSTP/SIGCONT, SIGCONT wakes stopped, pgrp init |
-| `kernel/main.c` | 3 new autotest cases (user handler, SIGCONT, signal returns old) |
-| `tests/test_signal.c` | 13 new tests for user handlers, SIGTSTP/SIGCONT, process groups |
+| `kernel/tty.h` | New — TTY structures, constants, interface |
+| `kernel/tty.c` | New — Line discipline (~320 lines) |
+| `kernel/dev.c` | Console routes through TTY layer; /dev/tty, /dev/console nodes |
+| `kernel/main.c` | Shell uses TTY reads; 4 new autotest cases |
+| `kernel/kernel.h` | TTY comment (declarations in tty.h) |
+| `libc/include/termios.h` | Added OPOST, ONLCR, ECHOE, ECHOK, ECHONL, NOFLSH, TIOCGWINSZ, TIOCSWINSZ, winsize struct |
+| `libc/termios.c` | `tcsetattr` now maps TCSADRAIN→TCSETSW, TCSAFLUSH→TCSETSF |
+| `kernel/Makefile` | Added tty.c |
+| `pal/megadrive/Makefile` | Added tty.c + tty.o build rule |
+| `tests/test_tty.c` | New — 78 host unit tests |
+| `tests/Makefile` | Added test_tty |
