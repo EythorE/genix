@@ -88,6 +88,10 @@ typedef int bool;
 #define SYS_KILL        37
 #define SYS_SIGNAL      48
 #define SYS_SBRK        69
+#define SYS_SIGRETURN   119
+
+/* Process state for stopped jobs */
+#define P_STOPPED   6
 
 /* User memory layout — platform-provided, set at boot by kmain().
  * Workbench: 0x040000-0x0F0000 (704 KB in 1 MB RAM)
@@ -284,8 +288,15 @@ void pipe_close_write(struct pipe *p);
 #define SIG_DFL  0
 #define SIG_IGN  1
 
-/* Check and deliver pending signals. Called on return to user mode. */
-void sig_deliver(void);
+/* Check and deliver pending signals. Called on return to user mode.
+ * frame points to the saved user state on kstack:
+ *   frame[0]=USP, frame[1..15]=d0-d7/a0-a6,
+ *   byte offset 64=SR(16-bit), byte offset 66=PC(32-bit) */
+void sig_deliver(uint32_t *frame);
+
+/* Sigreturn: restore saved state from signal frame on user stack.
+ * Called from _vec_syscall when syscall number is SYS_SIGRETURN. */
+void sys_sigreturn(uint32_t *frame);
 
 /* ======== Process management ======== */
 
@@ -315,6 +326,8 @@ struct proc {
     uint32_t brk;          /* current break (top of data) */
     uint32_t vfork_ctx[13]; /* vfork_save context (d2-d7,a2-a6,sp,retaddr) */
     uint16_t cwd;          /* current working directory inode */
+    uint8_t  pgrp;         /* process group ID (for job control) */
+    uint8_t  _pad;         /* align to even boundary */
     uint32_t sig_pending;  /* bitmask of pending signals */
     uint32_t sig_handler[NSIG]; /* signal handlers (0=SIG_DFL, 1=SIG_IGN, else addr) */
     struct ofile *fd[MAXFD];
@@ -333,6 +346,8 @@ void do_exit(int code);
 int  do_waitpid(int pid, int *status);
 int  do_vfork(void);
 int  do_spawn(const char *path, const char **argv);
+int  do_spawn_fd(const char *path, const char **argv,
+                 int stdin_fd, int stdout_fd, int stderr_fd);
 void schedule(void);
 
 /* Exec support (assembly in exec_asm.S) */
