@@ -362,3 +362,24 @@ registers, which means runtime detection may not work without the
 correct header. This needs further investigation — it may be possible
 to detect the Pro even in standard mode, or the header could be set to
 SSF with fallback logic for non-Pro hardware.
+
+## MegaSD (Terraonion) — Not Targeted
+
+The MegaSD by Terraonion is a different flash cartridge with an SD card
+slot, but it is **not a target for Genix** because:
+
+- **Closed source** — no public register maps, SDKs, or hardware
+  documentation for homebrew developers
+- **No known homebrew SD access API** — unlike the EverDrive Pro's
+  documented FIFO commands or the Open EverDrive's open-source SPI
+  interface, the MegaSD does not expose a documented way for running
+  ROMs to access the SD card
+- **Sega CD focus** — its main feature is Sega CD emulation, which
+  the EverDrives do not do; SD access is used internally by the
+  firmware, not exposed to user ROMs
+- **Cannot test** — no hardware available for verification
+
+If someone reverse-engineers the MegaSD's register interface in the
+future, support could be added then. For now, the three EverDrive
+paths (Pro FIFO, X-series SPI controller, Open EverDrive bit-bang)
+cover the documented and testable cartridge hardware.
