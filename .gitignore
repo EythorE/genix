@@ -16,6 +16,17 @@ apps/wc
 apps/head
 apps/true
 apps/false
+apps/tail
+apps/tee
+apps/yes
+apps/basename
+apps/dirname
+apps/rev
+apps/nl
+apps/cmp
+apps/cut
+apps/tr
+apps/uniq
 apps/levee/levee
 tests/test_string
 tests/test_mem

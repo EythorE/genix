@@ -10,6 +10,8 @@ void   exit(int code);
 int    abs(int n);
 int    atoi(const char *s);
 long   atol(const char *s);
+long   strtol(const char *nptr, char **endptr, int base);
+unsigned long strtoul(const char *nptr, char **endptr, int base);
 char  *getenv(const char *name);
 void  *malloc(unsigned int size);
 void   free(void *ptr);
