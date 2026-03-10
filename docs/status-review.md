@@ -348,11 +348,6 @@ toolchain's libgcc, which can contain BSR.L and other 68020 instructions.
    pipeline that exercises preemptive scheduling, a process that catches
    signals while doing I/O, etc.
 
-3. **No kstack overflow detection.** The 512-byte kstack has no canary.
-   A deeply nested syscall path silently corrupts the proc struct.
-   Adding a canary (magic word at kstack[0], checked on syscall return)
-   would catch this.
-
 ### 5.2 Autotest Coverage
 
 The 31+ autotest cases cover the happy path well. Potential additions
@@ -365,7 +360,6 @@ to strengthen the quality gate:
 ### 5.3 Testing Recommendations
 
 **Priority 1 (high value):**
-- Add kstack canary for debug builds
 - Add multi-process interaction autotests
 
 **Priority 2 (nice to have):**
@@ -399,7 +393,6 @@ All Phase 4 items have been resolved:
 
 | Item | Effort | Value | Priority |
 |------|--------|-------|----------|
-| kstack canary | Trivial | Catches silent corruption bugs | Medium |
 | glob expansion in shell | Medium | Enables `*.c` patterns | Low |
 | SRAM persistent filesystem | Medium | Writable persistent storage | Low |
 | Tier 3 utilities (sh, xargs) | Medium | Real shell with job control | Low |
