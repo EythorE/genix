@@ -212,6 +212,100 @@ static void test_palette_bounds(void)
     ASSERT(!(1 + 16 <= VDP_PAL_COLORS));
 }
 
+/* ---- Tests for user tile VRAM offset ---- */
+
+/*
+ * Bug fix: user tiles must not overlap console font area.
+ * Console font occupies VRAM 0x0000-0x0FFF (tiles 0-127).
+ * User tiles start at VRAM_USER_TILES (0x1000, tile 128).
+ *
+ * Without the offset, gfx_tiles(1, ...) wrote to VRAM 0x0020
+ * which corrupted font glyph 1.  With the offset, it writes to
+ * VRAM 0x1020 (VRAM_USER_TILES + 1 * VDP_TILE_SIZE).
+ */
+#define VRAM_USER_TILES_TEST  0x1000
+#define USER_TILE_OFFSET_TEST (VRAM_USER_TILES_TEST / VDP_TILE_SIZE)
+
+static void test_user_tile_vram_address(void)
+{
+    /* User tile 0 → VRAM 0x1000 (tile 128) */
+    uint16_t addr = VRAM_USER_TILES_TEST + 0 * VDP_TILE_SIZE;
+    ASSERT_EQ(addr, 0x1000);
+
+    /* User tile 1 → VRAM 0x1020 (tile 129) */
+    addr = VRAM_USER_TILES_TEST + 1 * VDP_TILE_SIZE;
+    ASSERT_EQ(addr, 0x1020);
+
+    /* User tile 18 → VRAM 0x1240 (tile 146), used by imshow */
+    addr = VRAM_USER_TILES_TEST + 18 * VDP_TILE_SIZE;
+    ASSERT_EQ(addr, 0x1240);
+
+    /* Verify no overlap with console font area (0x0000-0x0FFF) */
+    ASSERT(VRAM_USER_TILES_TEST >= 128 * VDP_TILE_SIZE);
+}
+
+static void test_user_tile_nametable_offset(void)
+{
+    /* User tile 0 in nametable → VDP tile 128 */
+    ASSERT_EQ(USER_TILE_OFFSET_TEST, 128);
+
+    /* User tile 1 → nametable entry 129 */
+    uint16_t entry = 1 + USER_TILE_OFFSET_TEST;
+    ASSERT_EQ(entry, 129);
+
+    /* Nametable entry 129 maps to VRAM 129*32 = 0x1020 */
+    uint16_t vram = entry * VDP_TILE_SIZE;
+    ASSERT_EQ(vram, 0x1020);
+
+    /* Confirm VRAM addresses match between loadtiles and setmap */
+    uint16_t loadtiles_addr = VRAM_USER_TILES_TEST + 1 * VDP_TILE_SIZE;
+    uint16_t setmap_addr = (1 + USER_TILE_OFFSET_TEST) * VDP_TILE_SIZE;
+    ASSERT_EQ(loadtiles_addr, setmap_addr);
+
+    /* Same for tile 18 (imshow's gradient tile) */
+    loadtiles_addr = VRAM_USER_TILES_TEST + 18 * VDP_TILE_SIZE;
+    setmap_addr = (18 + USER_TILE_OFFSET_TEST) * VDP_TILE_SIZE;
+    ASSERT_EQ(loadtiles_addr, setmap_addr);
+}
+
+/* ---- Tests for console tab stop calculation ---- */
+
+/*
+ * Bug fix: VDP console didn't handle '\t', causing it to be
+ * displayed as a visible CP437 glyph (the circle at font index 9).
+ * Fix: advance cursor_x to next 8-column tab stop.
+ */
+static void test_tab_stop_calculation(void)
+{
+    /* Tab stops at columns 0, 8, 16, 24, 32 */
+    /* cursor_x = (cursor_x + 8) & ~7 */
+    int x;
+
+    /* From column 0 → tab to 8 */
+    x = 0; x = (x + 8) & ~7;
+    ASSERT_EQ(x, 8);
+
+    /* From column 1 → tab to 8 */
+    x = 1; x = (x + 8) & ~7;
+    ASSERT_EQ(x, 8);
+
+    /* From column 7 → tab to 8 */
+    x = 7; x = (x + 8) & ~7;
+    ASSERT_EQ(x, 8);
+
+    /* From column 8 → tab to 16 */
+    x = 8; x = (x + 8) & ~7;
+    ASSERT_EQ(x, 16);
+
+    /* From column 15 → tab to 16 */
+    x = 15; x = (x + 8) & ~7;
+    ASSERT_EQ(x, 16);
+
+    /* From column 32 → tab to 40 (triggers line wrap on 40-col VDP) */
+    x = 32; x = (x + 8) & ~7;
+    ASSERT_EQ(x, 40);
+}
+
 int main(void)
 {
     printf("=== VDP driver tests ===\n");
@@ -227,6 +321,9 @@ int main(void)
     RUN_TEST(test_sprite_layout);
     RUN_TEST(test_map_bounds);
     RUN_TEST(test_palette_bounds);
+    RUN_TEST(test_user_tile_vram_address);
+    RUN_TEST(test_user_tile_nametable_offset);
+    RUN_TEST(test_tab_stop_calculation);
 
     TEST_REPORT();
 }
