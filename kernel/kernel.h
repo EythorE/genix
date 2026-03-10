@@ -317,6 +317,7 @@ void sys_sigreturn(uint32_t *frame);
  * 512 bytes gives comfortable headroom for nested timer ISR. */
 #define KSTACK_SIZE   512
 #define KSTACK_WORDS  (KSTACK_SIZE / 4)  /* 64 uint32_t entries */
+#define KSTACK_CANARY 0xDEADBEEF         /* overflow detection */
 
 struct proc {
     uint8_t  state;

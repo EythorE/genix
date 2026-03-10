@@ -601,6 +601,94 @@ static void autotest(void)
         }
     }
 
+    /* Test 20: exec nonexistent path returns error */
+    kputs("[test] exec error path: ");
+    {
+        rc = do_exec("/bin/does_not_exist_at_all", NULL);
+        if (rc == -ENOENT) {
+            kputs("PASS\n");
+            pass++;
+        } else {
+            kprintf("FAIL (expected -ENOENT, got %d)\n", rc);
+            fail++;
+        }
+    }
+
+    /* Test 21: spawn nonexistent returns error */
+    kputs("[test] spawn error path: ");
+    {
+        int pid = do_spawn("/bin/does_not_exist_at_all", NULL);
+        if (pid < 0) {
+            kputs("PASS\n");
+            pass++;
+        } else {
+            kprintf("FAIL (expected error, got pid %d)\n", pid);
+            fail++;
+        }
+    }
+
+    /* Test 22: pipe stress — write and read 512 bytes (full buffer) */
+    kputs("[test] pipe stress full: ");
+    {
+        int pfd[2];
+        rc = do_pipe(pfd);
+        if (rc < 0) {
+            kprintf("FAIL (pipe returned %d)\n", rc);
+            fail++;
+        } else {
+            /* Fill the pipe buffer completely */
+            uint8_t wbuf[PIPE_SIZE];
+            for (int i = 0; i < PIPE_SIZE; i++)
+                wbuf[i] = (uint8_t)(i & 0xFF);
+            int nw = pipe_write(&pipe_table[0], wbuf, PIPE_SIZE);
+
+            /* Read it all back */
+            uint8_t rbuf[PIPE_SIZE];
+            int nr = pipe_read(&pipe_table[0], rbuf, PIPE_SIZE);
+
+            if (nw == PIPE_SIZE && nr == PIPE_SIZE &&
+                memcmp(wbuf, rbuf, PIPE_SIZE) == 0) {
+                kputs("PASS\n");
+                pass++;
+            } else {
+                kprintf("FAIL (nw=%d nr=%d)\n", nw, nr);
+                fail++;
+            }
+            pipe_close_read(&pipe_table[0]);
+            pipe_close_write(&pipe_table[0]);
+            /* Close the FDs */
+            if (curproc->fd[pfd[0]]) {
+                curproc->fd[pfd[0]]->refcount--;
+                curproc->fd[pfd[0]] = NULL;
+            }
+            if (curproc->fd[pfd[1]]) {
+                curproc->fd[pfd[1]]->refcount--;
+                curproc->fd[pfd[1]] = NULL;
+            }
+        }
+    }
+
+    /* Test 23: kstack canary intact after spawned process */
+    kputs("[test] kstack canary: ");
+    {
+        int pid = do_spawn("/bin/true", NULL);
+        if (pid > 0) {
+            int status = -1;
+            do_waitpid(pid, &status);
+            /* Check our own canary survived */
+            if (curproc->kstack[0] == KSTACK_CANARY) {
+                kputs("PASS\n");
+                pass++;
+            } else {
+                kputs("FAIL (canary corrupted)\n");
+                fail++;
+            }
+        } else {
+            kprintf("FAIL (spawn returned %d)\n", pid);
+            fail++;
+        }
+    }
+
     /* Summary */
     kprintf("\n=== AUTOTEST DONE: %d passed, %d failed ===\n", pass, fail);
     if (fail > 0)
