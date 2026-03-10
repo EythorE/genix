@@ -114,7 +114,28 @@ static int con_ioctl(int minor, int cmd, void *arg)
     }
 }
 
-/* Disk device (pass-through to PAL) */
+/* ======== VDP device ======== */
+
+/*
+ * Weak stubs — overridden by pal/megadrive/dev_vdp.c on Mega Drive.
+ * On workbench (no VDP hardware) these return -ENODEV.
+ */
+__attribute__((weak)) int vdp_open(int minor)
+{ (void)minor; return -ENODEV; }
+
+__attribute__((weak)) int vdp_close(int minor)
+{ (void)minor; return -ENODEV; }
+
+__attribute__((weak)) int vdp_read(int minor, void *buf, int len)
+{ (void)minor; (void)buf; (void)len; return -ENODEV; }
+
+__attribute__((weak)) int vdp_write(int minor, const void *buf, int len)
+{ (void)minor; (void)buf; (void)len; return -ENODEV; }
+
+__attribute__((weak)) int vdp_ioctl(int minor, int cmd, void *arg)
+{ (void)minor; (void)cmd; (void)arg; return -ENODEV; }
+
+/* ======== Disk device (pass-through to PAL) ======== */
 static int disk_open(int minor) { (void)minor; return 0; }
 static int disk_close(int minor) { (void)minor; return 0; }
 static int disk_read(int minor, void *buf, int len) {
@@ -133,9 +154,10 @@ static int disk_ioctl(int minor, int cmd, void *arg) {
 struct device devtab[NDEV] = {
     [DEV_CONSOLE] = { con_open, con_close, con_read, con_write, con_ioctl },
     [DEV_DISK]    = { disk_open, disk_close, disk_read, disk_write, disk_ioctl },
+    [DEV_VDP]     = { vdp_open, vdp_close, vdp_read, vdp_write, vdp_ioctl },
 };
 
 void dev_init(void)
 {
-    kputs("[dev] Console and disk devices ready.\n");
+    kputs("[dev] Console, disk, and VDP devices ready.\n");
 }

@@ -235,6 +235,48 @@ static void add_file(uint16_t dir_inum, struct disk_inode *dir_di,
     printf("  %s -> inode %d (%d blocks)\n", name, inum, blk_idx);
 }
 
+/* Re-read a disk inode from the image into a struct */
+static void reread_inode(uint16_t inum, struct disk_inode *di)
+{
+    uint8_t blk_data[BLOCK_SIZE];
+    int blk = 1 + (inum - 1) / INODES_PER_BLK;
+    int off = ((inum - 1) % INODES_PER_BLK) * sizeof(struct disk_inode);
+    read_block(blk, blk_data);
+    uint8_t *p = blk_data + off;
+
+    di->type = p[0];
+    di->nlink = p[1];
+    di->dev_major = p[2];
+    di->dev_minor = p[3];
+    di->size = ((uint32_t)p[4] << 24) | ((uint32_t)p[5] << 16) |
+               ((uint32_t)p[6] << 8) | p[7];
+    di->mtime = ((uint32_t)p[8] << 24) | ((uint32_t)p[9] << 16) |
+                ((uint32_t)p[10] << 8) | p[11];
+    for (int j = 0; j < 12; j++)
+        di->direct[j] = ((uint16_t)p[12 + j*2] << 8) | p[12 + j*2 + 1];
+    di->indirect = ((uint16_t)p[36] << 8) | p[37];
+}
+
+/* Create a device node in a directory */
+static void make_devnode(uint16_t dir_inum, struct disk_inode *dir_di,
+                         const char *name, uint8_t major, uint8_t minor)
+{
+    uint16_t inum = alloc_inode();
+    struct disk_inode di;
+    memset(&di, 0, sizeof(di));
+    di.type = FT_DEV;
+    di.nlink = 1;
+    di.dev_major = major;
+    di.dev_minor = minor;
+    di.mtime = time(NULL);
+
+    write_inode(inum, &di);
+    add_dirent(dir_inum, dir_di, name, inum);
+
+    printf("  /dev/%s -> inode %d (major=%d, minor=%d)\n",
+           name, inum, major, minor);
+}
+
 /* Create a subdirectory */
 static uint16_t make_subdir(uint16_t parent_inum, struct disk_inode *parent_di,
                             const char *name)
@@ -319,31 +361,20 @@ int main(int argc, char *argv[])
     /* Re-read root_di and bin_di since they were updated */
     /* (We need fresh copies after add_dirent modified them) */
 
-    make_subdir(root_inum, &root_di, "dev");
+    uint16_t dev_inum = make_subdir(root_inum, &root_di, "dev");
     make_subdir(root_inum, &root_di, "tmp");
+
+    /* Create device nodes in /dev */
+    {
+        struct disk_inode dev_di;
+        reread_inode(dev_inum, &dev_di);
+        make_devnode(dev_inum, &dev_di, "vdp", 2, 0);  /* major 2 = DEV_VDP */
+    }
 
     /* Add files from command line */
     for (int i = 3; i < argc; i++) {
-        /* Re-read bin directory inode */
-        uint8_t blk_data[BLOCK_SIZE];
-        int blk = 1 + (bin_inum - 1) / INODES_PER_BLK;
-        int off = ((bin_inum - 1) % INODES_PER_BLK) * sizeof(struct disk_inode);
-        read_block(blk, blk_data);
-        uint8_t *p = blk_data + off;
-
         struct disk_inode di;
-        di.type = p[0];
-        di.nlink = p[1];
-        di.dev_major = p[2];
-        di.dev_minor = p[3];
-        di.size = ((uint32_t)p[4] << 24) | ((uint32_t)p[5] << 16) |
-                  ((uint32_t)p[6] << 8) | p[7];
-        di.mtime = ((uint32_t)p[8] << 24) | ((uint32_t)p[9] << 16) |
-                   ((uint32_t)p[10] << 8) | p[11];
-        for (int j = 0; j < 12; j++)
-            di.direct[j] = ((uint16_t)p[12 + j*2] << 8) | p[12 + j*2 + 1];
-        di.indirect = ((uint16_t)p[36] << 8) | p[37];
-
+        reread_inode(bin_inum, &di);
         add_file(bin_inum, &di, argv[i]);
     }
 

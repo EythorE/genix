@@ -234,7 +234,8 @@ struct device {
 
 #define DEV_CONSOLE  0
 #define DEV_DISK     1
-#define NDEV         2
+#define DEV_VDP      2
+#define NDEV         3
 
 extern struct device devtab[];
 void dev_init(void);
