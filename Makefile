@@ -34,7 +34,8 @@ apps-md: libc tools
 CORE_BINS = apps/hello apps/echo apps/cat apps/wc apps/head apps/true apps/false \
             apps/tail apps/tee apps/yes apps/basename apps/dirname \
             apps/rev apps/nl apps/cmp apps/cut apps/tr apps/uniq apps/imshow \
-            apps/ls apps/sleep
+            apps/ls apps/sleep apps/strings apps/fold apps/expand apps/unexpand \
+            apps/paste apps/comm apps/seq apps/tac
 
 # All app binaries (levee is workbench-only — too large for MD 31KB user space)
 APP_BINS = $(CORE_BINS) $(wildcard apps/levee/levee)

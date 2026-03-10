@@ -451,14 +451,15 @@ Detailed technical documentation is in `docs/`:
 | Phase 2c | Pipes and I/O redirection | **Complete** |
 | Phase 2d | Signals and job control | **Complete** (user handlers, SIGTSTP/SIGCONT, process groups) |
 | Phase 2e | TTY subsystem (line discipline, termios) | **Complete** |
-| Phase 2f | Fuzix libc + utilities | **In progress** (22 apps, custom libc with 14 modules) |
+| Phase 2f | Fuzix libc + utilities | **In progress** (30 apps, custom libc with 14 modules) |
 | Phase 3 | Mega Drive port (PAL drivers from Fuzix) | **Complete** |
 | Phase 4 | Polish (interrupt keyboard, multi-TTY, /dev/null) | Partial (/dev/null done) |
 
 What works today: kernel boots on both workbench and Mega Drive, minifs
-filesystem with indirect blocks, exec() loads user programs (22 apps in
+filesystem with indirect blocks, exec() loads user programs (30 apps in
 /bin including hello, echo, cat, wc, head, tail, tee, basename, dirname,
-rev, nl, cmp, cut, tr, uniq, yes, imshow, ls, sleep, levee), built-in
+rev, nl, cmp, cut, tr, uniq, yes, imshow, ls, sleep, strings, fold,
+expand, unexpand, paste, comm, seq, tac, levee), built-in
 shell with pipes (`|`), I/O redirection (`>`, `>>`, `<`), and sequential
 pipeline execution, process table (16 slots) with preemptive scheduling
 (timer-driven context switch via swtch/proc_first_run), per-process
@@ -472,7 +473,7 @@ process groups, TTY line discipline with cooked/raw modes + echo + line editing
 ctype/termios/getopt/sprintf/strtol/perror), VDP device driver with
 libgfx userspace library, levee (vi clone) on workbench, 615+ host
 tests (including 78 TTY tests), automated
-guest tests (19+ cases) on both platforms, Saturn keyboard on Mega Drive, SRAM with
+guest tests (31 cases) on both platforms, Saturn keyboard on Mega Drive, SRAM with
 standard Sega mapper. See `docs/decisions.md` for full history.
 
 ## Common Pitfalls
