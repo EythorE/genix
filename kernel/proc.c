@@ -23,6 +23,7 @@ void proc_init(void)
     curproc->ppid = 0;
     curproc->cwd = 1;  /* root directory */
     curproc->pgrp = 0;
+    curproc->kstack[0] = KSTACK_CANARY;
     nproc = 1;
 
     /* Set up stdin/stdout/stderr to console */
@@ -322,6 +323,9 @@ void proc_setup_kstack(struct proc *p, uint32_t entry, uint32_t user_sp)
     memset(bp, 0, 44);
 
     p->ksp = (uint32_t)bp;
+
+    /* Plant canary at the bottom of kstack for overflow detection */
+    p->kstack[0] = KSTACK_CANARY;
 }
 
 void do_exit(int code)
@@ -719,6 +723,13 @@ void schedule(void)
 
     swtch(&old->ksp, next->ksp);
     /* Returns here when this process is scheduled again */
+
+    /* Check kstack canary — catches overflow before it corrupts adjacent memory */
+    if (curproc->kstack[0] != KSTACK_CANARY) {
+        kputs("*** PANIC: kstack overflow (pid ");
+        kprintf("%d)\n", (uint32_t)curproc->pid);
+        for (;;) ;
+    }
 }
 
 /* ======== Syscall implementations ======== */
