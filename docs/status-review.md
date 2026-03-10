@@ -1,503 +1,330 @@
-# Genix Status Review — Plan vs. Reality (Second Review)
+# Genix Status Review (Third Review)
 
 _Review date: 2026-03-10_
-_Previous review: 2026-03-09_
+_Previous reviews: 2026-03-10 (second), 2026-03-09 (first)_
 
-This document compares the original PLAN.md (from the FUZIX repo) against
-what Genix actually implemented, analyzes FUZIX design decisions vs. Genix's
-divergences, identifies testing gaps, and lays out the path to completing
-remaining phases and porting apps.
-
----
-
-## 1. Progress Since Last Review
-
-The last review (2026-03-09) identified three **High** severity gaps:
-vfork/spawn, preemptive scheduling, and blocking pipes. It also noted
-signals and TTY as not started. All five have been resolved:
-
-| Gap (last review) | Status now | How resolved |
-|-------------------|-----------|--------------|
-| spawn() instead of vfork() | **Both exist** | Real vfork() implemented (setjmp/longjmp). spawn() kept as convenience. |
-| Cooperative scheduling | **Preemptive** | Timer ISR calls schedule()+swtch(). S-bit check prevents kernel preemption. |
-| Non-blocking pipes | **Blocking** | pipe_read/write sleep when empty/full, wake on data arrival. |
-| Signals (stubs only) | **Complete** | 21 signals, user handlers, signal frames, sigreturn, SIGTSTP/SIGCONT. |
-| TTY (not started) | **Complete** | Full line discipline: cooked/raw, echo, erase, kill, signal generation, OPOST. |
-
-Additionally since the last review:
-- **Phase 2c** (I/O redirection): Shell pipes (`|`), output redirect (`>`/`>>`), input redirect (`<`)
-- **Phase 2d** (Signals): User signal handlers with 84-byte signal frames, process groups
-- **Phase 2e** (TTY): 320-line line discipline, 78 host tests
-- **Phase 2f** (libc + apps): 34 user programs, 15 libc modules incl. regex
-- **Phase 4** (polish): Interrupt keyboard, multi-TTY, NBUFS config, SRAM validation
-- **34 user programs** (was 8 at first review, 22 at last review)
-- **4924+ host test assertions** across 13 test files (was 283 at first review)
-- **31+ autotest cases** on both platforms
-- **CI pipeline** enforces full testing ladder (host → cross → emu → BlastEm)
-
-All project phases are now complete.
+This document is a comprehensive status report for the Genix project — a
+minimal, single-user, POSIX-enough operating system for the Motorola 68000,
+targeting the Sega Mega Drive.
 
 ---
 
-## 2. Plan vs. Reality — Phase by Phase
+## 1. Executive Summary
 
-### Phase 1: Workbench Emulator — COMPLETE, matches plan
-
-The plan called for a Musashi-based 68000 SBC with UART, timer, and disk.
-This is exactly what was built. No meaningful divergence.
-
-### Phase 2a: Single-tasking Kernel — COMPLETE, matches plan
-
-Boot, console I/O, minifs filesystem, exec(), built-in shell — all done.
-
-### Phase 2b: Multitasking — COMPLETE, matches plan (now)
-
-**What the plan said:** Process table (8-16 slots), round-robin preemptive
-scheduling via timer, vfork()+exec().
-
-**What was built:**
-- Process table (16 slots) — matches
-- Preemptive timer-driven scheduling — matches (was cooperative, now fixed)
-- Per-process kernel stacks (512 bytes) — matches (not in plan but necessary)
-- vfork() implemented (setjmp/longjmp) — matches
-- spawn() as additional convenience — bonus, not in plan
-- Genix flat binary (fixed load address) instead of PIC/bFLT — **divergence**
-
-**Binary format divergence:** The plan called for PIC ELF or bFLT.
-Genix uses a custom 32-byte flat binary at a fixed load address. This
-means only one user process can be loaded at a time (they all map to
-USER_BASE). This is the single biggest remaining architectural limitation.
-
-### Phase 2c: Pipes — COMPLETE, matches plan
-
-pipe() with blocking I/O, 512-byte circular buffer. SIGPIPE on broken
-pipes. Shell-level pipe syntax (`|`). Sequential pipeline execution
-(no-MMU limitation).
-
-### Phase 2d: Signals — COMPLETE, matches plan
-
-21 signals, user handlers, signal frames on user stack, sigreturn
-trampoline, SIGTSTP/SIGCONT for job control, process groups, Ctrl+C
-and Ctrl+Z from TTY.
-
-### Phase 2e: TTY Subsystem — COMPLETE, matches plan
-
-Full line discipline (320 lines), cooked/raw modes, echo/erase/kill,
-signal generation, OPOST/ONLCR, termios ioctls, /dev/tty and /dev/console
-device nodes, 78 host unit tests.
-
-### Phase 2f: Fuzix libc + Utilities — COMPLETE
-
-**What the plan said:** Use newlib for C library, port GNU tools.
-
-**What was built:** Custom minimal libc (~2500 lines, 15 modules including
-regex) with stdio, stdlib, string, ctype, termios, getopt, sprintf,
-sscanf, strtol, perror, dirent, isatty, regex, gfx. 34 user programs
-including levee (vi clone), grep, od, env, expr, and 12 additional
-Tier 1 utilities (strings, fold, expand, unexpand, paste, comm, seq,
-tac, cut, tr, uniq, rev).
-
-**Assessment:** The plan's newlib goal was wrong — newlib is 50-100 KB,
-too large for the Mega Drive's 64 KB RAM. The custom libc is the right
-choice. It's smaller, we control it, and it's proven (levee works).
-All Tier 1 and Tier 2 utilities from the original porting plan have
-been completed.
-
-### Phase 3: Mega Drive Port — COMPLETE, matches plan
-
-VDP text output, Saturn keyboard, SRAM, ROM disk. PAL abstraction works.
-BlastEm tests pass. The Mega Drive drivers were reused from FUZIX as planned.
-
-### Phase 4: Polish — COMPLETE
-
-- /dev/null: **Done**
-- Interrupt-driven keyboard: **Done** (VBlank ISR calls pal_keyboard_poll)
-- Multi-TTY: **Done** (NTTY=4, /dev/tty0-tty3 device nodes)
-- Configurable buffer cache: **Done** (NBUFS=16 workbench, NBUFS=8 Mega Drive)
-- SRAM validation: **Done** (boot-time magic check, zero on invalid)
+**All planned phases are complete.** Genix boots and runs on both the
+workbench emulator and real Mega Drive hardware (via BlastEm). The kernel
+is ~5,650 lines. 34 user programs run on both platforms. A six-step CI
+testing ladder enforces quality on every push. 100 commits over 3 days of
+development.
 
 ---
 
-## 3. Divergences From Plan — Impact Assessment
-
-### 3.1 Binary Format (Medium impact, plan to address)
-
-**Plan:** PIC ELF or bFLT with relocation support.
-**Reality:** Fixed-address flat binary ("GENX" header).
-
-**Impact:** Only one user process in memory at a time. Pipelines execute
-sequentially (echo runs, fills pipe buffer, exits; then cat runs and reads).
-Pipelines producing >512 bytes of output lose data.
-
-**Should we switch to Fuzix a.out?** The decisions.md planned this
-migration. Analysis:
-
-| Factor | Genix flat binary | Fuzix a.out |
-|--------|-------------------|-------------|
-| Header size | 32 bytes | 16 bytes |
-| Relocation | None | Kernel-applied, ~30 lines C |
-| Ecosystem | 22 custom apps | 143+ Fuzix utilities |
-| Multiple processes in memory | No | Yes (with relocation) |
-| Complexity | Trivial loader | Simple loader + reloc table |
-
-**Recommendation:** Keep Genix flat binary for now. Add relocation support
-later when we need concurrent user processes in memory. The 512-byte pipe
-buffer limit is the real pain point, and it's a no-MMU fundamental
-limitation regardless of binary format — two processes sharing the same
-RAM can corrupt each other without an MMU.
-
-For app porting, recompiling Fuzix utility source code against Genix
-libc + Genix binary format is simpler than implementing Fuzix a.out
-compatibility. The utilities are standalone .c files — just build them
-with the Genix toolchain.
-
-### 3.2 C Library (Low impact, divergence is beneficial)
-
-**Plan:** newlib (standard bare-metal C library).
-**Reality:** Custom minimal libc.
-
-**This divergence is a win.** newlib would be 50-100 KB — it wouldn't
-even fit in Mega Drive RAM. The custom libc is ~5 KB and growing
-incrementally as apps need functions. It borrows pure-C functions from
-Fuzix libc (getopt, strtol) without taking the syscall layer.
-
-### 3.3 Process Creation Model (Low impact now, was High)
-
-**Plan:** vfork()+exec() as sole model.
-**Reality:** Both vfork()+exec() and spawn() exist.
-
-spawn() was implemented first because vfork's return-twice semantics
-crashed on the 68000 stack. Real vfork() was added later with per-process
-kernel stacks. Both work. spawn() is still useful as a convenience for
-the built-in shell. No negative impact.
-
-### 3.4 No GNU Toolchain Target (Expected, not a problem)
-
-**Plan Phase 4** aimed for GCC/binutils/make running on the Mega Drive.
-This was always aspirational — GCC needs far more RAM than 64 KB.
-Cross-compilation from a Linux host is the practical workflow. The plan
-acknowledged this: "Native compilation is a stretch goal."
-
----
-
-## 4. FUZIX Design Philosophy vs. Genix Divergences
-
-### 4.1 What FUZIX Does That Genix Doesn't (and whether it matters)
-
-| FUZIX feature | Genix status | Impact |
-|---------------|-------------|--------|
-| Multi-user (UIDs, permissions) | Deliberately omitted | None — single-user system |
-| fork() | Deliberately omitted | Correct for no-MMU |
-| 32 signals (Linux-compatible) | 21 signals | Sufficient for all current apps |
-| CONFIG_LEVEL_2 job control | Basic (SIGTSTP/SIGCONT) | Adequate for single-terminal use |
-| swap/banking memory | Not applicable | 68000 Mega Drive has flat memory |
-| Multiple filesystem types | minifs only | Sufficient — simpler is better |
-| ptys | Not implemented | Not needed (single console) |
-| Network stack | Not implemented | Not planned (no hardware) |
-
-**Verdict:** Genix correctly omits FUZIX features that don't apply to a
-single-user, single-terminal, no-MMU system. The omissions reduce code
-from ~15,000 lines to ~5,400 lines while keeping all features that
-matter for running Unix utilities.
-
-### 4.2 What FUZIX Does Better (and what Genix should learn)
-
-**1. Circular buffer optimization (ADOPTED)**
-
-FUZIX uses 256-byte circular buffers with `uint8_t` indices that wrap
-naturally — no modulo, no division. Genix's TTY already uses this
-pattern. Good.
-
-**2. `tty_inproc()` ISR-safe character injection**
-
-FUZIX's TTY is designed for interrupt-driven input: `tty_inproc()` can
-be called from an ISR to inject a character into the input queue. Genix's
-TTY also has this architecture (single-byte atomic writes to `inq_head`).
-Ready for interrupt-driven keyboard when Phase 4 happens.
-
-**3. Block buffer external allocation (CONFIG_BLKBUF_EXTERNAL)**
-
-FUZIX can allocate block buffers externally to save BSS space. Genix
-uses statically allocated buffers (16 blocks × 1024 bytes = 16 KB in
-the buffer cache). On the Mega Drive with 64 KB RAM, this is a
-significant fraction. Consider reducing MAXBUF or making it configurable
-per platform.
-
-**4. Smaller `p_tab` structure**
-
-FUZIX's process table entry is more compact. Genix's `struct proc`
-includes a 512-byte kstack inside the struct — 16 procs × 512 bytes =
-8 KB just for kernel stacks. FUZIX keeps the kernel stack separate.
-On the Mega Drive, 8 KB for kstacks is a real cost. Options:
-- Reduce MAXPROC to 8 (saves 4 KB)
-- Reduce KSTACK_SIZE to 256 (risky — deepest syscall path was 214 bytes)
-- Move kstacks to a separate array (no memory saving, but cleaner)
-
-**5. `doexec` register clearing**
-
-FUZIX's `doexec` clears all user registers (D0-D7, A0-A6) to zero before
-entering user mode. This is a minor security/cleanliness measure — prevents
-kernel data from leaking into user registers. Genix's `exec_enter` doesn't
-clear registers. Not a functional issue but good practice.
-
-**6. Trap handler design — dedicated entry points**
-
-FUZIX uses dedicated entry points for each exception type, pushing a trap
-number before branching to common code. This avoids conditional logic in
-the handler. Genix uses a single `_vec_syscall` entry. For the current
-scope (only TRAP #0), this is fine. If more exception types are added,
-FUZIX's approach is cleaner.
-
-### 4.3 What Genix Does Better Than FUZIX
-
-**1. Readability and size**
-
-Genix kernel: ~5,400 lines. FUZIX kernel: ~15,000+ lines (platform-independent)
-plus ~2,000 per platform. One person can read the entire Genix kernel in
-a sitting. This was the primary goal and it's achieved.
-
-**2. Testing infrastructure**
-
-Genix has 4924+ host test assertions across 13 test files covering every
-subsystem (mem, string, exec, proc, signal, TTY, redirection, VDP, libc,
-filesystem, buffer cache, kprintf, pipes). FUZIX has no equivalent
-host-side test suite — testing happens on-target only. Genix's host tests
-catch logic bugs before cross-compilation, which is a significant
-productivity advantage.
-
-**3. Workbench emulator for rapid iteration**
-
-The Musashi-based emulator gives 2-second edit-compile-run cycles.
-FUZIX development on the Mega Drive requires BlastEm with Xvfb, which
-is slower and more complex. The workbench was not in FUZIX's design —
-it's a Genix innovation.
-
-**4. STRICT_ALIGN emulator mode**
-
-Genix's workbench emulator can catch unaligned accesses that would
-fault on real 68000 hardware. FUZIX relies on BlastEm or real hardware
-to find alignment bugs. This catches an entire class of bugs earlier.
-
-**5. Clean PAL separation**
-
-Genix has a clean two-directory PAL split (workbench/ and megadrive/)
-with identical interfaces. FUZIX's platform code is spread across
-`platform-megadrive/`, `cpu-68000/`, and generic kernel code with
-`#ifdef` conditionals. Genix's approach is simpler to understand.
-
-**6. Automated testing ladder**
-
-The six-step testing ladder (host tests → cross-compile → workbench
-autotest → megadrive build → BlastEm headless → BlastEm autotest) with
-`make test-all` is well-documented and enforced. FUZIX has no equivalent
-CI-friendly testing pipeline for the Mega Drive.
-
-**7. Custom libc tuned for 68000**
-
-Genix's libc includes `divmod.S` (pure 68000 division) linked before
-libgcc, preventing 68020 illegal instructions. FUZIX relies on the
-toolchain's libgcc, which can contain BSR.L and other 68020 instructions.
-
----
-
-## 5. Testing Gaps
-
-### 5.1 Host Test Coverage
-
-| Subsystem | Tests | Lines | Assessment |
-|-----------|-------|-------|------------|
-| String functions | 237 | test_string.c | Good coverage |
-| Memory allocator | 228 | test_mem.c | Good — first-fit, coalescing, fragmentation |
-| Exec/binary loading | 355 | test_exec.c | Good — header validation, argv layout |
-| Process management | 403 | test_proc.c | Good — spawn, waitpid, process groups |
-| Signals | 656 | test_signal.c | Good — handlers, frames, stop/continue |
-| I/O redirection | 325 | test_redir.c | Good — pipes, dup/dup2, refcounting |
-| TTY line discipline | 970 | test_tty.c | **Excellent** — 78 cases, edge cases |
-| VDP graphics | 232 | test_vdp.c | OK — basic validation |
-| Libc functions | 336 | test_libc.c | OK — getopt, sprintf, strtol, qsort, sscanf |
-| Filesystem | 118 | test_fs.c | Good — inode alloc, directory ops, block deallocation |
-| Buffer cache | 36 | test_buf.c | Good — LRU eviction, dirty writeback, cache pressure |
-| kprintf | 24 | test_kprintf.c | Good — format specifiers, edge cases |
-| Pipe stress | 2170 | test_pipe.c | **Excellent** — full buffer, wrap, partial reads |
-
-**Resolved gaps (since initial review):**
-
-1. ~~No filesystem host tests~~ — **Resolved.** `test_fs.c` added with
-   118 assertions covering inode allocation, directory operations,
-   indirect blocks, and block deallocation on inode free.
-
-2. ~~No buffer cache tests~~ — **Resolved.** `test_buf.c` added with
-   36 assertions covering cache hits/misses, LRU eviction, dirty
-   writeback, and multi-device scenarios.
-
-3. ~~No kprintf tests~~ — **Resolved.** `test_kprintf.c` added with
-   24 assertions covering all format specifiers and edge cases.
-
-4. ~~No pipe stress tests~~ — **Resolved.** `test_pipe.c` added with
-   2170 assertions covering full buffer, circular wrap, partial reads,
-   EOF/EPIPE, and alternating read/write patterns.
-
-**Remaining gaps:**
-
-1. **No context switch tests.** The swtch()/proc_first_run assembly is
-   tested only via autotest. Host tests can't easily test assembly, but
-   the kstack layout construction (`proc_setup_kstack`) could be tested.
-
-2. **No multi-process autotest.** The autotest spawns individual programs
-   but doesn't test scenarios where multiple processes interact: a shell
-   pipeline that exercises preemptive scheduling, a process that catches
-   signals while doing I/O, etc.
-
-3. **No kstack overflow detection.** The 512-byte kstack has no canary.
-   A deeply nested syscall path silently corrupts the proc struct.
-   Adding a canary (magic word at kstack[0], checked on syscall return)
-   would catch this.
-
-### 5.2 Autotest Coverage
-
-The 31+ autotest cases cover the happy path well. Potential additions
-to strengthen the quality gate:
-
-- Multiple spawns exhausting process table (should return -EAGAIN)
-- Signal during blocking read
-- Performance benchmarks (context switch time, syscall overhead)
-
-### 5.3 Testing Recommendations
-
-**Priority 1 (high value):**
-- Add kstack canary for debug builds
-- Add multi-process interaction autotests
-
-**Priority 2 (nice to have):**
-- Automated pixel comparison for VDP screenshot tests
-- Performance benchmarks (context switch time, syscall overhead)
-- Memory high-water-mark tracking
-
----
-
-## 6. Completed Phases — Final Status
-
-### Phase 2f: Fuzix libc + Utilities — COMPLETE
-
-All planned tiers have been completed:
-- **Tier 0** (original 22 programs): Done
-- **Tier 1** (10 utilities: od, strings, fold, paste, expand, unexpand,
-  comm, env, seq, tac): Done
-- **Tier 2** (regex-dependent: grep, expr): Done (regex engine + sscanf
-  added to libc)
-- 34 total user programs in /bin
-
-### Phase 4: Polish — COMPLETE
-
-All Phase 4 items have been resolved:
-- Interrupt-driven keyboard: **Done** (VBlank ISR)
-- Multi-TTY (NTTY=4): **Done** (/dev/tty0-tty3)
-- Block buffer tuning: **Done** (NBUFS configurable, 16 workbench / 8 Mega Drive)
-- SRAM validation: **Done** (boot-time magic check)
-
-### Remaining Optional Work
-
-| Item | Effort | Value | Priority |
-|------|--------|-------|----------|
-| kstack canary | Trivial | Catches silent corruption bugs | Medium |
-| glob expansion in shell | Medium | Enables `*.c` patterns | Low |
-| SRAM persistent filesystem | Medium | Writable persistent storage | Low |
-| Tier 3 utilities (sh, xargs) | Medium | Real shell with job control | Low |
-| Tier 4 utilities (ed, diff, sort) | High | Larger programs, may not fit on MD | Low |
-
----
-
-## 7. Libc Status
-
-Genix libc has 15 modules: stdio (FILE*, fopen, fgets, fprintf, puts),
-stdlib (malloc/free, atoi, atol, exit, qsort, bsearch, rand, getenv,
-strtol, strtoul), string (strstr, strcasecmp, strcspn, strspn), ctype,
-termios, unistd, getopt, sprintf/sscanf, perror, strerror, dirent
-(opendir/readdir/closedir), isatty, regex (regcomp/regexec/regfree),
-gfx (VDP), divmod.S (68000 division), syscalls.S.
-
-**Previously missing, now implemented:**
-
-| Function | Status | Added for |
-|----------|--------|-----------|
-| `sscanf()` | **Done** | od, general parsing |
-| `regex` (regcomp/regexec) | **Done** | grep, expr |
-| `getenv()/setenv()` | **Done** | env, shell |
-| `qsort()/bsearch()` | **Done** | general use |
-| `vfork()` wrapper | **Done** | shell, process creation |
-
-**Still missing (needed only for future Tier 3/4 apps):**
-
-| Function | Needed by | Effort |
-|----------|-----------|--------|
-| `glob()` | shell, find | Medium |
-| `time()/ctime()` | ls -l, find, make | Low |
-| `mktime()/strftime()` | timestamp formatting | Low |
-| `signal()/sigaction()` wrappers | ported apps expecting libc API | Low |
-
----
-
-## 8. App Porting — Final Status
-
-### 8.1 Completed Apps (34 programs)
-
-hello, echo, cat, wc, head, true, false, tail, tee, yes, basename,
-dirname, rev, nl, cmp, cut, tr, uniq, imshow, ls, sleep, strings,
-fold, expand, unexpand, paste, comm, seq, tac, grep, od, env, expr,
-levee.
-
-### 8.2 Remaining Porting Candidates
-
-**Tier 3 — Needs shell improvements:**
-
-| Program | Notes |
-|---------|-------|
-| sh | Real shell with job control |
-| xargs | Needs exec |
-| time | Needs vfork+exec+waitpid |
-| nohup | Needs signals |
-
-**Tier 4 — Larger programs, may not fit on Mega Drive:**
-
-| Program | Size estimate | Notes |
-|---------|---------------|-------|
-| ed | ~15 KB | Line editor |
-| diff | ~10 KB | File comparison |
-| sort | ~8 KB | Needs temp files |
-| sed | ~10 KB | Stream editor (multi-file) |
-| make | ~20 KB | Build system |
-
----
-
-## 9. Summary — Where We Stand
-
-**The project is feature-complete.** All planned phases (1 through 4)
-are done. The kernel, libc, app suite, and Mega Drive port all work.
-The CI pipeline enforces the full testing ladder on every push.
-
-**Key metrics:**
+## 2. Project Metrics
 
 | Metric | Value |
 |--------|-------|
-| Kernel lines of code | ~5,650 |
-| Host test assertions | 4,924+ |
+| Total project lines (excl. Musashi) | ~80,000 |
+| Kernel source (`.c` + `.S`) | 5,025 lines |
+| Kernel headers (`.h`) | 628 lines |
+| **Kernel total** | **5,653 lines** |
+| PAL — workbench | 128 lines |
+| PAL — Mega Drive | 4,553 lines |
+| Libc | 2,857 lines (15 modules) |
+| User programs | 2,393 lines (34 apps) |
+| Emulator (incl. Musashi) | 52,095 lines |
+| Host tools (mkfs, mkbin) | 656 lines |
+| Test code | 5,877 lines |
+| Host test assertions | **4,924** (all passing) |
 | Host test files | 13 |
-| Autotest cases | 31+ |
-| User programs | 34 |
-| Libc modules | 15 |
-| Syscalls implemented | 32 |
+| Guest autotest cases | 31 |
+| Syscalls implemented | 31 (32 defines, SYS_SIGRETURN is internal) |
 | Platforms | 2 (workbench + Mega Drive) |
+| Total commits | 100 |
+| Documentation files | 17 (in `docs/`) |
+| CI pipelines | 2 (`ci.yml`, `toolchain.yml`) |
 
-**Known limitations (by design):**
+---
 
-1. **Single user memory space** — all user programs load at USER_BASE;
-   two processes can't coexist in memory. Pipelines execute sequentially.
-   Fundamental no-MMU limitation.
+## 3. Phase Completion Status
 
-2. **Shell features** — no glob expansion, no environment variable
-   substitution, no background jobs. The built-in shell is adequate
-   for the current single-user, single-terminal use case.
+| Phase | Description | Status |
+|-------|-------------|--------|
+| Phase 1 | Workbench emulator (Musashi SBC) | **Complete** |
+| Phase 2a | Kernel core + binary loading + single-tasking exec | **Complete** |
+| Phase 2b | Multitasking (spawn, waitpid, process table, preemptive scheduler) | **Complete** |
+| Phase 2c | Pipes and I/O redirection | **Complete** |
+| Phase 2d | Signals and job control | **Complete** |
+| Phase 2e | TTY subsystem (line discipline, termios) | **Complete** |
+| Phase 2f | Libc + utilities | **Complete** |
+| Phase 3 | Mega Drive port (PAL drivers from Fuzix) | **Complete** |
+| Phase 4 | Polish (interrupt keyboard, multi-TTY, /dev/null) | **Complete** |
 
-**Possible future work:** Port a real shell (Tier 3), add glob expansion,
-port larger utilities like ed/diff/sort (Tier 4), add kstack canary for
-debug builds. None of these are blockers — the system is usable as-is.
+---
+
+## 4. Kernel Architecture
+
+The kernel is 10 `.c` files, 3 `.S` files, and 3 `.h` headers:
+
+| File | Lines | Responsibility |
+|------|-------|----------------|
+| `proc.c` | 1,315 | Process table, scheduler, vfork, spawn, waitpid, signals |
+| `main.c` | 1,264 | Boot, shell, autotest, syscall dispatch |
+| `fs.c` | 654 | minifs filesystem (inodes, directories, indirect blocks) |
+| `tty.c` | 472 | Line discipline, cooked/raw, echo, termios |
+| `exec.c` | 211 | Binary loader (GENX header), argv setup |
+| `dev.c` | 174 | Device table, open/read/write dispatch |
+| `mem.c` | 102 | First-fit heap allocator |
+| `string.c` | 101 | kstrcmp, kstrncpy, kstrlen, kmemset, kmemcpy |
+| `kprintf.c` | 96 | Kernel printf (%d, %u, %x, %s, %c, %p) |
+| `buf.c` | 69 | Block buffer cache (LRU, dirty writeback) |
+| `crt0.S` | 230 | Boot code, exception vectors, trap handler |
+| `exec_asm.S` | 165 | User mode entry (USP setup, JMP to entry) |
+| `divmod.S` | 172 | Software 32-bit division for 68000 |
+| `kernel.h` | 418 | All kernel declarations, syscall numbers, structs |
+| `tty.h` | 135 | TTY structures, termios definitions |
+| `dev_vdp.h` | 75 | VDP register/VRAM definitions |
+
+### Subsystem Highlights
+
+- **Process table**: 16 slots, 512-byte per-process kernel stacks, preemptive
+  timer-driven scheduling via `swtch()`/`proc_first_run()`
+- **Filesystem**: minifs with 1024-byte blocks, single and double indirect
+  blocks, inode cache, directory operations, configurable buffer cache
+  (NBUFS=16 workbench, NBUFS=8 Mega Drive)
+- **TTY**: Full line discipline (cooked/raw modes, echo, erase, kill, OPOST),
+  termios ioctls, 4 TTY slots, /dev/tty and /dev/console device nodes
+- **Pipes**: 512-byte circular buffer, blocking read/write, SIGPIPE
+- **Signals**: 21 signals, user handlers via signal frames on user stack,
+  sigreturn trampoline, SIGTSTP/SIGCONT, process groups
+
+---
+
+## 5. Platform Support
+
+### Workbench Emulator (development)
+
+- Musashi-based 68000 SBC: 1 MB RAM, UART, timer, disk
+- 2-second edit-compile-run cycle
+- STRICT_ALIGN mode catches unaligned accesses
+- Autotest mode for headless CI
+
+### Mega Drive (primary target)
+
+- 64 KB main RAM, 7.67 MHz 68000, VDP text output
+- Saturn keyboard input (interrupt-driven via VBlank ISR)
+- Optional SRAM with Sega mapper (boot-time validation)
+- ROM disk filesystem baked into cartridge
+- PAL code: 4,553 lines (VDP driver, keyboard, crt0, debug output)
+
+---
+
+## 6. Syscalls (31 implemented)
+
+```
+SYS_EXIT(1)     SYS_READ(3)     SYS_WRITE(4)    SYS_OPEN(5)
+SYS_CLOSE(6)    SYS_WAITPID(7)  SYS_UNLINK(10)  SYS_EXEC(11)
+SYS_CHDIR(12)   SYS_TIME(13)    SYS_LSEEK(19)   SYS_GETPID(20)
+SYS_KILL(37)    SYS_RENAME(38)  SYS_MKDIR(39)    SYS_RMDIR(40)
+SYS_DUP(41)     SYS_PIPE(42)    SYS_TIMES(43)   SYS_BRK(45)
+SYS_SIGNAL(48)  SYS_IOCTL(54)   SYS_FCNTL(55)   SYS_DUP2(63)
+SYS_SBRK(69)    SYS_GETCWD(79)  SYS_STAT(106)   SYS_FSTAT(108)
+SYS_SIGRETURN(119) SYS_GETDENTS(141) SYS_VFORK(190)
+```
+
+Convention: TRAP #0, syscall number in d0, args in d1-d4, return in d0
+(negative = -errno).
+
+---
+
+## 7. User Programs (34)
+
+| Category | Programs |
+|----------|----------|
+| Core | hello, echo, cat, true, false |
+| Text processing | wc, head, tail, tee, rev, nl, cut, tr, uniq, fold, expand, unexpand, grep |
+| File utilities | ls, cmp, strings, od, basename, dirname, comm, paste, tac |
+| System | sleep, env, expr, seq, yes |
+| Graphics | imshow (VDP libgfx) |
+| Editor | levee (vi clone, workbench only) |
+
+All programs are standalone C files built against Genix libc + crt0,
+producing flat binaries with the 32-byte GENX header.
+
+---
+
+## 8. Libc (15 modules, 2,857 lines)
+
+| Module | Key functions |
+|--------|--------------|
+| `stdio.c` | FILE*, fopen, fgets, fprintf, puts, fread, fwrite |
+| `stdlib.c` | malloc/free, atoi, atol, exit, qsort, bsearch, rand, getenv |
+| `string.c` | strstr, strcasecmp, strcspn, strspn, strtok |
+| `sprintf.c` | sprintf, snprintf, sscanf |
+| `strtol.c` | strtol, strtoul |
+| `ctype.c` | isdigit, isalpha, isspace, toupper, tolower |
+| `termios.c` | tcgetattr, tcsetattr, cfmakeraw |
+| `getopt.c` | getopt (POSIX) |
+| `perror.c` | perror, strerror |
+| `dirent.c` | opendir, readdir, closedir |
+| `isatty.c` | isatty |
+| `regex.c` | regcomp, regexec, regfree |
+| `gfx.c` | VDP userspace graphics library |
+| `divmod.S` | __udivsi3, __umodsi3, __divsi3, __modsi3 (68000 software division) |
+| `syscalls.S` | All syscall stubs (TRAP #0 wrappers) |
+
+---
+
+## 9. Testing
+
+### Host Tests (4,924 assertions, 13 files, all passing)
+
+| Test file | Assertions | Coverage |
+|-----------|------------|----------|
+| `test_pipe.c` | 2,170 | Pipe stress: full buffer, wrap, partial reads, EOF/EPIPE |
+| `test_exec.c` | 155 | Header validation, argv layout |
+| `test_signal.c` | 118 | User handlers, signal frames, stop/continue |
+| `test_proc.c` | 94 | Spawn, waitpid, process groups |
+| `test_tty.c` | 78 | Line discipline: cooked, raw, echo, erase, signals |
+| `test_libc.c` | 71 | getopt, sprintf, strtol, qsort, sscanf, regex |
+| `test_string.c` | 60 | String functions |
+| `test_mem.c` | 48 | First-fit allocator, coalescing, fragmentation |
+| `test_redir.c` | 52 | Pipes, dup/dup2, refcounting |
+| `test_buf.c` | 36 | LRU eviction, dirty writeback, cache pressure |
+| `test_fs.c` | 34 | Inode alloc, directories, indirect blocks, deallocation |
+| `test_vdp.c` | 1,984 | VDP validation |
+| `test_kprintf.c` | 24 | Format specifiers, edge cases |
+
+### Guest Autotest (31 cases)
+
+Runs on both workbench emulator and BlastEm (Mega Drive). Tests exec,
+argument passing, exit codes, file I/O, pipes, and signal handling via
+predetermined kernel commands.
+
+### CI Pipeline
+
+Two GitHub Actions workflows:
+
+1. **`ci.yml`**: host-tests → cross-build (kernel + megadrive + workbench) → emu-tests
+2. **`toolchain.yml`**: Rebuilds m68k-elf cross-compiler when `scripts/build-toolchain.sh` changes
+
+### Testing Ladder
+
+```
+make test          →  Host unit tests (no cross-compiler)
+make kernel        →  Cross-compilation check
+make test-emu      →  Workbench autotest (STRICT_ALIGN + AUTOTEST)
+make megadrive     →  Mega Drive ROM build
+make test-md       →  Headless BlastEm boot (~5s)
+make test-md-auto  →  BlastEm autotest (PRIMARY QUALITY GATE)
+make test-all      →  Full ladder in sequence
+```
+
+---
+
+## 10. Divergences From Original Plan
+
+### Binary Format (Medium impact)
+
+**Plan:** PIC ELF or bFLT with relocation.
+**Reality:** Fixed-address flat binary (GENX header, 32 bytes).
+
+Only one user process can be in memory at a time. Pipelines execute
+sequentially. This is the single biggest architectural limitation, but is
+acceptable for the single-user, no-MMU target.
+
+### C Library (Beneficial divergence)
+
+**Plan:** newlib.
+**Reality:** Custom minimal libc (2,857 lines).
+
+newlib is 50-100 KB — far too large for 64 KB RAM. The custom libc is the
+correct choice and is proven (levee vi clone works).
+
+### Process Creation (Resolved)
+
+Both vfork() (setjmp/longjmp) and spawn() coexist. vfork was added after
+per-process kernel stacks were implemented. No negative impact.
+
+---
+
+## 11. What Genix Does Better Than FUZIX
+
+1. **Readability**: ~5,650 lines vs. FUZIX's ~15,000+ (readable in one sitting)
+2. **Host test suite**: 4,924 assertions vs. FUZIX's zero host tests
+3. **Workbench emulator**: 2-second edit-compile-run cycles
+4. **STRICT_ALIGN mode**: Catches unaligned accesses before hardware
+5. **Clean PAL separation**: Two directories vs. scattered `#ifdef`s
+6. **Automated testing ladder**: Six steps with `make test-all`
+7. **Safe division**: Custom `divmod.S` prevents 68020 illegal instructions
+
+---
+
+## 12. Known Limitations (by design)
+
+1. **Single user memory space** — all programs load at USER_BASE; no
+   concurrent user processes in memory
+2. **Sequential pipelines** — producer runs to completion, then consumer
+   runs (no-MMU fundamental limitation)
+3. **No glob expansion** — shell doesn't support `*.c` patterns
+4. **No environment variable substitution** in shell
+5. **No background jobs** — single-terminal, single-user design
+6. **64 KB RAM constraint** — 35 KB kernel + 28 KB user space on Mega Drive
+
+---
+
+## 13. Remaining Testing Gaps
+
+1. **No context switch tests** — `swtch()`/`proc_first_run()` assembly
+   tested only via autotest, not host tests
+2. **No multi-process interaction autotest** — no test for concurrent
+   processes exercising scheduling, signals during I/O
+3. **No kstack overflow detection** — 512-byte kstacks have no canary;
+   silent corruption possible on deep syscall paths
+
+---
+
+## 14. Possible Future Work
+
+| Item | Effort | Value | Priority |
+|------|--------|-------|----------|
+| kstack canary (debug builds) | Trivial | Catches silent corruption | Medium |
+| Glob expansion in shell | Medium | Enables `*.c` patterns | Low |
+| SRAM persistent filesystem | Medium | Writable persistent storage | Low |
+| Real shell (sh) with job control | Medium | Tier 3 utility | Low |
+| Larger utilities (ed, diff, sort) | High | May not fit on Mega Drive | Low |
+| Binary relocation support | High | Concurrent user processes | Low |
+
+None of these are blockers. The system is usable as-is for its design goals.
+
+---
+
+## 15. File Inventory
+
+### Kernel (16 files, 5,653 lines)
+
+```
+kernel/proc.c       1,315    kernel/tty.h          135
+kernel/main.c       1,264    kernel/mem.c          102
+kernel/fs.c           654    kernel/string.c       101
+kernel/tty.c          472    kernel/kprintf.c       96
+kernel/kernel.h       418    kernel/dev_vdp.h       75
+kernel/crt0.S         230    kernel/buf.c           69
+kernel/exec.c         211
+kernel/divmod.S       172
+kernel/dev.c          174
+kernel/exec_asm.S     165
+```
+
+### Documentation (17 files)
+
+```
+docs/architecture.md       docs/megadrive.md
+docs/automated-testing.md  docs/multitasking.md
+docs/binary-format.md      docs/status-review.md
+docs/decisions.md          docs/syscalls.md
+docs/emulator.md           docs/toolchain.md
+docs/filesystem.md         docs/tty.md
+docs/fuzix-heritage.md     docs/graphics.md
+docs/kernel.md             docs/README.md
+docs/68000-programming.md
+```
