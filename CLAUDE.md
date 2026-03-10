@@ -472,8 +472,9 @@ process groups, TTY line discipline with cooked/raw modes + echo + line editing
 + signal generation + OPOST, termios ioctls (TCGETS/TCSETS/TIOCGWINSZ),
 /dev/tty and /dev/console device nodes, full libc (stdio/stdlib/string/ctype/termios/getopt/sprintf/strtol/
 perror/regex with 16 modules), VDP device driver with libgfx userspace
-library, levee (vi clone) on workbench, 2675+ host tests (including 78
-TTY tests, 71 libc tests), automated guest tests (31 cases) on both
+library, levee (vi clone) on workbench, 4924+ host tests across 13 test
+files (including 78 TTY tests, 71 libc tests, 36 buffer cache tests,
+24 kprintf tests, 2170 pipe stress tests), automated guest tests (31 cases) on both
 platforms, interrupt-driven Saturn keyboard on Mega Drive, SRAM with
 standard Sega mapper and boot-time validation, configurable buffer cache
 (NBUFS=16 workbench, NBUFS=8 Mega Drive), multi-TTY infrastructure

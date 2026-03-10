@@ -6,9 +6,66 @@ on:
   pull_request:
 
 jobs:
-  test:
+  # Step 1: Host unit tests (no cross-compiler needed)
+  host-tests:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Run unit tests
+      - name: Run host unit tests
         run: make test
+
+  # Steps 2-4: Cross-compilation + Mega Drive build
+  cross-build:
+    runs-on: ubuntu-latest
+    needs: host-tests
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch m68k-elf toolchain
+        run: ./scripts/fetch-toolchain.sh
+
+      - name: Build kernel (workbench)
+        run: |
+          export PATH=~/buildtools-m68k-elf/bin:$PATH
+          export CROSS=m68k-elf-
+          make kernel
+
+      - name: Build Mega Drive ROM
+        run: |
+          export PATH=~/buildtools-m68k-elf/bin:$PATH
+          export CROSS=m68k-elf-
+          make megadrive
+
+      - name: Build workbench emulator + disk
+        run: |
+          export PATH=~/buildtools-m68k-elf/bin:$PATH
+          export CROSS=m68k-elf-
+          make emu disk
+
+  # Steps 5-6: Emulator tests (workbench autotest + BlastEm)
+  emu-tests:
+    runs-on: ubuntu-latest
+    needs: cross-build
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch toolchain + BlastEm
+        run: ./scripts/fetch-toolchain.sh
+
+      - name: Workbench autotest (STRICT_ALIGN + AUTOTEST)
+        run: |
+          export PATH=~/buildtools-m68k-elf/bin:$PATH
+          export CROSS=m68k-elf-
+          make test-emu
+
+      - name: BlastEm headless boot test
+        run: |
+          export PATH=~/buildtools-m68k-elf/bin:~/blastem:$PATH
+          export CROSS=m68k-elf-
+          make test-md
+
+      - name: BlastEm AUTOTEST (primary quality gate)
+        run: |
+          export PATH=~/buildtools-m68k-elf/bin:~/blastem:$PATH
+          export CROSS=m68k-elf-
+          make test-md-auto

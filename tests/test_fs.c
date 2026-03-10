@@ -862,6 +862,121 @@ static void test_iget_all_slots_used(void)
     }
 }
 
+/* ---- data block deallocation on inode free ---- */
+
+static void test_iput_frees_direct_blocks(void)
+{
+    build_test_fs();
+    fs_init();
+
+    /* Allocate 3 blocks */
+    uint16_t b1 = balloc();
+    uint16_t b2 = balloc();
+    uint16_t b3 = balloc();
+    ASSERT(b1 != 0);
+    ASSERT(b2 != 0);
+    ASSERT(b3 != 0);
+
+    /* Create a file inode with those blocks */
+    uint16_t inum = ialloc(FT_FILE);
+    struct inode *ip = fs_iget(inum);
+    ASSERT_NOT_NULL(ip);
+    ip->direct[0] = b1;
+    ip->direct[1] = b2;
+    ip->direct[2] = b3;
+    ip->size = 3 * BLOCK_SIZE;
+    ip->nlink = 1;
+    ip->dirty = 1;
+    fs_iupdate(ip);
+
+    /* Drop nlink to 0, then release — should free blocks */
+    ip->nlink = 0;
+    ip->dirty = 1;
+    fs_iput(ip);
+
+    /* The blocks should be back on the free list — allocate and check */
+    uint16_t r1 = balloc();
+    uint16_t r2 = balloc();
+    uint16_t r3 = balloc();
+    /* bfree prepends to free list, so we get them back in reverse */
+    ASSERT_EQ(r1, b3);
+    ASSERT_EQ(r2, b2);
+    ASSERT_EQ(r3, b1);
+}
+
+static void test_iput_frees_indirect_blocks(void)
+{
+    build_test_fs();
+    fs_init();
+
+    /* free_list starts at block 3 after build_test_fs */
+
+    /* Allocate: 1 indirect block + 2 data blocks = 3 blocks consumed */
+    uint16_t ib = balloc();  /* 3 */
+    uint16_t d1 = balloc();  /* 4 */
+    uint16_t d2 = balloc();  /* 5 */
+    ASSERT_EQ(ib, 3);
+    ASSERT_EQ(d1, 4);
+    ASSERT_EQ(d2, 5);
+
+    /* After alloc, free_list should be at 6 */
+    uint16_t free_head_after_alloc = sb.free_list;
+    ASSERT_EQ(free_head_after_alloc, 6);
+
+    /* Set up the indirect block to point to d1, d2 */
+    memset(mock_disk[ib], 0, BLOCK_SIZE);
+    uint16_t *ptrs = (uint16_t *)mock_disk[ib];
+    ptrs[0] = d1;
+    ptrs[1] = d2;
+
+    /* Create a file inode that uses indirect block */
+    uint16_t inum = ialloc(FT_FILE);
+    struct inode *ip = fs_iget(inum);
+    ASSERT_NOT_NULL(ip);
+    ip->indirect = ib;
+    ip->size = 14 * BLOCK_SIZE;  /* 12 direct (empty) + 2 indirect */
+    ip->nlink = 0;
+    ip->dirty = 1;
+
+    /* Release with nlink=0 → should free indirect + data blocks */
+    fs_iput(ip);
+
+    /* After freeing, free_list head should NOT still be 6 — blocks returned */
+    ASSERT(sb.free_list != free_head_after_alloc);
+
+    /* We should be able to allocate at least 3 blocks from the freed ones */
+    uint16_t g1 = balloc();
+    uint16_t g2 = balloc();
+    uint16_t g3 = balloc();
+    ASSERT(g1 != 0);
+    ASSERT(g2 != 0);
+    ASSERT(g3 != 0);
+}
+
+static void test_iput_nlink_nonzero_keeps_blocks(void)
+{
+    build_test_fs();
+    fs_init();
+
+    uint16_t b = balloc();
+    uint16_t inum = ialloc(FT_FILE);
+    struct inode *ip = fs_iget(inum);
+    ip->direct[0] = b;
+    ip->size = BLOCK_SIZE;
+    ip->nlink = 1;  /* still linked — blocks should NOT be freed */
+    ip->dirty = 1;
+    fs_iupdate(ip);
+
+    fs_iput(ip);
+
+    /* Re-read inode — block should still be there */
+    ip = fs_iget(inum);
+    ASSERT_NOT_NULL(ip);
+    ASSERT_EQ(ip->direct[0], b);
+    ASSERT_EQ(ip->type, FT_FILE);
+    fs_iput(ip);
+}
+
 /* ---- Run all tests ---- */
 
 int main(void)
@@ -941,6 +1056,11 @@ int main(void)
     /* refcount */
     RUN_TEST(test_refcount_lifecycle);
     RUN_TEST(test_iget_all_slots_used);
+
+    /* data block deallocation */
+    RUN_TEST(test_iput_frees_direct_blocks);
+    RUN_TEST(test_iput_frees_indirect_blocks);
+    RUN_TEST(test_iput_nlink_nonzero_keeps_blocks);
 
     TEST_REPORT();
 }
