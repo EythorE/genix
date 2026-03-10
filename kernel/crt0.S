@@ -108,15 +108,20 @@ _vec_trap1:
 /* Timer interrupt (Level 6)
  *
  * If we interrupted user mode (S=0 in saved SR), this is a preemption
- * point: save full user state, call schedule, and possibly switch to
- * a different process by swapping kernel stacks.
+ * point: save full user state, call schedule (which may swtch to
+ * a different process), then restore user state and RTE.
  *
  * If we interrupted supervisor mode (S=1), don't preempt — the kernel
  * might be in the middle of a syscall with state on the kstack. Just
  * advance the timer and return.
  *
  * 68000 exception frame on stack: SP+0 = SR (16-bit), SP+2 = PC (32-bit).
- * SR bit 13 = S (supervisor bit). In the byte at SP+0, S is bit 5. */
+ * SR bit 13 = S (supervisor bit). In the byte at SP+0, S is bit 5.
+ *
+ * Context switch flow: schedule() calls swtch() which saves/loads SP
+ * and callee-saved registers. When this process is scheduled again,
+ * swtch returns → schedule returns → we pop user state → RTE.
+ * New processes land at proc_first_run (same user state restore). */
     .globl _vec_timer_irq
 _vec_timer_irq:
     btst    #5, (%sp)           /* test S bit in saved SR */
@@ -128,18 +133,10 @@ _vec_timer_irq:
     move.l  %a0, -(%sp)
 
     jsr     timer_interrupt
+    jsr     schedule            /* may swtch to different process */
 
-    /* Save current ksp to curproc->ksp (offset 4 in struct proc) */
-    move.l  curproc, %a0
-    move.l  %sp, 4(%a0)
-
-    jsr     schedule
-
-    /* Load (possibly new) curproc->ksp */
-    move.l  curproc, %a0
-    move.l  4(%a0), %sp
-
-    /* Restore user state */
+    /* Restore user state (same kstack if no switch, or after being
+     * resumed later if we were switched out) */
     move.l  (%sp)+, %a0
     move    %a0, %usp
     movem.l (%sp)+, %d0-%d7/%a0-%a6

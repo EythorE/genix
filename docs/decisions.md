@@ -814,3 +814,122 @@ Any mismatch causes `exec_validate_header` to reject the binary with
 | `pal/megadrive/platform.c` | USER_BASE bumped to 0xFF9000 |
 | `apps/user-md.ld` | Link address bumped to 0xFF9000 |
 | `apps/Makefile` | Added `-n` linker flag to disable page alignment |
+
+---
+
+## Decision: Kernel Context Switch via swtch() + Async Spawn
+
+**Date:** 2026-03-10
+**Status:** Done, all tests pass
+
+### Problem
+
+The original `do_spawn()` was synchronous: it called `do_exec()` which
+called `exec_enter()`, blocking the parent until the child exited. This
+meant no true concurrent execution — the scheduler infrastructure
+(preemptive timer ISR, per-process kstacks) existed but was never
+actually switching between processes.
+
+For blocking pipes, waitpid, and eventually signals, we need the parent
+and child to run concurrently. The parent needs to sleep while waiting,
+and the child needs to be independently schedulable.
+
+### Design: Two-Level Context Switching
+
+1. **`swtch(old_ksp, new_ksp)`** — Assembly function that saves
+   callee-saved registers (d2-d7, a2-a6) on the current stack, saves
+   SP to `*old_ksp`, loads `new_ksp` as SP, restores callee-saved
+   registers, and RTS. This is the core kernel context switch — used
+   by both preemptive (timer ISR) and voluntary (sleep/waitpid) paths.
+
+2. **`proc_first_run`** — Trampoline for a brand-new process. When
+   `swtch()` resumes a process for the first time, RTS lands here.
+   It pops the user-mode state frame (USP, d0-d7/a0-a6, SR, PC)
+   and does RTE to enter user mode.
+
+3. **`proc_setup_kstack(proc, entry, user_sp)`** — Builds the initial
+   kstack frame for a new process:
+   ```
+   [swtch frame]    d2-d7/a2-a6 (zero), retaddr → proc_first_run
+   [user state]     USP, d0-d7/a0-a6 (zero)
+   [exception]      SR=0x0000 (user mode), PC=entry
+   ```
+   Total: 118 bytes. With 512-byte kstacks, 394 bytes remain for
+   syscall call chains.
+
+### How It Works
+
+**Timer ISR (preemptive):**
+ISR saves user state on kstack → calls `schedule()` → schedule calls
+`swtch()` → saves callee-saved + SP → loads new SP → restores
+callee-saved → RTS to schedule → schedule returns to ISR → ISR
+restores user state → RTE to user mode.
+
+**Voluntary yield (sleep/waitpid):**
+Kernel code sets state to P_SLEEPING → calls `schedule()` → schedule
+calls `swtch()` → saves kernel state → loads new process → new process
+runs. When the sleeping process is woken and scheduled again, swtch
+returns → schedule returns → kernel code continues where it left off.
+
+**New process first run:**
+swtch loads the crafted kstack → RTS to `proc_first_run` → pops user
+state → RTE to user mode at entry point.
+
+### Async do_spawn
+
+`do_spawn()` is now non-blocking:
+1. Allocates process slot, copies parent FDs
+2. Calls `load_binary()` to load code into USER_BASE
+3. Calls `proc_setup_kstack()` to build initial kstack
+4. Marks child `P_READY` and returns child PID
+
+The parent continues immediately. The child runs when the scheduler
+picks it up (either via timer preemption or when parent calls
+`do_waitpid` which sleeps).
+
+### Blocking waitpid
+
+`do_waitpid()` now sleeps when the child hasn't exited:
+- Scans for zombie child → if found, reap and return
+- If child exists but isn't zombie → set P_SLEEPING, schedule()
+- `do_exit()` wakes parent by setting P_SLEEPING → P_READY
+
+### Blocking Pipes
+
+Pipe read/write now block when empty/full:
+- `pipe_read`: if pipe empty and writers exist, sleep until data arrives
+- `pipe_write`: if pipe full and readers exist, sleep until space freed
+- Each side wakes the other after transferring data
+- POSIX partial read/write semantics: return once any data transferred
+
+### Pain Points
+
+1. **Blocking pipe + single-threaded test**: The autotest pipe test
+   writes 5 bytes then reads 8. With blocking pipes, the reader would
+   block forever waiting for 3 more bytes from itself. Fixed by using
+   POSIX partial-read semantics: return immediately once any data is
+   available, don't try to fill the entire buffer.
+
+2. **Single user memory space**: All user programs load at USER_BASE.
+   Two user processes can't coexist in memory. For now, the shell
+   (process 0) runs in supervisor mode and doesn't use user memory,
+   so shell + one child work. For `prog1 | prog2`, we'd need memory
+   partitioning or swapping.
+
+3. **kstack layout must match ISR exactly**: The byte offsets in
+   `proc_setup_kstack` must match what `proc_first_run` expects.
+   The 68000 exception frame is 6 bytes (2-byte SR + 4-byte PC),
+   creating a misalignment with the 4-byte register slots. Used
+   byte-level pointer math to build the frame correctly.
+
+### What Changed
+
+| File | Change |
+|------|--------|
+| `kernel/exec_asm.S` | Added `swtch()` and `proc_first_run` |
+| `kernel/exec.c` | Extracted `load_binary()` from `do_exec()` |
+| `kernel/proc.c` | Async `do_spawn`, `proc_setup_kstack`, blocking waitpid/pipes |
+| `kernel/kernel.h` | Added `swtch`, `proc_first_run`, `load_binary`, pipe wait fields |
+| `kernel/crt0.S` | Timer ISR delegates to `schedule()`+`swtch()` (no manual ksp save) |
+| `pal/megadrive/crt0.S` | Same VBlank ISR change |
+| `tests/test_proc.c` | Added kstack layout tests, updated pipe struct |

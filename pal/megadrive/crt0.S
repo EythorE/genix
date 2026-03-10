@@ -158,7 +158,9 @@ _vec_hblank:
  *
  * If we interrupted user mode (S=0), save full state for possible
  * context switch. If supervisor mode (S=1), minimal save only.
- * See kernel/crt0.S for detailed comments on the preemption design. */
+ * See kernel/crt0.S for detailed comments on the preemption design.
+ *
+ * Context switching is done via swtch() inside schedule(). */
     .globl _vec_vblank
 _vec_vblank:
     btst    #5, (%sp)           /* test S bit in saved SR */
@@ -171,13 +173,7 @@ _vec_vblank:
 
     jsr     md_vblank_handler
     jsr     timer_interrupt
-
-    /* Save ksp, schedule, load (possibly new) ksp */
-    move.l  curproc, %a0
-    move.l  %sp, 4(%a0)
-    jsr     schedule
-    move.l  curproc, %a0
-    move.l  4(%a0), %sp
+    jsr     schedule            /* may swtch to different process */
 
     move.l  (%sp)+, %a0
     move    %a0, %usp

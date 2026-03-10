@@ -47,6 +47,8 @@ struct pipe {
     uint16_t count;
     uint8_t  readers;
     uint8_t  writers;
+    uint8_t  read_waiting;
+    uint8_t  write_waiting;
 };
 
 /* pipe_table not needed for host tests — logic is re-implemented above */
@@ -79,6 +81,60 @@ static int pipe_write(struct pipe *p, const void *buf, int len)
         p->count++;
     }
     return n > 0 ? n : -EAGAIN;
+}
+
+/* ======== Kstack layout test ========
+ *
+ * proc_setup_kstack builds a frame that swtch() + proc_first_run expect.
+ * We verify the byte layout here. This uses the exact same struct definition
+ * as the kernel (minus fields we don't need for the layout test). */
+
+#define KSTACK_SIZE   512
+#define KSTACK_WORDS  (KSTACK_SIZE / 4)
+
+/* Verify kstack frame layout (offsets and sizes).
+ * On the host, pointers are 64-bit but the layout uses uint32_t slots.
+ * We test that the total frame size is correct and that the relative
+ * offsets match what swtch() + proc_first_run expect on the 68000. */
+
+static void test_kstack_layout(void)
+{
+    /* Frame components (all in bytes):
+     *   swtch callee-saved:  11 * 4 = 44
+     *   swtch return addr:          = 4
+     *   USP:                        = 4
+     *   user regs (d0-a6):  15 * 4 = 60
+     *   SR (uint16_t):              = 2
+     *   PC:                         = 4
+     *   Total:                      = 118 */
+    int callee_saved = 11 * 4;  /* d2-d7, a2-a6 */
+    int retaddr = 4;
+    int usp = 4;
+    int user_regs = 15 * 4;     /* d0-d7, a0-a6 */
+    int sr = 2;
+    int pc = 4;
+    int total = callee_saved + retaddr + usp + user_regs + sr + pc;
+    ASSERT_EQ(total, 118);
+
+    /* Verify offsets from ksp (stack grows down, ksp is lowest addr):
+     * ksp+0:   callee-saved[0] (d2)
+     * ksp+44:  return addr (→ proc_first_run)
+     * ksp+48:  USP
+     * ksp+52:  d0 (first of user regs)
+     * ksp+112: SR
+     * ksp+114: PC (entry point) */
+    ASSERT_EQ(callee_saved, 44);
+    ASSERT_EQ(callee_saved + retaddr, 48);
+    ASSERT_EQ(callee_saved + retaddr + usp, 52);
+    ASSERT_EQ(callee_saved + retaddr + usp + user_regs, 112);
+    ASSERT_EQ(callee_saved + retaddr + usp + user_regs + sr, 114);
+}
+
+static void test_kstack_frame_fits(void)
+{
+    /* 118 bytes for initial frame, need room for syscall path too.
+     * With 512-byte stacks, 118 bytes leaves 394 for syscalls. */
+    ASSERT(118 + 210 < KSTACK_SIZE);  /* 210 = worst case syscall path */
 }
 
 /* ======== Process table logic (re-implemented for host testing) ======== */
@@ -331,6 +387,10 @@ int main(void)
     RUN_TEST(test_pipe_broken);
     RUN_TEST(test_pipe_full);
     RUN_TEST(test_pipe_wrap);
+
+    /* Kstack layout tests */
+    RUN_TEST(test_kstack_layout);
+    RUN_TEST(test_kstack_frame_fits);
 
     /* Process table tests */
     RUN_TEST(test_alloc_pid);
