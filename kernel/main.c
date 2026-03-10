@@ -2,6 +2,7 @@
  * Genix kernel main
  */
 #include "kernel.h"
+#include "tty.h"
 
 /* Forward declarations */
 void builtin_shell(void);
@@ -299,7 +300,65 @@ static void autotest(void)
         }
     }
 
-    /* Test 13: signal/kill — send SIGTERM to a zombie-able process */
+    /* Test 13: TTY ioctl — TIOCGWINSZ returns window size */
+    kputs("[test] TTY TIOCGWINSZ: ");
+    {
+        struct winsize ws;
+        int32_t r = tty_ioctl(0, TIOCGWINSZ, &ws);
+        if (r == 0 && ws.ws_row == 28 && ws.ws_col == 40) {
+            kputs("PASS\n");
+            pass++;
+        } else {
+            kprintf("FAIL (r=%d row=%d col=%d)\n", r, ws.ws_row, ws.ws_col);
+            fail++;
+        }
+    }
+
+    /* Test 14: TTY ioctl — TCGETS returns termios */
+    kputs("[test] TTY TCGETS: ");
+    {
+        struct kernel_termios t;
+        int32_t r = tty_ioctl(0, TCGETS, &t);
+        if (r == 0 && (t.c_lflag & ICANON) && (t.c_lflag & ECHO)) {
+            kputs("PASS\n");
+            pass++;
+        } else {
+            kprintf("FAIL (r=%d lflag=0x%x)\n", r, t.c_lflag);
+            fail++;
+        }
+    }
+
+    /* Test 15: /dev/tty exists as a device node */
+    kputs("[test] /dev/tty: ");
+    {
+        struct inode *ip = fs_namei("/dev/tty");
+        if (ip && ip->type == FT_DEV && ip->dev_major == DEV_CONSOLE) {
+            kputs("PASS\n");
+            pass++;
+            fs_iput(ip);
+        } else {
+            kputs("FAIL\n");
+            fail++;
+            if (ip) fs_iput(ip);
+        }
+    }
+
+    /* Test 16: /dev/console exists as a device node */
+    kputs("[test] /dev/console: ");
+    {
+        struct inode *ip = fs_namei("/dev/console");
+        if (ip && ip->type == FT_DEV && ip->dev_major == DEV_CONSOLE) {
+            kputs("PASS\n");
+            pass++;
+            fs_iput(ip);
+        } else {
+            kputs("FAIL\n");
+            fail++;
+            if (ip) fs_iput(ip);
+        }
+    }
+
+    /* Test 17: signal/kill — send SIGTERM to a zombie-able process */
     kputs("[test] signal/kill: ");
     {
         /* Kill with sig=0 to current process — should succeed (exists) */
@@ -856,30 +915,16 @@ void builtin_shell(void)
 
     for (;;) {
         kputs("genix> ");
-        pos = 0;
-        for (;;) {
-            int c = kgetc();
-            if (c == '\r' || c == '\n') {
-                kputc('\n');
-                break;
-            }
-            if (c == 0x7f || c == '\b') {
-                if (pos > 0) {
-                    pos--;
-                    kputs("\b \b");
-                }
-                continue;
-            }
-            if (c == 3) {  /* Ctrl-C */
-                kputc('\n');
-                pos = 0;
-                break;
-            }
-            if (pos < 255) {
-                line[pos++] = c;
-                kputc(c);
-            }
+        /* Read a line through the TTY layer (cooked mode handles
+         * echo, erase, kill, signals, and CR→NL mapping) */
+        pos = devtab[DEV_CONSOLE].read(0, line, 255);
+        if (pos < 0) {
+            /* EINTR from signal — just restart */
+            continue;
         }
+        /* Strip trailing newline if present */
+        if (pos > 0 && line[pos - 1] == '\n')
+            pos--;
         line[pos] = '\0';
 
         if (pos == 0)
