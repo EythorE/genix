@@ -386,7 +386,54 @@ cycles). This matters in hot paths.
 - **Annotate every `/` and `%`** with the divisor's properties so
   future developers know the performance cost.
 
-### 10. Constrained system programming
+### 10. 68000 performance: use assembly where it matters
+
+The 68000 has no barrel shifter, no 32-bit divide, and MOVE.B is
+nearly as expensive as MOVE.L. Naive C loops that look fine on a
+modern CPU can be 4-20x slower than idiomatic 68000 assembly. **Use
+assembly for performance-critical primitives.** See
+`OPTIMIZATION_PLAN.md` for the full audit with FUZIX source references.
+
+**Rules:**
+
+- **memcpy/memset**: Must use MOVE.L for medium sizes, MOVEM.L for
+  large sizes. A byte-at-a-time C loop costs 32 cycles per 4 bytes;
+  a single MOVE.L costs 12 cycles for the same 4 bytes. MOVEM.L with
+  11 registers moves 44 bytes per instruction pair. Never use a naive
+  `while (n--) *d++ = *s++` loop for anything performance-sensitive.
+- **Block copies (512 bytes)**: Use dedicated `copy_block_512` /
+  `copy_blocks` routines with fully unrolled MOVEM.L (see FUZIX's
+  `lowlevel-68000.S:872-907`). This is the pattern for all filesystem
+  block I/O, exec loading, and large buffer operations.
+- **Division**: The DIVU.W fast path (check if divisor < 0x10000) is
+  mandatory — it's 2-5x faster than software division for the common
+  case. See `kernel/divmod.S` and section 9 above.
+- **DBRA for counted loops**: The 68000's DBRA instruction combines
+  decrement-and-branch in a single 2-byte instruction. Use it for
+  all counted loops in assembly instead of separate sub/bne.
+- **Post-increment addressing**: `(a0)+` auto-increments after access,
+  eliminating a separate `addq` instruction. Use it in all copy loops.
+- **setjmp/longjmp**: Must use MOVEM.L for bulk register save/restore
+  (12 registers = 48 bytes in one instruction). See FUZIX's
+  `Library/libs/setjmp_68000.S` for the reference implementation.
+
+**When porting code from FUZIX or other sources:**
+
+- **Always check for a 68000 assembly version first.** FUZIX often has
+  both a generic C implementation and a `_68000.S` variant (e.g.,
+  `setjmp.c` vs `setjmp_68000.S`). Always use the assembly version.
+- **Even between two C implementations, one may be vastly superior.**
+  Example: FUZIX's `__umodsi3` calls `__udivsi3` then computes
+  `remainder = dividend - quotient * divisor` (3 instructions +
+  function call). Genix's old version duplicated the entire 30-line
+  shift-and-subtract algorithm. Same result, wildly different cost.
+  When porting C code, study the algorithm — don't just copy the first
+  version you find.
+- **Check `OPTIMIZATION_PLAN.md`** before writing any new memory copy,
+  block I/O, or arithmetic routine. It documents every optimization
+  gap found between FUZIX and Genix with full source references.
+
+### 11. Constrained system programming
 
 The Mega Drive has 64 KB main RAM, a 7.67 MHz CPU, and no MMU. Every
 byte and cycle matters. Follow these rules:
@@ -409,7 +456,7 @@ byte and cycle matters. Follow these rules:
   The emulator catches ABI and alignment bugs. Real hardware catches
   timing bugs.
 
-### 11. Toolchain warnings
+### 12. Toolchain warnings
 
 - The distro `m68k-linux-gnu-gcc` defaults to 68020 and will silently
   emit illegal instructions (BSR.L, EXTB.L, MULS.L). Prefer a
@@ -441,6 +488,7 @@ Detailed technical documentation is in `docs/`:
 | `docs/automated-testing.md` | Testing ladder, AUTOTEST kernel, discrepancy procedures |
 | `docs/68000-programming.md` | ISA constraints, division, ABI |
 | `docs/fuzix-heritage.md` | What we took from Fuzix, what's different |
+| `OPTIMIZATION_PLAN.md` | 68000 performance gaps vs FUZIX, with full source references |
 
 ## Project Status
 
