@@ -14,10 +14,13 @@ as a future prospect, and a recommended approach.
 2. [Why Relocatable Binaries Matter](#why-relocatable-binaries-matter)
 3. [Current Genix Binary Format](#current-genix-binary-format)
 4. [FUZIX Relocation Reference](#fuzix-relocation-reference)
-5. [Relocation Strategy Options](#relocation-strategy-options)
-6. [EverDrive Pro Bank-Swapping](#everdrive-pro-bank-swapping)
-7. [Recommended Approach](#recommended-approach)
-8. [Implementation Roadmap](#implementation-roadmap)
+5. [Background: PIC, GOT, and XIP](#background-pic-got-and-xip)
+6. [bFLT: What It Does and What's Worth Stealing](#bflt-what-it-does-and-whats-worth-stealing)
+7. [ROM Execute-in-Place Strategies](#rom-execute-in-place-strategies)
+8. [Relocation Strategy Options](#relocation-strategy-options)
+9. [EverDrive Pro Bank-Swapping](#everdrive-pro-bank-swapping)
+10. [Recommended Approach](#recommended-approach)
+11. [Implementation Roadmap](#implementation-roadmap)
 
 ---
 
@@ -40,6 +43,16 @@ on both platforms from the same file.
 The cost is modest: ~100 lines of kernel code for the relocation
 engine, a small extension to the existing binary header, and a
 toolchain change to emit relocation tables.
+
+A fourth benefit — **ROM Execute-in-Place (XIP)** — is potentially
+transformative for the Mega Drive. Currently exec() copies the entire
+binary from ROM to RAM, consuming precious user memory (~27.5 KB) with
+code that could execute directly from ROM. With XIP, only the data
+segment goes to RAM. A typical program with 4 KB text and 2 KB data
+would use 2 KB RAM instead of 6 KB. This document analyzes three
+XIP strategies: build-time address resolution (zero runtime cost),
+kernel-linked app overlays (simplest implementation), and bFLT-style
+GOT/PIC (most flexible but expensive on the 68000).
 
 A future prospect is **EverDrive Pro bank-swapping**, which could
 provide up to 512 KB of bankable SRAM. This influences the relocation
@@ -234,6 +247,399 @@ does this.
 
 ---
 
+## Background: PIC, GOT, and XIP
+
+These concepts come from the no-MMU embedded world. Understanding them
+is essential for evaluating the relocation and ROM execution options below.
+
+### PIC (Position-Independent Code)
+
+PIC is code that works correctly regardless of where it's loaded in memory.
+Instead of using absolute addresses, it uses relative references:
+
+- **Code-to-code**: PC-relative branches (`BSR`, `BRA`). The 68000 has
+  these natively — `BSR label` encodes the displacement from the current
+  PC, so it works at any address. GCC already uses BSR for local function
+  calls.
+
+- **Code-to-data**: This is the hard part. A `move.l #global_var, a0`
+  instruction encodes an absolute address. PIC replaces this with an
+  indirect access through a **Global Offset Table (GOT)** — a table of
+  pointers in the data segment. Code loads the GOT base into a register
+  and accesses globals through it:
+
+  ```
+  ; Without PIC (absolute):
+  move.l  #my_global, a0        ; absolute address baked into instruction
+
+  ; With PIC (GOT-relative):
+  move.l  (GOT_OFFSET,a5), a0   ; load address from GOT via base register
+  ```
+
+  On architectures with PC-relative data loads (x86-64, AArch64), PIC is
+  nearly free. The 68000 has **no PC-relative data load** — it can only do
+  PC-relative branches (BSR/BRA/Bcc) and PC-relative addressing for LEA
+  (but with a 16-bit signed displacement limit). So on the 68000, PIC
+  requires dedicating an address register (typically a5) as the GOT base
+  and adding an extra indirection on every global access.
+
+**Cost on the 68000:**
+- One address register permanently occupied (a5 → GOT base)
+- Every global access: `move.l (offset,a5),aN` + `move.l (aN),...`
+  instead of `move.l #addr,...` — ~4 extra cycles per access
+- Code size increase: 15-30% (GOT entries + indirect loads)
+- GCC's m68k PIC support is designed for 68020+ (which has 32-bit
+  displacements); 68000 is limited to 16-bit displacements, so GOT
+  must be within ±32 KB of the base register
+
+### GOT (Global Offset Table)
+
+The GOT is a table of absolute addresses, one per global variable or
+function that needs its address taken. It lives in the **data segment**
+(RAM), so it can be patched at load time. Code accesses globals
+indirectly through the GOT:
+
+```
+GOT (in .data, RAM):
+  [0]  &printf      = 0x000428    ← actual ROM address
+  [4]  &my_global   = 0xFF9010    ← actual RAM address
+  [8]  &stderr      = 0xFF9020    ← actual RAM address
+  ...
+
+Code (in .text, ROM):
+  lea   _GLOBAL_OFFSET_TABLE_(%pc), a5   ; load GOT base
+  move.l (8,a5), a0                      ; a0 = &stderr (from GOT)
+  move.l (a0), a1                        ; a1 = stderr value
+```
+
+The key property: **only the GOT needs patching at load time**. The
+code segment contains no absolute addresses (only PC-relative
+references to the GOT), so it can live in ROM untouched.
+
+bFLT exploits this: with `FLAT_FLAG_GOTPIC`, the GOT is at the start
+of the data segment. The loader patches only the GOT entries, not the
+text. Text stays in ROM — this is how bFLT achieves XIP.
+
+### XIP (Execute in Place)
+
+XIP means executing code directly from ROM without copying it to RAM.
+Only the data segment (globals, BSS, stack) goes into RAM.
+
+**Why XIP matters for the Mega Drive:**
+
+| Metric | Without XIP | With XIP |
+|--------|------------|----------|
+| RAM per program | text + data + BSS + stack | data + BSS + stack only |
+| Typical 6 KB program (4 KB text, 2 KB data) | 6 KB RAM | 2 KB RAM |
+| Max programs in 27.5 KB | ~4 small | ~12 small |
+| Max text size | ~27.5 KB (RAM limit) | ~4 MB (ROM limit) |
+| exec() speed | Copy entire binary to RAM | Copy only .data to RAM |
+| ROM speed penalty | N/A | None (68000 ROM = same speed as RAM) |
+
+XIP is transformative for the Mega Drive: it effectively makes text
+segment size free (it's already in ROM) and reclaims that RAM for data.
+
+**The XIP problem on the 68000:** How do you handle text→data references
+(instructions that load the address of a global variable) when text is
+in ROM and can't be patched? Three solutions exist:
+
+1. **GOT/PIC** (bFLT approach) — indirect all data access through a table
+   in RAM. Works but expensive on 68000 (~15-30% code bloat).
+
+2. **Build-time resolution** — if the data address is known at build time
+   (e.g., always USER_BASE), resolve all addresses when building the ROM.
+   No runtime patching needed. Zero overhead. Single-tasking only.
+
+3. **Copy text to writable memory** — copy text to SRAM, patch it there.
+   This is the bank-swapping approach. Text isn't in ROM anymore, but it's
+   out of precious main RAM.
+
+---
+
+## bFLT: What It Does and What's Worth Stealing
+
+### Format Overview
+
+bFLT (Binary Flat) is the standard executable format for uClinux
+(no-MMU Linux). Supported targets include m68k/ColdFire, ARM, SuperH,
+and others.
+
+**Header (64 bytes):**
+
+```c
+struct flat_hdr {
+    char     magic[4];      /* "bFLT" */
+    uint32_t rev;           /* format version (2 or 4) */
+    uint32_t entry;         /* offset of first instruction */
+    uint32_t data_start;    /* offset of data segment */
+    uint32_t data_end;      /* end of data */
+    uint32_t bss_end;       /* end of BSS */
+    uint32_t stack_size;    /* minimum stack size */
+    uint32_t reloc_start;   /* offset of relocation table */
+    uint32_t reloc_count;   /* number of relocation entries */
+    uint32_t flags;         /* RAM/GOTPIC/GZIP/GZDATA/KTRACE */
+    uint32_t build_date;
+    uint32_t filler[5];     /* reserved */
+};
+```
+
+All fields are big-endian (network byte order).
+
+**Flags:**
+
+| Flag | Value | Meaning |
+|------|-------|---------|
+| `FLAT_FLAG_RAM` | 0x0001 | Force-load entire binary into RAM |
+| `FLAT_FLAG_GOTPIC` | 0x0002 | PIC with GOT — enables XIP |
+| `FLAT_FLAG_GZIP` | 0x0004 | Everything after header is gzipped |
+| `FLAT_FLAG_GZDATA` | 0x0008 | Only data+relocs gzipped (text stays uncompressed for XIP) |
+
+**Version 4 relocation format:** Each entry is a uint32_t offset to a
+word that needs patching. The loader uses `data_start - entry` (text
+size) to determine whether a value references text or data. This is
+identical to what we've already designed for Genix.
+
+### How bFLT Achieves XIP
+
+With `FLAT_FLAG_GOTPIC` set and compression disabled:
+
+1. Text segment stays in ROM (flash, or the bFLT file in a romfs)
+2. Data segment (starting with the GOT) is copied to RAM
+3. The loader walks the GOT entries and adds the actual text/data base
+   addresses to each entry
+4. Code accesses all globals through the GOT (using a dedicated register)
+5. Result: text is never modified, executes directly from ROM
+
+**What's genuinely clever:**
+- `FLAT_FLAG_GZDATA` compresses only data+relocs, leaving text
+  uncompressed. This means XIP works even with compressed binaries —
+  decompress data to RAM, leave text in ROM.
+- The GOT is at the start of the data segment, so the loader knows
+  exactly where it is. GOT entries are terminated by -1.
+- Multiple instances of the same program share one text copy in ROM.
+
+### What's Worth Stealing vs. What Isn't
+
+| bFLT idea | Worth it for Genix? | Why |
+|-----------|-------------------|-----|
+| XIP concept (text in ROM, data in RAM) | **Yes** | Transformative for 27.5 KB RAM |
+| GOT/PIC mechanism | **No** | 15-30% code bloat, poor 68000 support |
+| Compression | **Maybe later** | Saves ROM space but adds kernel complexity |
+| Version 4 relocation format | **Already adopted** | Our reloc format is identical |
+| Separate text/data sizes in header | **Already adopted** | `text_size` field |
+| `data_start`/`data_end`/`bss_end` offsets | **Useful pattern** | Better than load_size/bss_size? |
+
+**The philosophical insight from bFLT:** Text should be separable from
+data so text can live somewhere cheap (ROM, shared memory, banked SRAM)
+while data lives in precious RAM. This is worth adopting. The GOT/PIC
+mechanism is just bFLT's answer to *how* — and it's the wrong answer for
+the 68000 due to the ISA's poor PC-relative data access.
+
+We can achieve the same goal (XIP from ROM) without PIC, by resolving
+addresses at build time instead of at load time. See the ROM XIP
+strategies below.
+
+---
+
+## ROM Execute-in-Place Strategies
+
+The Mega Drive romdisk lives in cartridge ROM. Every binary in `/bin`
+already sits at a known ROM address — we just don't exploit this.
+Currently, `exec()` copies the entire binary from ROM to RAM, wasting
+precious user memory on text that could execute directly from ROM.
+
+Three strategies can put text back in ROM:
+
+### Strategy A: Build-Time Resolved XIP
+
+**Concept:** Compile apps with base address 0. After mkfs places text
+in ROM, a post-processing tool resolves all absolute addresses using the
+known ROM offset and the known data address (USER_BASE). The result is a
+fully-resolved binary in ROM — zero runtime relocation.
+
+**How it works:**
+
+1. Compile each app with `-Ttext=0 -Tdata=0`, emitting relocation tables
+   (mkbin already planned to do this)
+2. mkfs creates the filesystem, placing each binary's text+rodata at a
+   specific ROM offset
+3. After the final kernel+romdisk link, ROM addresses are known. A
+   post-link tool (`romfix` or extended mkbin) processes each binary:
+   ```
+   For each relocation entry at offset `off`:
+     value = read32(off)
+     if value < text_size:
+       write32(off, value + ROM_ADDR)      # text reference → ROM
+     else:
+       write32(off, value - text_size + USER_BASE)  # data reference → RAM
+   ```
+4. Write the fully-resolved binary back into the ROM image
+5. At exec() time: copy `.data` init from ROM to USER_BASE, zero BSS,
+   set up stack, JMP to ROM entry. No relocation engine needed.
+
+**The key insight:** We control the build. We know where text goes in
+ROM (determined by mkfs + linker). We know where data goes in RAM
+(USER_BASE, a compile-time constant). So ALL addresses are known at
+build time. Runtime relocation is unnecessary.
+
+**Pros:**
+- True XIP from ROM — zero runtime relocation cost
+- No PIC overhead — code is identical to today's absolute binaries
+- exec() only copies .data (typically 10-30% of binary), not the full text
+- Programs can have arbitrarily large text (limited by ROM, not RAM)
+- ROM access is the same speed as RAM on the Mega Drive
+
+**Cons:**
+- Multi-pass build (compile → mkfs → link → fixup)
+- Data address is fixed at build time — single-tasking only, or requires
+  fixed data partitions per process for multitasking
+- Separate ROMs for workbench vs Mega Drive (different USER_BASE) — but
+  we already have this
+
+**The data address problem:** text→data references are encoded as
+immediate values in instructions (`move.l #my_global, a0`). These
+instructions are in ROM and can't be patched at load time. So the data
+address must be known when the ROM is built. For single-tasking (one
+process at a time, always at USER_BASE), this is fine. For multitasking,
+text→data references would need to point to different addresses for
+different processes — impossible with ROM text unless you use a GOT.
+
+**Multitasking escape hatches:**
+- Bank-switch text to SRAM → text becomes writable → can relocate at load time
+- Partition RAM into fixed per-process data regions → data address known per slot
+- Use the GOT/PIC approach for multitasking-capable programs (accept the overhead)
+
+### Strategy B: Kernel-Linked Apps (Overlay XIP)
+
+**Concept:** Link app `.text` directly into the kernel ROM. Use linker
+OVERLAY sections so all apps' `.data` maps to USER_BASE. The linker
+resolves everything in one step — no post-processing needed.
+
+**How it works:**
+
+1. Compile each app+libc to a self-contained `.o` (or archive `.a`)
+2. The kernel linker script includes all app objects:
+
+   ```ld
+   /* App text goes into ROM alongside kernel text */
+   .app_text : {
+       _app_hello_text = .;
+       apps/hello.o(.text .text.* .rodata .rodata.*)
+       _app_hello_text_end = .;
+
+       _app_cat_text = .;
+       apps/cat.o(.text .text.* .rodata .rodata.*)
+       _app_cat_text_end = .;
+       /* ... */
+   } > rom
+
+   /* App data uses OVERLAY — all apps share the same RAM address */
+   OVERLAY USER_BASE : AT(_app_data_load) {
+       .hello_data {
+           _app_hello_data_load = LOADADDR(.hello_data);
+           apps/hello.o(.data .data.*)
+           _app_hello_bss_start = .;
+           apps/hello.o(.bss .bss.* COMMON)
+           _app_hello_end = .;
+       }
+       .cat_data {
+           _app_cat_data_load = LOADADDR(.cat_data);
+           apps/cat.o(.data .data.*)
+           _app_cat_bss_start = .;
+           apps/cat.o(.bss .bss.* COMMON)
+           _app_cat_end = .;
+       }
+       /* ... */
+   } > ram
+   ```
+
+3. The linker resolves all addresses: text→text gets ROM addresses,
+   text→data gets USER_BASE addresses, data→text gets ROM addresses.
+4. The filesystem has entries that reference ROM metadata:
+   - Text entry point (ROM address)
+   - Data initializer location (ROM address, for copying to RAM)
+   - Data size, BSS size
+5. exec() implementation:
+   ```c
+   /* Look up app metadata from filesystem/ROM table */
+   memcpy(USER_BASE, app->data_load_addr, app->data_size);
+   memset(USER_BASE + app->data_size, 0, app->bss_size);
+   setup_stack(USER_TOP, path, argv);
+   jmp(app->entry);  /* entry is a ROM address */
+   ```
+
+**The libc problem:** Each app is statically linked with libc. If we
+link all apps into one binary, they'd share libc `.text` (saves ROM!)
+but each OVERLAY section needs its own copy of libc `.data`. This
+requires compiling each app as a fully-linked relocatable object
+(`ld -r -o app_hello_linked.o hello.o libc.a`) before including it in
+the kernel link.
+
+**Pros:**
+- Simplest path to XIP — the linker does all the work
+- No relocation engine, no post-processing tools
+- Zero runtime overhead
+- Apps share libc text in ROM (one copy of printf, etc.)
+- Filesystem entries are just ROM address references
+- exec() is trivial: memcpy data, zero BSS, jump
+
+**Cons:**
+- Adding/removing apps requires relinking the kernel
+- Build system becomes more complex (overlay linker script)
+- Can't load programs from SD card (not in the ROM)
+- Single-tasking only (same USER_BASE constraint as Strategy A)
+- Each app's libc data is a separate overlay (linker script grows with app count)
+- Not suitable for dynamically loaded programs
+
+**Best for:** A fixed set of built-in apps that ship with the ROM.
+Think of it as the ROM equivalent of busybox — a single binary containing
+all tools, with the filesystem providing the command names.
+
+### Strategy C: bFLT-Style GOT/PIC
+
+**Concept:** Compile with `-fPIC`, use a GOT in the data segment.
+Text executes from ROM, GOT is patched at load time.
+
+Already analyzed above in the PIC section. The 15-30% code bloat and
+poor 68000 support make this the wrong choice unless ROM XIP is needed
+for dynamically-loaded programs with multitasking (no fixed data address).
+
+### Strategy Comparison
+
+| Property | A: Build-Time XIP | B: Kernel-Linked | C: GOT/PIC |
+|----------|-------------------|------------------|-------------|
+| Runtime relocation | None | None | GOT patching |
+| Code size overhead | 0% | 0% (shared libc!) | 15-30% |
+| Runtime data access cost | 0 | 0 | ~4 cycles/access |
+| Build complexity | Medium (post-link fixup) | Medium (overlay LD) | Low (just -fPIC) |
+| Add apps without rebuild | Yes (re-run mkfs+fixup) | No (relink kernel) | Yes |
+| SD card programs | Yes (with runtime reloc fallback) | No | Yes |
+| Multitasking XIP | No (fixed data addr) | No (fixed data addr) | Yes |
+| Shared libc text in ROM | No (per-app copy) | Yes | No (per-app copy) |
+
+### Recommended ROM XIP Path
+
+**Phase 1 (now):** Strategy B (kernel-linked) for built-in apps. This
+gives XIP with zero runtime cost and the simplest exec() possible.
+The 34 apps currently in `/bin` become ROM-resident. This is the
+biggest win for the least effort — all addresses resolved by the linker.
+
+**Phase 2 (with relocatable binaries):** Strategy A (build-time XIP)
+for the ROM image, with the existing runtime relocator as fallback for
+programs loaded from SD card or SRAM. ROM apps get XIP performance,
+SD-loaded apps get runtime relocation.
+
+**Phase 3 (multitasking with SRAM):** Bank-switch text to SRAM, relocate
+data per-process. No PIC needed — SRAM is writable, so the runtime
+relocator can patch text→data references. This combines the best of
+all worlds: text out of main RAM, per-process data, no code bloat.
+
+GOT/PIC (Strategy C) remains available as a last resort for scenarios
+where ROM XIP + multitasking is needed without SRAM, but this scenario
+is unlikely — if you need multitasking, you probably have SRAM.
+
+---
+
 ## Relocation Strategy Options
 
 ### Option 1: Extend Genix Header with Relocation Tables
@@ -281,32 +687,58 @@ struct genix_header {
 
 ### Option 3: Position-Independent Code (-fPIC)
 
-**Format:** No relocations — all code uses PC-relative addressing.
+**Format:** Code compiled with `-fPIC`. All global accesses go through
+a GOT (see "Background: PIC, GOT, and XIP" section above for how this
+works on the 68000).
 
 **Pros:**
-- No relocation tables, instant loading
+- No relocation tables needed in the binary
+- Enables XIP from ROM (text has no absolute addresses to patch)
+- Instant loading (only GOT needs patching)
 
 **Cons:**
 - 68000 PIC is expensive: every global access goes through a GOT
-- Code size increases 15-30% due to indirect addressing
-- Runtime overhead on every global variable access
-- GCC's 68000 PIC support is poor (designed for 68020+)
+  register (a5), costing ~4 extra cycles per access
+- Code size increases 15-30% due to GOT indirection instructions
+- Burns one address register (a5) permanently for GOT base pointer
+- GCC's 68000 PIC support uses 16-bit displacements (68020 has 32-bit),
+  limiting GOT to ±32 KB from the base register
+- Runtime overhead on every global variable access compounds in loops
 
-**Verdict:** Wrong for 68000. The 68000's limited PC-relative modes
-make PIC too expensive.
+**Verdict:** Wrong tradeoff for the 68000. The 15-30% code bloat and
+per-access overhead are too high when we can achieve XIP through
+build-time address resolution at zero runtime cost. PIC makes sense
+on architectures with cheap PC-relative data access (x86-64, AArch64)
+but not on the 68000's limited addressing modes.
 
 ### Option 4: bFLT (Binary Flat Format, uClinux-style)
 
+**Format:** 64-byte header, GOT-based relocation, optional compression.
+Used by uClinux on m68k/ColdFire, ARM, SuperH, and others.
+
 **Pros:**
-- Used by uClinux on ColdFire (68000 family)
+- Battle-tested on no-MMU systems including m68k/ColdFire
+- XIP support via GOT/PIC (`FLAT_FLAG_GOTPIC`) — text executes from ROM
+- Compression support (`FLAT_FLAG_GZIP` / `FLAT_FLAG_GZDATA`)
+- Version 4 relocation format is simple: flat list of uint32_t offsets
+  (identical to what we're using)
+- Mature tooling (elf2flt converter)
 
 **Cons:**
-- More complex than needed (multiple relocation types)
-- Heavy tooling (elf2flt has many dependencies)
-- Designed for ColdFire/ARM more than classic 68000
-- No advantage over a simple relocation table
+- XIP requires `-fPIC` which is expensive on the 68000 (see PIC section
+  above for detailed cost analysis)
+- Tooling requires `*-uclinux-*` toolchain — doesn't work with our
+  existing `m68k-elf-gcc`
+- Larger header (64 bytes vs 32 bytes)
+- Compression requires gzip decompressor in kernel (~2-4 KB code)
+- No advantage over extending our own header for the relocation format
 
-**Verdict:** Overkill.
+**Verdict:** bFLT's relocation format (version 4) is identical to ours —
+we've effectively adopted it already. bFLT's XIP via GOT/PIC is genuinely
+useful but too expensive on the 68000 (see detailed analysis in the
+"bFLT: What It Does and What's Worth Stealing" and "ROM Execute-in-Place
+Strategies" sections). We achieve XIP more cheaply through build-time
+resolution or kernel-linked overlays.
 
 ---
 
@@ -465,7 +897,39 @@ emit them as the simple uint32_t offset array. No new tool needed.
 
 ## Implementation Roadmap
 
-### Step 1: Extended Header + Relocation Engine
+### Step 1: ROM XIP via Kernel-Linked Apps (Strategy B)
+
+**The biggest immediate win.** Link app text directly into the kernel
+ROM using OVERLAY linker sections. exec() becomes a memcpy of .data +
+BSS zero + JMP to ROM. Zero runtime relocation. Reclaims ~70% of
+user RAM that was being wasted on code copies.
+
+**Files to modify:**
+- `pal/megadrive/megadrive.ld` — add app text sections and OVERLAY
+  for app data at USER_BASE
+- `apps/Makefile` — build apps as relocatable objects (`ld -r`) instead
+  of standalone ELFs, for inclusion in the kernel link
+- `kernel/exec.c` — look up ROM metadata instead of reading from
+  filesystem; copy .data from ROM init address, zero BSS, JMP
+- `tools/mkfs.c` — emit filesystem entries that reference ROM addresses
+  (or build a ROM app table)
+- `kernel/kernel.h` — ROM app table structure
+
+**Build flow change:**
+```
+Before: app.c → app.o → app.elf → mkbin → genix binary → mkfs → romdisk
+After:  app.c → app.o → ld -r with libc → app_linked.o → kernel link
+```
+
+**Testing:**
+- `make test-md-auto` — verify apps execute from ROM
+- Compare exec() speed (should be significantly faster)
+- Verify all 34 apps work from ROM
+
+### Step 2: Extended Header + Relocation Engine
+
+For programs loaded from RAM (workbench) or SD card (future), add
+runtime relocation support to the existing binary format.
 
 **Files to modify:**
 - `kernel/exec.c` — detect `flags & 1`, load relocation entries into
@@ -480,7 +944,22 @@ emit them as the simple uint32_t offset array. No new tool needed.
   today, delta=0, validates format without changing behavior)
 - Then load at a different address to test actual relocation
 
-### Step 2: Dynamic Load Address
+### Step 3: Build-Time Resolved XIP (Strategy A)
+
+For ROM-resident apps that don't use the kernel-linked approach (e.g.,
+if the overlay linker script becomes unwieldy with many apps), add a
+post-link tool that resolves addresses after mkfs placement.
+
+**Files to modify/add:**
+- `tools/romfix.c` — new tool: reads ROM image + relocation tables,
+  patches absolute addresses with actual ROM offsets and USER_BASE
+- `tools/mkbin.c` — emit relocation tables in the binary
+- `Makefile` — add romfix step after kernel link
+
+This is an alternative to Step 1, not a replacement. Use whichever
+approach is simpler for the number of apps being built.
+
+### Step 4: Dynamic Load Address (Multitasking)
 
 **Files to modify:**
 - `kernel/exec.c` — allocate memory via kmalloc instead of fixed
@@ -491,7 +970,15 @@ emit them as the simple uint32_t offset array. No new tool needed.
 - Load two programs at different addresses simultaneously
 - Verify both can run and be scheduled
 
-### Step 3: Split Text/Data Support
+Note: ROM XIP programs (Steps 1/3) can't be dynamically relocated
+(text is in ROM). For multitasking, either:
+- Text stays shared in ROM, each process gets its own data at a
+  different RAM address (but text→data refs in ROM still point to
+  USER_BASE — only works if data layout is identical at every address)
+- Use runtime relocation (Step 2) for multitasking programs,
+  loading text into RAM or SRAM
+
+### Step 5: Split Text/Data Support
 
 **Files to modify:**
 - `tools/mkbin.c` — emit separate text_size
@@ -501,45 +988,46 @@ This step is preparation for bank-swapping but also enables code
 sharing (multiple processes running the same binary share one copy
 of the text segment, each with their own data).
 
-### Step 4: Port More Apps from FUZIX Source
-
-Since all FUZIX source code is available, porting is just recompiling
-against Genix's libc and build system:
-
-1. Copy the `.c` file to `apps/`
-2. Add to `PROGRAMS` in `apps/Makefile`
-3. Fix any missing libc functions
-4. Build and test
-
-**Priority order:**
-1. sed, sort — core text processing
-2. diff, less — file viewing/comparison
-3. cp, mv, rm — file management
-4. sh (V7 Bourne shell) — real shell
-5. ed, dc — classic Unix tools
-
-### Step 5: SD Card Loading
+### Step 6: SD Card Loading
 
 Load binaries from EverDrive Pro/Open EverDrive SD card, relocate to
 dynamically allocated RAM, run. Depends on the SD card driver work
-(see `docs/everdrive-sd-card.md`).
+(see `docs/everdrive-sd-card.md`). These programs use runtime
+relocation (Step 2), not ROM XIP.
 
-### Step 6: Bank-Swapping (Future)
+### Step 7: Bank-Swapping (Future)
 
 When EverDrive Pro bank-swapping is implemented:
 
-- Load text segment into a banked SRAM window
+- Load text segment into a banked SRAM window (writable, so patchable)
 - Load data segment into main RAM
-- Use the split-aware relocator (already built in Step 3) to handle
+- Use the split-aware relocator (built in Step 5) to handle
   different text/data base addresses
 - Switch SRAM bank on context switch
 
-The relocation format designed in Step 1 already supports this — no
-format change needed.
+This gives per-process text isolation without PIC: text is in SRAM
+(not ROM), so the relocator can patch text→data references at load
+time. Combined with ROM XIP for shared/read-only programs, this covers
+all use cases without ever needing GOT/PIC.
 
 ---
 
-## Appendix: Size Estimates
+## Appendix A: Size Estimates
+
+### ROM XIP (Kernel-Linked, Step 1)
+
+| Component | Code Size | RAM Cost |
+|-----------|----------|----------|
+| Linker script changes | ~50 lines | 0 |
+| Makefile changes | ~30 lines | 0 |
+| exec.c ROM lookup | ~40 lines | 0 |
+| ROM app table | ~20 lines | ~(8 bytes × N apps) |
+| **Total kernel addition** | **~60 lines** | **~272 bytes** (34 apps) |
+
+**RAM savings:** ~70% of current user program memory. A typical exec()
+that copies 6 KB to RAM now copies only ~1.5 KB (data+BSS).
+
+### Runtime Relocation (Step 2)
 
 | Component | Code Size | RAM Cost |
 |-----------|----------|----------|
@@ -548,3 +1036,11 @@ format change needed.
 | Loader changes | ~50 lines | 0 |
 | mkbin relocation extraction | ~100 lines | 0 (host tool) |
 | **Total kernel addition** | **~80 lines** | **0 bytes** |
+
+## Appendix B: References
+
+- [bFLT format header (flat.h)](https://github.com/uclinux-dev/elf2flt/blob/main/flat.h)
+- [elf2flt converter](https://github.com/uclinux-dev/elf2flt)
+- [uClinux flat file format overview](http://myembeddeddev.blogspot.com/2010/02/uclinux-flat-file-format.html)
+- [XFLAT FAQ (GOT vs thunk comparison)](https://xflat.sourceforge.net/XFlatFAQ.html)
+- [bFLT on MMU systems (LWN)](https://lwn.net/Articles/694386/)
