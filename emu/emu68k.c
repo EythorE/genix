@@ -121,9 +121,10 @@ static void sigint_handler(int sig)
     g_quit = 1;
 }
 
-/* Idle detection: sleep briefly when the CPU is just polling UART status */
+/* Idle detection: track consecutive no-data UART polls so the main loop
+ * can sleep between m68k_execute() batches instead of inside callbacks. */
 static int g_idle_polls = 0;
-#define IDLE_THRESHOLD  4   /* consecutive no-data polls before sleeping */
+#define IDLE_THRESHOLD  4   /* consecutive no-data polls before main loop sleeps */
 #define IDLE_USLEEP     1000 /* 1ms — responsive yet ~0% CPU when idle */
 
 /* Check if a character is available from stdin */
@@ -137,8 +138,7 @@ static int uart_rx_ready(void)
         g_idle_polls = 0;
         return 1;
     }
-    if (++g_idle_polls >= IDLE_THRESHOLD)
-        usleep(IDLE_USLEEP);
+    g_idle_polls++;
     return 0;
 }
 
@@ -423,6 +423,12 @@ int main(int argc, char *argv[])
     while (!g_quit) {
         unsigned int cycles = m68k_execute(1000);
         cycles_until_tick -= cycles;
+
+        /* Idle throttle: if the CPU is just polling UART with no data,
+         * sleep here (between execute batches) instead of inside the
+         * memory callback. This avoids stalling the emulated CPU. */
+        if (g_idle_polls >= IDLE_THRESHOLD)
+            usleep(IDLE_USLEEP);
 
         if (cycles_until_tick <= 0) {
             cycles_until_tick += CYCLES_PER_TICK;
