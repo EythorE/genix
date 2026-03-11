@@ -292,6 +292,63 @@ Instead of using absolute addresses, it uses relative references:
   displacements); 68000 is limited to 16-bit displacements, so GOT
   must be within ±32 KB of the base register
 
+### GCC's PIC Variants for m68k
+
+GCC actually offers three PIC-related modes for m68k. Understanding all
+three matters because one of them (`-msep-data`) is directly relevant to
+XIP:
+
+| Option | Mechanism | Register | Overhead | Use case |
+|--------|-----------|----------|----------|----------|
+| `-fPIC` / `-fpic` | GOT via a5 | a5 = GOT base | High (double indirection) | General PIC, shared libraries |
+| `-mpcrel` | PC-relative addressing for everything | None | Low (within 32 KB) | Small PIC programs |
+| `-msep-data` | a5 points to data/BSS segment | a5 = data base | Medium (one indirection) | XIP from ROM (uClinux) |
+
+**`-mpcrel`** uses the 68000's native PC-relative addressing modes
+(`LEA (label,PC),An`) instead of a GOT. No register is dedicated. The
+limitation: PC-relative displacements on the 68000 are 16-bit signed,
+so code and referenced data must be within ±32 KB of each other. For
+Genix user programs in RAM (≤27.5 KB total), this always holds. But
+for ROM XIP where text is in ROM (0x000000+) and data is in RAM
+(0xFF9000+), the distance far exceeds 32 KB — so `-mpcrel` cannot
+solve ROM XIP.
+
+**`-msep-data`** is the uClinux XIP mode. It makes a5 point to the
+start of the data segment in RAM. All data accesses go through a5.
+Code executes from ROM without modification. At exec() time, the
+loader allocates RAM for data+BSS, copies .data init values from ROM,
+zeros BSS, and sets a5. Different processes can have a5 pointing to
+different RAM regions — this supports multitasking XIP.
+
+The cost is lower than full `-fPIC` (single indirection, no GOT
+patching) but still reserves a5 and adds overhead to every global
+access. It's the mechanism bFLT uses internally. For Genix, our
+build-time resolution strategies achieve the same result with zero
+runtime overhead — at the cost of fixing the data address at build time.
+
+### 68000 PC-Relative Addressing: What's Available
+
+The 68000's PC-relative capabilities are often understated. It has:
+
+- **`(d16,PC)`** — PC + 16-bit signed displacement. Usable as a **source
+  operand only** (read-only). Works with MOVE, ADD, CMP, LEA, etc.
+  Range: ±32 KB. Cost: 8 cycles for effective address calculation.
+- **`(d8,PC,Xn)`** — PC + 8-bit displacement + index register. Source
+  only. Range: ±128 bytes + index. Cost: 10 cycles.
+- **BSR.W** — Branch to subroutine, 16-bit displacement. Range: ±32 KB.
+- **BRA/Bcc** — Branches, 8-bit or 16-bit displacement.
+
+**Critical limitation:** PC-relative modes are **read-only** on the
+68000. You can `MOVE.L (table,PC),D0` but you cannot
+`MOVE.L D0,(table,PC)`. This means writable globals cannot use
+PC-relative addressing — they need absolute addresses or register-based
+indirection.
+
+For calls beyond 32 KB (e.g., from RAM user code to ROM kernel), the
+68000 must use `JSR label.L` (absolute long, 6 bytes, 20 cycles) or a
+trampoline. This isn't relevant for user programs (always < 27.5 KB)
+but matters for ROM layout considerations.
+
 ### GOT (Global Offset Table)
 
 The GOT is a table of absolute addresses, one per global variable or
@@ -341,16 +398,22 @@ segment size free (it's already in ROM) and reclaims that RAM for data.
 
 **The XIP problem on the 68000:** How do you handle text→data references
 (instructions that load the address of a global variable) when text is
-in ROM and can't be patched? Three solutions exist:
+in ROM and can't be patched? Four solutions exist:
 
 1. **GOT/PIC** (bFLT approach) — indirect all data access through a table
    in RAM. Works but expensive on 68000 (~15-30% code bloat).
 
-2. **Build-time resolution** — if the data address is known at build time
+2. **`-msep-data`** (uClinux approach) — dedicate a5 to point at the
+   data segment base. All data access goes through a5. Lighter than full
+   GOT (single indirection, no GOT table to patch) but still reserves a
+   register and adds per-access overhead. Supports multitasking (each
+   process gets its own a5 value).
+
+3. **Build-time resolution** — if the data address is known at build time
    (e.g., always USER_BASE), resolve all addresses when building the ROM.
    No runtime patching needed. Zero overhead. Single-tasking only.
 
-3. **Copy text to writable memory** — copy text to SRAM, patch it there.
+4. **Copy text to writable memory** — copy text to SRAM, patch it there.
    This is the bank-swapping approach. Text isn't in ROM anymore, but it's
    out of precious main RAM.
 
@@ -595,27 +658,45 @@ the kernel link.
 Think of it as the ROM equivalent of busybox — a single binary containing
 all tools, with the filesystem providing the command names.
 
-### Strategy C: bFLT-Style GOT/PIC
+### Strategy C: Compiler-Assisted XIP (GOT/PIC or -msep-data)
 
-**Concept:** Compile with `-fPIC`, use a GOT in the data segment.
-Text executes from ROM, GOT is patched at load time.
+**Concept:** Use compiler flags to make code access data indirectly,
+so text has no absolute data addresses and can stay in ROM.
 
-Already analyzed above in the PIC section. The 15-30% code bloat and
-poor 68000 support make this the wrong choice unless ROM XIP is needed
-for dynamically-loaded programs with multitasking (no fixed data address).
+Two sub-options:
+
+**C1: Full GOT/PIC (`-fPIC`)**
+- Every global access goes through a GOT in RAM
+- 15-30% code bloat, reserves a5
+- Supports multitasking XIP (GOT is per-process)
+- This is what bFLT uses
+
+**C2: Separated data (`-msep-data`)**
+- a5 points to data segment base; globals accessed as `(offset,a5)`
+- Less overhead than full GOT (single indirection, no GOT table)
+- Still reserves a5, still adds per-access cost
+- Supports multitasking XIP (set a5 per-process on context switch)
+- This is what uClinux uses for XIP on m68k
+
+Both are analyzed in the PIC section above. The per-access overhead
+and register pressure make these the wrong first choice when we can
+achieve XIP through build-time resolution (Strategies A/B). However,
+`-msep-data` is a viable fallback if we ever need multitasking XIP
+without SRAM — it's significantly cheaper than full GOT/PIC.
 
 ### Strategy Comparison
 
-| Property | A: Build-Time XIP | B: Kernel-Linked | C: GOT/PIC |
-|----------|-------------------|------------------|-------------|
-| Runtime relocation | None | None | GOT patching |
-| Code size overhead | 0% | 0% (shared libc!) | 15-30% |
-| Runtime data access cost | 0 | 0 | ~4 cycles/access |
-| Build complexity | Medium (post-link fixup) | Medium (overlay LD) | Low (just -fPIC) |
-| Add apps without rebuild | Yes (re-run mkfs+fixup) | No (relink kernel) | Yes |
-| SD card programs | Yes (with runtime reloc fallback) | No | Yes |
-| Multitasking XIP | No (fixed data addr) | No (fixed data addr) | Yes |
-| Shared libc text in ROM | No (per-app copy) | Yes | No (per-app copy) |
+| Property | A: Build-Time XIP | B: Kernel-Linked | C1: GOT/PIC | C2: -msep-data |
+|----------|-------------------|------------------|-------------|----------------|
+| Runtime relocation | None | None | GOT patching | Set a5 only |
+| Code size overhead | 0% | 0% (shared libc!) | 15-30% | 5-10% |
+| Runtime data access cost | 0 | 0 | ~4 cycles/access | ~2 cycles/access |
+| Register cost | None | None | a5 reserved | a5 reserved |
+| Build complexity | Medium (post-link fixup) | Medium (overlay LD) | Low (-fPIC) | Low (-msep-data) |
+| Add apps without rebuild | Yes (re-run mkfs+fixup) | No (relink kernel) | Yes | Yes |
+| SD card programs | Yes (with runtime reloc fallback) | No | Yes | Yes |
+| Multitasking XIP | No (fixed data addr) | No (fixed data addr) | Yes | Yes |
+| Shared libc text in ROM | No (per-app copy) | Yes | No (per-app copy) | No (per-app copy) |
 
 ### Recommended ROM XIP Path
 
@@ -634,9 +715,10 @@ data per-process. No PIC needed — SRAM is writable, so the runtime
 relocator can patch text→data references. This combines the best of
 all worlds: text out of main RAM, per-process data, no code bloat.
 
-GOT/PIC (Strategy C) remains available as a last resort for scenarios
-where ROM XIP + multitasking is needed without SRAM, but this scenario
-is unlikely — if you need multitasking, you probably have SRAM.
+If multitasking XIP from ROM is ever needed without SRAM, `-msep-data`
+(Strategy C2) is the lightest-weight option — set a5 to the process's
+data base on context switch, no GOT table needed. But this scenario
+is unlikely: if you need multitasking, you probably have SRAM.
 
 ---
 
