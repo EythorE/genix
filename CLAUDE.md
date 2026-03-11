@@ -429,6 +429,7 @@ Detailed technical documentation is in `docs/`:
 | `docs/emulator.md` | Workbench emulator: architecture, usage, keyboard |
 | `docs/toolchain.md` | Cross-compiler setup (apt quick-start + build from source) |
 | `docs/megadrive.md` | Mega Drive target: memory, cartridges, SRAM, testing |
+| `docs/everdrive-pro.md` | EverDrive Pro hardware: FPGA memory, SSF mode, writable PSRAM |
 | `docs/decisions.md` | Design decisions, reversals, pain points, project history |
 | `docs/architecture.md` | System architecture, memory maps, layers |
 | `docs/kernel.md` | Kernel subsystems |

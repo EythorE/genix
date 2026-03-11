@@ -108,9 +108,9 @@ SRAM: Read-write filesystem (small)
 - SRAM used for writable filesystem (scratch files, config)
 - SRAM access: byte-at-odd-addresses (hardware quirk)
 
-### Configuration C: ROM + Large SRAM (256 KB–2 MB)
+### Configuration C: ROM + Large SRAM (256 KB+)
 
-Flash cartridge or custom PCB with large SRAM. This is what FUZIX uses.
+Flash cartridge or custom PCB with large SRAM.
 
 ```
 ROM:  Kernel code + read-only filesystem
@@ -119,20 +119,22 @@ SRAM: User programs + read-write filesystem
 ```
 
 - With large SRAM, user programs can load into SRAM instead of main RAM
-- More room for larger programs
+- Multiple user programs can coexist (with relocation)
 - SRAM filesystem can hold the full Unix directory tree
 
 ### Configuration D: Open EverDrive
 
 The [Open EverDrive](https://github.com/krikzz/open-ed) is a budget,
 fully open-source (MIT) flash cartridge by Krikzz (~$30). No FPGA or
-CPU — just discrete 74HC logic, 8 MB NOR flash, 128 KB battery-backed
-SRAM, and an SD card slot.
+CPU — just discrete 74HC logic, 8 MB NOR flash, and an SD card slot.
+
+**Physical SRAM chip:** IS62WV1288BLL — **128 KB** battery-backed.
+The 2 MB address range (`0x200000–0x3FFFFF`) aliases over this 128 KB.
 
 ```
 ROM:  Up to 4 MB (kernel + read-only filesystem)
-RAM:  Kernel BSS + heap + user programs (64 KB main RAM)
-SRAM: 128 KB at 0x200000–0x3FFFFF (battery-backed, persistent)
+RAM:  64 KB main RAM (kernel + user programs)
+SRAM: 128 KB at 0x200000 (battery-backed, aliases every 128 KB)
 ```
 
 - **Mapper: NOT standard Sega.** The Open EverDrive has its own mapper
@@ -165,46 +167,42 @@ source are all in the [open-ed repository](https://github.com/krikzz/open-ed).
 ### Configuration E: Mega EverDrive Pro
 
 The [Mega EverDrive Pro](https://krikzz.com/our-products/cartridges/mega-everdrive-pro.html)
-is an FPGA-based flash cartridge (Cyclone IV FPGA, 16 MB PSRAM, 1 MB SRAM)
-with extensive mapper emulation.
+is an FPGA-based flash cartridge (Cyclone IV FPGA, 16 MB PSRAM,
+512 KB SRAM + 512 KB battery-backed BRAM).
+
+See [everdrive-pro.md](everdrive-pro.md) for full hardware analysis
+including FPGA source code references.
+
+**Traditional mode** (system type = `SEGA MEGA DRIVE`):
 
 ```
 ROM:  Up to 16 MB (loaded from SD card into FPGA PSRAM)
-RAM:  Kernel BSS + heap + user programs (64 KB main RAM)
-SRAM: Up to 512 KB at 0x200000 (FPGA-backed, saved to SD on power-off)
+RAM:  64 KB main RAM (kernel)
+BRAM: 512 KB at 0x200000 (battery-backed, saved to SD on power-off)
 ```
 
-The Pro supports **two mapper modes**, selected by the ROM header system
-type field at offset 0x100:
-
-**Traditional mode** (system type = `SEGA MEGA DRIVE` or `SEGA GENESIS`):
-- Behaves like a real cartridge with standard Sega mapper
-- For ROMs < 2 MB: SRAM is always mapped at 0x200000 — no enable needed
-- For ROMs >= 2 MB: enable SRAM via standard `0xA130F1 = 0x01`
-- 8-bit odd-byte access, up to 64 KB address space (32 KB usable)
-- **This is what Genix uses** — the ROM is ~543 KB, so SRAM just works
+- For ROMs < 2 MB: BRAM is always mapped at 0x200000 — no enable needed
+- For ROMs >= 2 MB: enable via standard `0xA130F1 = 0x01`
+- **BRAM is always 16-bit word-wide** — the `HWC_BRAM_16B` define is
+  hardwired in the FPGA (`hwc.sv`), regardless of ROM header type byte.
+  The current Genix `0xF820` header works but wastes half the BRAM
+  capacity because the software does odd-byte access.
 
 **SSF mode** (system type = `SEGA SSF`):
-- Extended mapper with 8 bank registers at `0xA130F0`–`0xA130FE`
-- Each register maps a 512 KB bank into the address space
-- SRAM lives at bank 31 — write `0x001F` to CTRL4 (`0xA130F8`)
-  to map it at 0x200000
-- Word-wide access (no odd-byte quirk), up to 512 KB
-- CTRL0 (`0xA130F0`) format: P=protection bit (must be set),
-  W=write-enable, L=LED, C=#CART
-- Must disable interrupts and halt Z80 before bank switching
-- See [Krikzz extended SSF spec](https://krikzz.com/pub/support/mega-everdrive/pro-series/extended-ssf.txt)
 
-```c
-/* SSF mode: unlock + map SRAM bank */
-*(volatile uint16_t *)0xA130F0 = 0xA000;  /* P + W bits (unlock, write-enable) */
-*(volatile uint16_t *)0xA130F8 = 0x001F;  /* CTRL4 = bank 31 (SRAM) at 0x200000 */
-/* Now 0x200000-0x27FFFF is 512 KB word-wide SRAM */
+```
+ROM:  ~512 KB (kernel + read-only filesystem, bank 0)
+RAM:  64 KB main RAM (kernel)
+PSRAM: 3+ MB writable (banks 1–5,7 → PSRAM, volatile)
+BRAM: 512 KB persistent filesystem (bank 6 → physical bank 31)
 ```
 
-**For Genix, SSF mode is not needed** — traditional mode with the standard
-Sega header works. SSF would only be useful if we needed >32 KB of SRAM
-or word-wide access on the Pro.
+- 8 bank registers at `0xA130F0`–`0xA130FE`, each maps a 512 KB slot
+- Bank 31 = BRAM (battery-backed), banks 0–30 = PSRAM
+- Setting the W bit in CTRL0 enables **writes to PSRAM** — the entire
+  16 MB PSRAM becomes read-write (volatile, not saved to SD)
+- SD card access via FIFO command interface (only available in SSF mode)
+- See [everdrive-pro.md](everdrive-pro.md) for full register details
 
 ### Configuration F: Mega EverDrive X-series (X3/X5/X7)
 
@@ -223,13 +221,13 @@ Each cartridge type requires a different enable sequence:
 | Target | Register | Write | Notes |
 |--------|----------|-------|-------|
 | **Standard cart** | `0xA130F1` (8-bit) | `0x03` | Bit 0=mapped, bit 1=write-enable |
-| **Open EverDrive** | `0xA13000` (16-bit) | `0x0001` | Bit 0=SRM_ON |
-| **EverDrive Pro (traditional)** | `0xA130F1` (8-bit) | `0x01` | Same as standard; auto-mapped for ROM < 2 MB |
-| **EverDrive Pro (SSF)** | `0xA130F0` (16-bit) | `0xA000` + CTRL4=31 | Extended mapper; needs `SEGA SSF` header |
+| **Open EverDrive** | `0xA13000` (16-bit) | `0x0001` | Bit 0=SRM_ON (entire `$A130xx` range is one register) |
+| **EverDrive Pro (traditional)** | `0xA130F1` (8-bit) | `0x01` | Auto-mapped for ROM < 2 MB; write is harmless |
+| **EverDrive Pro (SSF)** | `0xA130F0` (16-bit) | `0xD000` | P+W bits; needs `SEGA SSF` header |
 | **BlastEm** | Any / none | — | Auto-detects from ROM header |
 
 **Good news for Genix:** The current standard mapper code (`0xA130F1 = 0x03`)
-works on real cartridges, all EverDrives (in traditional mode), and BlastEm.
+works on real cartridges, EverDrives (in traditional mode), and BlastEm.
 Since the Genix ROM is < 2 MB, SRAM is auto-mapped on EverDrive hardware
 and the register write is harmless.
 
@@ -318,12 +316,18 @@ the Open EverDrive.
 | ROM header range | `0x200001-0x20FFFF` | `0x200000-0x3FFFFF` |
 | Access pattern | Odd bytes only | Normal word/long |
 | 64 KB address space yields | 32 KB usable | 64 KB usable |
-| Cartridge examples | Standard game carts | Open EverDrive |
+| Cartridge examples | Standard game carts | Open EverDrive, EverDrive Pro |
 | Genix code | `platform.c` (current) | Needs separate path |
+
+**Note on EverDrive Pro:** The Pro's BRAM chip is always 16-bit word-wide
+(`HWC_BRAM_16B` is hardwired in the FPGA). The ROM header type byte only
+affects how the firmware serializes saves to SD — it does not change the
+FPGA's data bus width. See [everdrive-pro.md](everdrive-pro.md).
 
 **The code must handle both cases.** The current `pal_disk_read()`/
 `pal_disk_write()` in `platform.c` use 8-bit odd-byte access. Supporting
-16-bit SRAM (Open EverDrive) requires a build-time or runtime switch.
+16-bit SRAM (Open EverDrive, EverDrive Pro) requires a build-time or
+runtime switch.
 
 ### SRAM Enable Sequences
 
@@ -596,7 +600,130 @@ This declares 8-bit odd-byte battery-backed SRAM, 64 KB address space
 "RA", 0xE020, start=0x200000, end=0x3FFFFF
 ```
 This declares 16-bit word-wide battery-backed SRAM, 2 MB address space.
-BlastEm and the Open EverDrive both honor this.
+BlastEm and the Open EverDrive both honor this. Note: the 2 MB range
+aliases over the open-ed's 128 KB physical SRAM chip (IS62WV1288BLL).
+On the EverDrive Pro, it aliases over the 512 KB BRAM chip.
+
+## Maximizing Available RAM
+
+### The Opportunity
+
+The two primary hardware targets have very different RAM budgets:
+
+| Target | Main RAM | Cartridge RAM | Total usable |
+|--------|---------|---------------|-------------|
+| Open EverDrive | 64 KB | 128 KB SRAM (16-bit) | 192 KB |
+| EverDrive Pro (traditional) | 64 KB | 512 KB BRAM (16-bit) | 576 KB |
+| EverDrive Pro (SSF) | 64 KB | 3+ MB PSRAM + 512 KB BRAM | **3.5+ MB** |
+
+With cartridge RAM available for user programs, multiple processes can
+coexist in memory without swapping — pipes work with both writer and
+reader resident, context switches are just register save/restore.
+
+### What's Needed
+
+**1. 16-bit SRAM access path**
+
+The current `platform.c` uses 8-bit odd-byte access (`sram[i*2+1]`).
+Both the open-ed and Pro provide 16-bit word-wide access. Add a 16-bit
+code path using direct `memcpy()`/word access. This can be:
+
+- Build-time: `#ifdef SRAM_16BIT` (simplest, separate ROM per target)
+- Runtime: detect cartridge type at boot and set function pointers
+
+Changing the ROM header from `0xF820` to `0xE020` is also needed for
+correct BlastEm emulation and proper save serialization on the Pro.
+
+**2. Relocatable user binaries**
+
+Currently all programs link at a fixed `USER_BASE`. To load multiple
+programs simultaneously, binaries need a relocation table so the loader
+can patch absolute addresses at load time. This is ~30 lines of C in
+the loader plus a relocation table appended to each binary.
+
+Alternatively, position-independent code (PIC) via `-fPIC` avoids
+relocation tables entirely, but has a runtime cost (GOT indirection)
+and increases code size. Relocation is simpler for the 68000.
+
+**3. User memory allocator**
+
+The kernel needs to track which regions of cartridge RAM are allocated
+to which processes. A simple approach:
+
+- Divide cartridge RAM into fixed-size chunks (e.g., 4 KB or 8 KB)
+- Each process gets a contiguous allocation for text+data+BSS+heap
+- Stack allocated separately, growing down from the top of the chunk
+- Track allocations in the process table (`proc->mem_base`, `proc->mem_size`)
+
+**4. Per-process USP management**
+
+Already implemented — each process's USP is saved on its kernel stack
+during TRAP/interrupt entry. No changes needed.
+
+### Recommended Approach
+
+**Phase 1: Open EverDrive baseline (128 KB SRAM)**
+
+- Switch to 16-bit SRAM access (ROM header `0xE020`)
+- Use SRAM for writable filesystem (as today, but 4x more space)
+- User programs still run in main RAM (no relocation yet)
+- Single-tasking with `vfork()+exec()` works fine
+
+**Phase 2: Relocatable binaries + multi-process in SRAM**
+
+- Add relocation support to the binary format and loader
+- Load user programs into cartridge RAM instead of main RAM
+- On the open-ed: 128 KB fits several small programs (~2-8 KB each)
+- On the Pro (traditional): 512 KB is very comfortable
+- Kernel stays in main RAM; user programs in cartridge RAM
+- Split cartridge RAM: lower portion for programs, upper for filesystem
+
+**Phase 3: SSF mode for EverDrive Pro (optional)**
+
+- Separate build with `SEGA SSF` ROM header
+- Initialize SSF bank registers at boot
+- Set W bit for writable PSRAM
+- 3+ MB of volatile user RAM + 512 KB persistent BRAM filesystem
+- Enables SD card access via FIFO command interface
+- Runtime detection possible: build one SSF ROM that falls back
+  gracefully if FIFO registers don't respond
+
+### Complexity and Trade-offs
+
+| Concern | Recommendation |
+|---------|---------------|
+| Two ROM builds (traditional vs SSF) | Start with traditional; SSF is a separate target |
+| Open-ed vs Pro SRAM sizes | Use `SRAM_SIZE` platform constant, already in place |
+| Relocation complexity | ~30 lines C + toolchain change (mkbin emits reloc table) |
+| Memory fragmentation | Fixed-size allocations avoid fragmentation entirely |
+| PSRAM volatility (SSF) | Only persistent data goes to BRAM bank 31 |
+| Standard cart compatibility | 8-bit access path remains for `0xF820` ROMs |
+| BlastEm testing | BlastEm supports both traditional and SSF modes |
+
+### Memory Layout with User Programs in Cartridge RAM
+
+```
+Cartridge RAM (open-ed: 128 KB, Pro traditional: 512 KB):
+
+SRAM_BASE ──────────────────
+  Process A: text+data+bss     (loaded with relocations applied)
+  Process A: heap (grows up)
+  --- free ---
+  Process B: text+data+bss     (loaded at different address)
+  Process B: heap (grows up)
+  --- free ---
+  Process B: stack (grows down)
+  Process A: stack (grows down)
+SRAM_BASE + PROC_RAM_SIZE ──
+  Writable filesystem (minifs)
+SRAM_BASE + SRAM_SIZE ──────
+
+Main RAM (64 KB):
+0xFF0000  Kernel .data + .bss + heap
+          (no user programs here — they're in cartridge RAM)
+~0xFFFE00 Kernel stack
+0xFFFFFF  Top of RAM
+```
 
 ## Files
 
