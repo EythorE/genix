@@ -27,7 +27,8 @@ struct genix_header {
     uint32_t entry;
     uint32_t stack_size;
     uint32_t flags;
-    uint32_t reserved[2];
+    uint32_t text_size;
+    uint32_t reloc_count;
 };
 
 /* Re-implement the validation function from exec.c for host testing */
@@ -39,14 +40,23 @@ static int exec_validate_header(const struct genix_header *hdr)
     if (hdr->load_size == 0)
         return -ENOEXEC;
 
+    /* Entry must be within loaded region (0-based offset) */
+    if (hdr->entry >= hdr->load_size)
+        return -ENOEXEC;
+
+    /* text_size must not exceed load_size */
+    if (hdr->text_size > hdr->load_size)
+        return -ENOEXEC;
+
     uint32_t stack = hdr->stack_size ? hdr->stack_size : USER_STACK_DEFAULT;
-    uint32_t total = hdr->load_size + hdr->bss_size + stack;
+    uint32_t reloc_bytes = hdr->reloc_count * 4;
+    uint32_t effective_bss = hdr->bss_size;
+    if (reloc_bytes > effective_bss)
+        effective_bss = reloc_bytes;
+
+    uint32_t total = hdr->load_size + effective_bss + stack;
     if (total > USER_SIZE)
         return -ENOMEM;
-
-    if (hdr->entry < USER_BASE ||
-        hdr->entry >= USER_BASE + hdr->load_size)
-        return -ENOEXEC;
 
     return 0;
 }
@@ -59,7 +69,7 @@ static void test_header_valid(void)
         .magic = GENIX_MAGIC,
         .load_size = 1024,
         .bss_size = 256,
-        .entry = USER_BASE,
+        .entry = 0,       /* 0-based offset */
         .stack_size = 4096,
         .flags = 0
     };
@@ -72,7 +82,7 @@ static void test_header_bad_magic(void)
         .magic = 0xDEADBEEF,
         .load_size = 1024,
         .bss_size = 0,
-        .entry = USER_BASE,
+        .entry = 0,
     };
     ASSERT_EQ(exec_validate_header(&hdr), -ENOEXEC);
 }
@@ -83,7 +93,7 @@ static void test_header_zero_load(void)
         .magic = GENIX_MAGIC,
         .load_size = 0,
         .bss_size = 0,
-        .entry = USER_BASE,
+        .entry = 0,
     };
     ASSERT_EQ(exec_validate_header(&hdr), -ENOEXEC);
 }
@@ -94,7 +104,7 @@ static void test_header_too_large(void)
         .magic = GENIX_MAGIC,
         .load_size = USER_SIZE + 1,
         .bss_size = 0,
-        .entry = USER_BASE,
+        .entry = 0,
         .stack_size = 0,
     };
     ASSERT_EQ(exec_validate_header(&hdr), -ENOMEM);
@@ -106,30 +116,20 @@ static void test_header_bss_too_large(void)
         .magic = GENIX_MAGIC,
         .load_size = 1024,
         .bss_size = USER_SIZE,
-        .entry = USER_BASE,
+        .entry = 0,
         .stack_size = 4096,
     };
     ASSERT_EQ(exec_validate_header(&hdr), -ENOMEM);
 }
 
-static void test_header_entry_before_base(void)
-{
-    struct genix_header hdr = {
-        .magic = GENIX_MAGIC,
-        .load_size = 1024,
-        .bss_size = 0,
-        .entry = USER_BASE - 1,
-    };
-    ASSERT_EQ(exec_validate_header(&hdr), -ENOEXEC);
-}
-
 static void test_header_entry_past_load(void)
 {
+    /* Entry == load_size: one past the loaded region */
     struct genix_header hdr = {
         .magic = GENIX_MAGIC,
         .load_size = 1024,
         .bss_size = 0,
-        .entry = USER_BASE + 1024, /* one past load_size */
+        .entry = 1024,
     };
     ASSERT_EQ(exec_validate_header(&hdr), -ENOEXEC);
 }
@@ -140,7 +140,7 @@ static void test_header_entry_within_load(void)
         .magic = GENIX_MAGIC,
         .load_size = 1024,
         .bss_size = 0,
-        .entry = USER_BASE + 512,
+        .entry = 512,
     };
     ASSERT_EQ(exec_validate_header(&hdr), 0);
 }
@@ -152,7 +152,7 @@ static void test_header_default_stack(void)
         .magic = GENIX_MAGIC,
         .load_size = USER_SIZE - USER_STACK_DEFAULT,
         .bss_size = 0,
-        .entry = USER_BASE,
+        .entry = 0,
         .stack_size = 0,  /* should use USER_STACK_DEFAULT */
     };
     ASSERT_EQ(exec_validate_header(&hdr), 0);
@@ -340,7 +340,6 @@ int main(void)
     RUN_TEST(test_header_zero_load);
     RUN_TEST(test_header_too_large);
     RUN_TEST(test_header_bss_too_large);
-    RUN_TEST(test_header_entry_before_base);
     RUN_TEST(test_header_entry_past_load);
     RUN_TEST(test_header_entry_within_load);
     RUN_TEST(test_header_default_stack);

@@ -25,10 +25,9 @@ apps: libc tools
 	$(MAKE) -C apps
 	$(MAKE) -C apps/levee
 
-# Build user programs for Mega Drive (linked at 0xFF8000)
+# Build user programs for Mega Drive (same relocatable binaries)
 apps-md: libc tools
-	$(MAKE) -C apps clean
-	$(MAKE) -C apps LDSCRIPT=user-md.ld
+	$(MAKE) -C apps
 
 # Core app binaries (built for both workbench and Mega Drive)
 CORE_BINS = apps/hello apps/echo apps/cat apps/wc apps/head apps/true apps/false \
@@ -45,8 +44,8 @@ APP_BINS = $(CORE_BINS) $(wildcard apps/levee/levee)
 disk: tools apps
 	tools/mkfs.minifs disk.img 512 $(APP_BINS)
 
-# Create Mega Drive filesystem image (programs linked at 0xFF8000)
-disk-md: tools apps-md
+# Create Mega Drive filesystem image (same relocatable binaries)
+disk-md: tools apps
 	tools/mkfs.minifs disk-md.img 512 $(CORE_BINS)
 
 # Run the kernel in the emulator
@@ -87,8 +86,7 @@ test-emu: emu libc tools
 # Uses -b 600 (~10s at 60fps) for truly headless operation (no Xvfb needed).
 # Always restores the normal (non-AUTOTEST) ROM when done, even on failure.
 test-md-auto: libc tools
-	@$(MAKE) -C apps clean
-	@$(MAKE) -C apps LDSCRIPT=user-md.ld
+	@$(MAKE) -C apps
 	@tools/mkfs.minifs disk-md.img 512 $(CORE_BINS)
 	@$(MAKE) -C pal/megadrive clean
 	@$(MAKE) -C pal/megadrive DISK_IMG=../../disk-md.img EXTRA_CFLAGS=-DAUTOTEST
@@ -100,8 +98,6 @@ test-md-auto: libc tools
 	else echo "=== test-md-auto: FAIL (exit code $$rc) ==="; test_rc=1; fi; \
 	$(MAKE) -C pal/megadrive clean; \
 	$(MAKE) -C pal/megadrive DISK_IMG=../../disk-md.img; \
-	$(MAKE) -C apps clean; \
-	$(MAKE) -C apps; \
 	exit $$test_rc
 
 # Visual Mega Drive test — boot AUTOTEST ROM under Xvfb, capture screenshot.
@@ -112,8 +108,7 @@ test-md-auto: libc tools
 # Requires: Xvfb, xdotool, scrot.
 # Always restores the normal (non-AUTOTEST) ROM when done, even on failure.
 test-md-screenshot: libc tools
-	@$(MAKE) -C apps clean
-	@$(MAKE) -C apps LDSCRIPT=user-md.ld
+	@$(MAKE) -C apps
 	@tools/mkfs.minifs disk-md.img 512 $(CORE_BINS)
 	@$(MAKE) -C pal/megadrive clean
 	@$(MAKE) -C pal/megadrive DISK_IMG=../../disk-md.img EXTRA_CFLAGS=-DAUTOTEST
@@ -142,8 +137,6 @@ test-md-screenshot: libc tools
 	fi
 	@$(MAKE) -C pal/megadrive clean
 	@$(MAKE) -C pal/megadrive DISK_IMG=../../disk-md.img
-	@$(MAKE) -C apps clean
-	@$(MAKE) -C apps
 
 # imshow screenshot test — spawn imshow in no-wait mode, capture the VDP
 # color bar output. Validates the full graphics stack: kernel VDP driver,
@@ -152,8 +145,7 @@ test-md-screenshot: libc tools
 # Requires: Xvfb, xdotool, scrot, BlastEm.
 # Always restores the normal ROM when done, even on failure.
 test-md-imshow: libc tools
-	@$(MAKE) -C apps clean
-	@$(MAKE) -C apps LDSCRIPT=user-md.ld
+	@$(MAKE) -C apps
 	@tools/mkfs.minifs disk-md.img 512 $(CORE_BINS)
 	@$(MAKE) -C pal/megadrive clean
 	@$(MAKE) -C pal/megadrive DISK_IMG=../../disk-md.img EXTRA_CFLAGS=-DIMSHOW_TEST
@@ -182,8 +174,6 @@ test-md-imshow: libc tools
 	fi
 	@$(MAKE) -C pal/megadrive clean
 	@$(MAKE) -C pal/megadrive DISK_IMG=../../disk-md.img
-	@$(MAKE) -C apps clean
-	@$(MAKE) -C apps
 
 # Full testing ladder — runs all automated tests in order.
 # Levels 1-3 use host/emulator, levels 4-6 use BlastEm.

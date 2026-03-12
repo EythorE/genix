@@ -15,7 +15,7 @@ CFLAGS = -m68000 -nostdlib -nostartfiles -ffreestanding \
 
 CRT0 = ../crt0.o
 LIBC = ../../libc/libc.a
-LDSCRIPT ?= ../user.ld
+LDSCRIPT ?= ../user-reloc.ld
 MKBIN = ../../tools/mkbin
 
 CSRCS = blockio.c display.c editcor.c exec.c find.c \
@@ -35,7 +35,7 @@ $(LIBC):
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 levee.elf: $(OBJS) $(CRT0) $(LIBC)
-	$(LD) -T $(LDSCRIPT) -o $@ $(CRT0) $(OBJS) $(LIBC) $(LIBGCC)
+	$(LD) -n -T $(LDSCRIPT) --emit-relocs -o $@ $(CRT0) $(OBJS) $(LIBC) $(LIBGCC)
 
 levee: levee.elf $(MKBIN)
 	$(MKBIN) $< $@

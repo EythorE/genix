@@ -105,18 +105,29 @@ extern uint32_t USER_SIZE;   /* USER_TOP - USER_BASE */
 /* Default user stack size */
 #define USER_STACK_DEFAULT  4096
 
-/* Genix binary format header (32 bytes, big-endian on disk) */
+/* Genix binary format header (32 bytes, big-endian on disk)
+ *
+ * All binaries are relocatable: linked at address 0 with a relocation
+ * table appended after text+data. The kernel adds the load address to
+ * each relocated 32-bit word at exec() time.
+ *
+ * Binary file layout:
+ *   [32-byte header]
+ *   [text+data: load_size bytes]
+ *   [relocation table: reloc_count * 4 bytes]
+ */
 #define GENIX_MAGIC  0x47454E58  /* "GENX" */
 #define GENIX_HDR_SIZE 32
 
 struct genix_header {
     uint32_t magic;       /* 0x47454E58 "GENX" */
-    uint32_t load_size;   /* bytes to copy from file (text+data) */
-    uint32_t bss_size;    /* bytes to zero after load_size */
-    uint32_t entry;       /* absolute entry point address */
+    uint32_t load_size;   /* text+data bytes to load */
+    uint32_t bss_size;    /* bytes to zero after load */
+    uint32_t entry;       /* entry point offset (0-based) */
     uint32_t stack_size;  /* stack size hint (0 = default 4KB) */
-    uint32_t flags;       /* reserved, must be 0 */
-    uint32_t reserved[2]; /* pad to 32 bytes */
+    uint32_t flags;       /* reserved, 0 */
+    uint32_t text_size;   /* text segment size (for future split reloc) */
+    uint32_t reloc_count; /* number of uint32_t relocation entries */
 };
 
 /* Seek modes */
