@@ -356,7 +356,7 @@ extern struct proc *curproc;
 extern int nproc;
 
 void proc_init(void);
-int  load_binary(const char *path, const char **argv,
+int  load_binary(const char *path, const char **argv, uint32_t load_addr,
                  uint32_t *entry_out, uint32_t *user_sp_out);
 int  do_exec(const char *path, const char **argv);
 void do_exit(int code);
