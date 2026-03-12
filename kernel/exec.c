@@ -5,11 +5,14 @@
  * them. All binaries are linked at address 0; the loader adds the actual
  * load address to all absolute references using the relocation table.
  *
- * Two modes:
+ * Three modes:
  *   - Synchronous (do_exec): blocks caller until program exits.
  *     Used by autotest and the shell's single-tasking "exec" command.
- *   - Async (load_binary): loads binary, returns entry/sp for caller
- *     to set up a schedulable process. Used by do_spawn.
+ *   - Async (load_binary): loads binary contiguously, returns entry/sp
+ *     for caller to set up a schedulable process. Used by do_spawn.
+ *   - Split XIP (load_binary_xip): loads text and data to separate
+ *     addresses with independent relocation bases. For bank-swapping
+ *     where text lives in SRAM and data in main RAM.
  */
 #include "kernel.h"
 
@@ -58,7 +61,7 @@ int exec_validate_header(const struct genix_header *hdr)
 }
 
 /*
- * Apply relocations to a loaded binary.
+ * Apply relocations to a loaded binary (contiguous layout).
  *
  * Each relocation entry is an offset into the loaded image where a
  * 32-bit word contains a zero-based absolute address. We add load_addr
@@ -69,10 +72,11 @@ int exec_validate_header(const struct genix_header *hdr)
  *   - Values < text_size reference text -> add text_base
  *   - Values >= text_size reference data -> subtract text_size, add data_base
  *
- * In the common case (contiguous load), text_base == load_addr and
+ * In the contiguous case, text_base == load_addr and
  * data_base == load_addr + text_size, so both paths produce the same
- * result (value + load_addr). The split path exists for future XIP
- * where text and data live at different addresses.
+ * result (value + load_addr).
+ *
+ * For non-contiguous layouts (XIP), use apply_relocations_xip().
  */
 static void apply_relocations(uint8_t *base, uint32_t load_addr,
                                uint32_t text_size, uint32_t load_size,
@@ -100,6 +104,49 @@ static void apply_relocations(uint8_t *base, uint32_t load_addr,
             else
                 *ptr = (val - text_size) + data_base;
         }
+    }
+}
+
+/*
+ * Apply relocations with text and data at separate addresses (XIP).
+ *
+ * Unlike apply_relocations() which assumes text+data are contiguous in
+ * memory, this function handles the case where text lives at one address
+ * (e.g., banked SRAM at 0x200000) and data at another (e.g., main RAM
+ * at 0xFF9000). This is the core mechanism for EverDrive Pro
+ * bank-swapping: text in per-process SRAM banks, data in shared RAM.
+ *
+ * For each relocation:
+ *   1. Locate the word to patch: if offset < text_size, it's in text_mem;
+ *      otherwise it's in data_mem at (offset - text_size).
+ *   2. Read the zero-based value and determine what it references:
+ *      values < text_size reference text, values >= text_size reference data.
+ *   3. Patch with the appropriate base address.
+ *
+ * text_size must be > 0 (split mode only). For contiguous loading,
+ * use apply_relocations() instead.
+ */
+void apply_relocations_xip(uint8_t *text_mem, uint32_t text_base,
+                            uint8_t *data_mem, uint32_t data_base,
+                            uint32_t text_size,
+                            const uint32_t *relocs, uint32_t nrelocs)
+{
+    for (uint32_t i = 0; i < nrelocs; i++) {
+        uint32_t off = relocs[i];
+
+        /* Locate the word to patch */
+        uint32_t *ptr;
+        if (off < text_size)
+            ptr = (uint32_t *)(text_mem + off);
+        else
+            ptr = (uint32_t *)(data_mem + (off - text_size));
+
+        /* Determine what the value references and patch */
+        uint32_t val = *ptr;
+        if (val < text_size)
+            *ptr = val + text_base;
+        else
+            *ptr = (val - text_size) + data_base;
     }
 }
 
