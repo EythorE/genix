@@ -89,6 +89,32 @@ static void apply_relocations(uint8_t *base, uint32_t load_addr,
     }
 }
 
+/* Re-implement XIP relocator from exec.c for host testing.
+ * Text and data at separate memory locations with independent bases. */
+static void apply_relocations_xip(uint8_t *text_mem, uint32_t text_base,
+                                   uint8_t *data_mem, uint32_t data_base,
+                                   uint32_t text_size,
+                                   const uint32_t *relocs, uint32_t nrelocs)
+{
+    for (uint32_t i = 0; i < nrelocs; i++) {
+        uint32_t off = relocs[i];
+
+        /* Locate the word to patch */
+        uint32_t *ptr;
+        if (off < text_size)
+            ptr = (uint32_t *)(text_mem + off);
+        else
+            ptr = (uint32_t *)(data_mem + (off - text_size));
+
+        /* Determine what the value references and patch */
+        uint32_t val = *ptr;
+        if (val < text_size)
+            *ptr = val + text_base;
+        else
+            *ptr = (val - text_size) + data_base;
+    }
+}
+
 /* --- Header validation tests --- */
 
 static void test_header_valid_reloc(void)
@@ -510,6 +536,303 @@ static void test_reloc_dynamic_split_at_arbitrary(void)
     ASSERT_EQ(*p4, 0x060110);    /* (0x110 - 256) + 0x060100 = 0x10 + 0x060100 */
 }
 
+/* --- XIP (split text/data at separate addresses) tests --- */
+
+/* Separate buffers for text and data segments */
+static uint8_t xip_text[2048] __attribute__((aligned(4)));
+static uint8_t xip_data[2048] __attribute__((aligned(4)));
+
+static void test_xip_text_ref_from_data(void)
+{
+    /* Data section contains a pointer to code. Text at SRAM (0x200000),
+     * data at main RAM (0xFF9000). */
+    memset(xip_text, 0, sizeof(xip_text));
+    memset(xip_data, 0, sizeof(xip_data));
+
+    uint32_t text_size = 512;
+    /* Data word at offset 520 (= 8 bytes into data segment) references
+     * code at zero-based offset 0x100 (which is < text_size). */
+    uint32_t *p = (uint32_t *)(xip_data + 8);  /* offset 520 in binary */
+    *p = 0x100;
+
+    uint32_t relocs[] = { 520 };  /* offset 520 is in data segment */
+    apply_relocations_xip(xip_text, 0x200000,
+                          xip_data, 0xFF9000,
+                          text_size, relocs, 1);
+
+    /* Value 0x100 < text_size -> references text -> 0x100 + 0x200000 */
+    ASSERT_EQ(*p, 0x200100);
+}
+
+static void test_xip_data_ref_from_text(void)
+{
+    /* Text section contains a pointer to data (e.g., string literal
+     * address stored in code). */
+    memset(xip_text, 0, sizeof(xip_text));
+    memset(xip_data, 0, sizeof(xip_data));
+
+    uint32_t text_size = 512;
+    /* Text word at offset 100 references data at zero-based offset 0x220
+     * (which is >= text_size=512). */
+    uint32_t *p = (uint32_t *)(xip_text + 100);
+    *p = 0x220;
+
+    uint32_t relocs[] = { 100 };  /* offset 100 is in text segment */
+    apply_relocations_xip(xip_text, 0x200000,
+                          xip_data, 0xFF9000,
+                          text_size, relocs, 1);
+
+    /* Value 0x220 >= text_size -> references data
+     * (0x220 - 512) + 0xFF9000 = 0x20 + 0xFF9000 = 0xFF9020 */
+    ASSERT_EQ(*p, 0xFF9020);
+}
+
+static void test_xip_text_ref_from_text(void)
+{
+    /* Text section contains a pointer to another text location (e.g.,
+     * function pointer or jump table entry). */
+    memset(xip_text, 0, sizeof(xip_text));
+    memset(xip_data, 0, sizeof(xip_data));
+
+    uint32_t text_size = 1024;
+    uint32_t *p = (uint32_t *)(xip_text + 200);
+    *p = 0x80;  /* references code at offset 0x80 */
+
+    uint32_t relocs[] = { 200 };
+    apply_relocations_xip(xip_text, 0x200000,
+                          xip_data, 0xFF9000,
+                          text_size, relocs, 1);
+
+    /* 0x80 < text_size -> text ref -> 0x80 + 0x200000 = 0x200080 */
+    ASSERT_EQ(*p, 0x200080);
+}
+
+static void test_xip_data_ref_from_data(void)
+{
+    /* Data section contains a pointer to another data location
+     * (e.g., linked list node pointing to next node). */
+    memset(xip_text, 0, sizeof(xip_text));
+    memset(xip_data, 0, sizeof(xip_data));
+
+    uint32_t text_size = 256;
+    /* Offset 260 = 4 bytes into data. Value 0x110 = data offset
+     * (0x110 >= 256). */
+    uint32_t *p = (uint32_t *)(xip_data + 4);
+    *p = 0x110;
+
+    uint32_t relocs[] = { 260 };
+    apply_relocations_xip(xip_text, 0x200000,
+                          xip_data, 0xFF9000,
+                          text_size, relocs, 1);
+
+    /* 0x110 >= text_size -> data ref
+     * (0x110 - 256) + 0xFF9000 = 0x10 + 0xFF9000 = 0xFF9010 */
+    ASSERT_EQ(*p, 0xFF9010);
+}
+
+static void test_xip_mixed_refs(void)
+{
+    /* Multiple relocations across both segments with mixed references */
+    memset(xip_text, 0, sizeof(xip_text));
+    memset(xip_data, 0, sizeof(xip_data));
+
+    uint32_t text_size = 512;
+    uint32_t text_base = 0x200000;
+    uint32_t data_base = 0xFF9000;
+
+    /* Text offset 0: code->data ref (function loading global) */
+    uint32_t *p0 = (uint32_t *)(xip_text + 0);
+    *p0 = 0x210;  /* >= 512, data ref */
+
+    /* Text offset 100: code->code ref (function pointer) */
+    uint32_t *p1 = (uint32_t *)(xip_text + 100);
+    *p1 = 0x1F0;  /* < 512, text ref */
+
+    /* Data offset 520 (= 8 into data): data->code ref */
+    uint32_t *p2 = (uint32_t *)(xip_data + 8);
+    *p2 = 0x50;   /* < 512, text ref */
+
+    /* Data offset 524 (= 12 into data): data->data ref */
+    uint32_t *p3 = (uint32_t *)(xip_data + 12);
+    *p3 = 0x208;  /* >= 512, data ref */
+
+    uint32_t relocs[] = { 0, 100, 520, 524 };
+    apply_relocations_xip(xip_text, text_base,
+                          xip_data, data_base,
+                          text_size, relocs, 4);
+
+    /* p0: data ref: (0x210 - 512) + 0xFF9000 = 0x10 + 0xFF9000 */
+    ASSERT_EQ(*p0, 0xFF9010);
+    /* p1: text ref: 0x1F0 + 0x200000 */
+    ASSERT_EQ(*p1, 0x2001F0);
+    /* p2: text ref: 0x50 + 0x200000 */
+    ASSERT_EQ(*p2, 0x200050);
+    /* p3: data ref: (0x208 - 512) + 0xFF9000 = 0x08 + 0xFF9000 */
+    ASSERT_EQ(*p3, 0xFF9008);
+}
+
+static void test_xip_boundary_value(void)
+{
+    /* Value exactly equal to text_size -> first byte of data */
+    memset(xip_text, 0, sizeof(xip_text));
+    memset(xip_data, 0, sizeof(xip_data));
+
+    uint32_t text_size = 512;
+    uint32_t *p = (uint32_t *)(xip_text + 200);
+    *p = text_size;  /* == text_size -> data ref at offset 0 */
+
+    uint32_t relocs[] = { 200 };
+    apply_relocations_xip(xip_text, 0x200000,
+                          xip_data, 0xFF9000,
+                          text_size, relocs, 1);
+
+    /* (512 - 512) + 0xFF9000 = 0xFF9000 (start of data) */
+    ASSERT_EQ(*p, 0xFF9000);
+}
+
+static void test_xip_zero_relocs(void)
+{
+    /* XIP with no relocations: segments unchanged */
+    memset(xip_text, 0xAA, 64);
+    memset(xip_data, 0xBB, 64);
+
+    apply_relocations_xip(xip_text, 0x200000,
+                          xip_data, 0xFF9000,
+                          64, NULL, 0);
+
+    /* Verify nothing was modified */
+    for (int i = 0; i < 64; i++) {
+        ASSERT_EQ(xip_text[i], 0xAA);
+        ASSERT_EQ(xip_data[i], 0xBB);
+    }
+}
+
+static void test_xip_matches_contiguous_split(void)
+{
+    /* When text and data happen to be contiguous in memory, XIP relocation
+     * must produce the same result as the contiguous split relocator. */
+    uint8_t contig[2048] __attribute__((aligned(4)));
+    memset(contig, 0, sizeof(contig));
+    memset(xip_text, 0, sizeof(xip_text));
+    memset(xip_data, 0, sizeof(xip_data));
+
+    uint32_t text_size = 256;
+    uint32_t load_addr = 0x040000;
+
+    /* Set up identical images */
+    /* Offset 0: text ref */
+    *(uint32_t *)(contig + 0) = 0x10;
+    *(uint32_t *)(xip_text + 0) = 0x10;
+    /* Offset 100: data ref */
+    *(uint32_t *)(contig + 100) = 0x110;
+    *(uint32_t *)(xip_text + 100) = 0x110;
+    /* Offset 260 (= 4 into data): text ref */
+    *(uint32_t *)(contig + 260) = 0x20;
+    *(uint32_t *)(xip_data + 4) = 0x20;
+    /* Offset 264 (= 8 into data): data ref */
+    *(uint32_t *)(contig + 264) = 0x120;
+    *(uint32_t *)(xip_data + 8) = 0x120;
+
+    uint32_t relocs[] = { 0, 100, 260, 264 };
+
+    /* Contiguous split relocator */
+    apply_relocations(contig, load_addr, text_size, 1024, relocs, 4);
+
+    /* XIP relocator with contiguous addresses */
+    apply_relocations_xip(xip_text, load_addr,
+                          xip_data, load_addr + text_size,
+                          text_size, relocs, 4);
+
+    /* Results must match */
+    ASSERT_EQ(*(uint32_t *)(contig + 0), *(uint32_t *)(xip_text + 0));
+    ASSERT_EQ(*(uint32_t *)(contig + 100), *(uint32_t *)(xip_text + 100));
+    ASSERT_EQ(*(uint32_t *)(contig + 260), *(uint32_t *)(xip_data + 4));
+    ASSERT_EQ(*(uint32_t *)(contig + 264), *(uint32_t *)(xip_data + 8));
+}
+
+static void test_xip_everdrive_pro_scenario(void)
+{
+    /* Realistic EverDrive Pro bank-swapping scenario:
+     * Text in banked SRAM at 0x200000
+     * Data in main RAM at 0xFF9000
+     * Simulates a program with code in one SRAM bank and data in RAM. */
+    memset(xip_text, 0, sizeof(xip_text));
+    memset(xip_data, 0, sizeof(xip_data));
+
+    uint32_t text_size = 1024;
+    uint32_t text_base = 0x200000;  /* SRAM bank window */
+    uint32_t data_base = 0xFF9000;  /* main RAM */
+
+    /* Simulated .text: JSR target address at offset 40 */
+    uint32_t *jsr_target = (uint32_t *)(xip_text + 40);
+    *jsr_target = 0x180;  /* references subroutine at text+0x180 */
+
+    /* Simulated .text: LEA of string literal at offset 60 */
+    uint32_t *lea_str = (uint32_t *)(xip_text + 60);
+    *lea_str = 0x404;  /* text_size=1024, 0x404 >= 1024 -> data ref */
+
+    /* Simulated .data: function pointer at offset 1028 (4 into data) */
+    uint32_t *fptr = (uint32_t *)(xip_data + 4);
+    *fptr = 0x200;  /* references code at text+0x200 */
+
+    /* Simulated .data: global pointer at offset 1032 (8 into data) */
+    uint32_t *gptr = (uint32_t *)(xip_data + 8);
+    *gptr = 0x410;  /* data offset: (0x410 - 1024) = 0x10 into data */
+
+    uint32_t relocs[] = { 40, 60, 1028, 1032 };
+    apply_relocations_xip(xip_text, text_base,
+                          xip_data, data_base,
+                          text_size, relocs, 4);
+
+    /* jsr_target: 0x180 < 1024 -> text: 0x180 + 0x200000 = 0x200180 */
+    ASSERT_EQ(*jsr_target, 0x200180);
+    /* lea_str: 0x404 >= 1024 -> data: (0x404 - 1024) + 0xFF9000 = 0x04 + 0xFF9000 */
+    ASSERT_EQ(*lea_str, 0xFF9004);
+    /* fptr: 0x200 < 1024 -> text: 0x200 + 0x200000 = 0x200200 */
+    ASSERT_EQ(*fptr, 0x200200);
+    /* gptr: 0x410 >= 1024 -> data: (0x410 - 1024) + 0xFF9000 = 0x10 + 0xFF9000 */
+    ASSERT_EQ(*gptr, 0xFF9010);
+}
+
+static void test_xip_open_everdrive_scenario(void)
+{
+    /* Open EverDrive scenario: 128 KB SRAM at 0x200000 (16-bit).
+     * Text in SRAM, data in main RAM. Smaller SRAM but same mechanism. */
+    memset(xip_text, 0, sizeof(xip_text));
+    memset(xip_data, 0, sizeof(xip_data));
+
+    uint32_t text_size = 512;
+    uint32_t text_base = 0x200000;  /* SRAM */
+    uint32_t data_base = 0xFF9000;  /* main RAM */
+
+    /* Code referencing data */
+    uint32_t *p = (uint32_t *)(xip_text + 0);
+    *p = 0x204;  /* >= 512 -> data at offset 4 */
+
+    uint32_t relocs[] = { 0 };
+    apply_relocations_xip(xip_text, text_base,
+                          xip_data, data_base,
+                          text_size, relocs, 1);
+
+    ASSERT_EQ(*p, 0xFF9004);  /* (0x204 - 512) + 0xFF9000 = 4 + 0xFF9000 */
+}
+
+static void test_xip_entry_in_text(void)
+{
+    /* Entry point is always in text segment (0-based offset).
+     * For XIP, absolute entry = text_addr + entry_offset. */
+    uint32_t text_addr = 0x200000;
+    uint32_t entry_offset = 0x20;  /* typical _start offset */
+
+    uint32_t abs_entry = text_addr + entry_offset;
+    ASSERT_EQ(abs_entry, 0x200020);
+
+    /* Different SRAM bank */
+    text_addr = 0x280000;
+    abs_entry = text_addr + entry_offset;
+    ASSERT_EQ(abs_entry, 0x280020);
+}
+
 /* --- Main --- */
 
 int main(void)
@@ -546,6 +869,19 @@ int main(void)
     RUN_TEST(test_reloc_dynamic_offset_entry);
     RUN_TEST(test_reloc_dynamic_arbitrary_address);
     RUN_TEST(test_reloc_dynamic_split_at_arbitrary);
+
+    /* XIP: split text/data at separate addresses (Phase 7) */
+    RUN_TEST(test_xip_text_ref_from_data);
+    RUN_TEST(test_xip_data_ref_from_text);
+    RUN_TEST(test_xip_text_ref_from_text);
+    RUN_TEST(test_xip_data_ref_from_data);
+    RUN_TEST(test_xip_mixed_refs);
+    RUN_TEST(test_xip_boundary_value);
+    RUN_TEST(test_xip_zero_relocs);
+    RUN_TEST(test_xip_matches_contiguous_split);
+    RUN_TEST(test_xip_everdrive_pro_scenario);
+    RUN_TEST(test_xip_open_everdrive_scenario);
+    RUN_TEST(test_xip_entry_in_text);
 
     TEST_REPORT();
 }
