@@ -421,6 +421,95 @@ static void test_reloc_md_address(void)
     ASSERT_EQ(*p, 0xFF9028);
 }
 
+/* --- Dynamic load address tests (Phase 6) --- */
+
+static void test_reloc_dynamic_same_binary_two_addresses(void)
+{
+    /* Same binary image relocated to two different addresses must
+     * produce the correct relocated values at each address. This is
+     * the core property that enables multitasking: one binary, two
+     * processes at different load addresses. */
+    uint8_t img_a[1024], img_b[1024];
+    memset(img_a, 0, sizeof(img_a));
+    memset(img_b, 0, sizeof(img_b));
+
+    /* Set up identical zero-based images */
+    uint32_t *pa = (uint32_t *)(img_a + 0);
+    uint32_t *pb = (uint32_t *)(img_b + 0);
+    *pa = 0x100;   /* reference to address 0x100 in the binary */
+    *pb = 0x100;
+
+    uint32_t *pa2 = (uint32_t *)(img_a + 8);
+    uint32_t *pb2 = (uint32_t *)(img_b + 8);
+    *pa2 = 0;      /* reference to start of binary */
+    *pb2 = 0;
+
+    uint32_t relocs[] = { 0, 8 };
+
+    /* Relocate to two different addresses */
+    uint32_t addr_a = 0x040000;   /* workbench */
+    uint32_t addr_b = 0x041000;   /* hypothetical second process */
+    apply_relocations(img_a, addr_a, 0, 1024, relocs, 2);
+    apply_relocations(img_b, addr_b, 0, 1024, relocs, 2);
+
+    ASSERT_EQ(*pa, 0x040100);
+    ASSERT_EQ(*pa2, 0x040000);
+    ASSERT_EQ(*pb, 0x041100);
+    ASSERT_EQ(*pb2, 0x041000);
+}
+
+static void test_reloc_dynamic_offset_entry(void)
+{
+    /* Entry point computation: entry is 0-based offset, absolute
+     * entry = load_addr + entry. Different load addresses produce
+     * different absolute entries. */
+    uint32_t entry_offset = 0x20;
+    uint32_t abs_a = 0x040000 + entry_offset;
+    uint32_t abs_b = 0xFF9000 + entry_offset;
+    uint32_t abs_c = 0x041000 + entry_offset;
+
+    ASSERT_EQ(abs_a, 0x040020);
+    ASSERT_EQ(abs_b, 0xFF9020);
+    ASSERT_EQ(abs_c, 0x041020);
+}
+
+static void test_reloc_dynamic_arbitrary_address(void)
+{
+    /* Relocate to an arbitrary non-standard address (not USER_BASE).
+     * This simulates loading a second process at a different location. */
+    memset(test_image, 0, sizeof(test_image));
+    uint32_t *p0 = (uint32_t *)(test_image + 0);
+    uint32_t *p4 = (uint32_t *)(test_image + 4);
+    *p0 = 0x10;    /* text reference */
+    *p4 = 0x200;   /* data reference */
+
+    uint32_t relocs[] = { 0, 4 };
+    uint32_t load_addr = 0x050000;  /* arbitrary non-standard address */
+    apply_relocations(test_image, load_addr, 0, 1024, relocs, 2);
+
+    ASSERT_EQ(*p0, 0x050010);
+    ASSERT_EQ(*p4, 0x050200);
+}
+
+static void test_reloc_dynamic_split_at_arbitrary(void)
+{
+    /* Split-mode relocation at a non-standard address */
+    memset(test_image, 0, sizeof(test_image));
+    uint32_t text_size = 256;
+    uint32_t *p0 = (uint32_t *)(test_image + 0);
+    uint32_t *p4 = (uint32_t *)(test_image + 4);
+    *p0 = 0x10;     /* < text_size -> text ref */
+    *p4 = 0x110;    /* >= text_size -> data ref */
+
+    uint32_t relocs[] = { 0, 4 };
+    uint32_t load_addr = 0x060000;
+    apply_relocations(test_image, load_addr, text_size, 1024, relocs, 2);
+
+    /* text_base = 0x060000, data_base = 0x060100 */
+    ASSERT_EQ(*p0, 0x060010);    /* 0x10 + 0x060000 */
+    ASSERT_EQ(*p4, 0x060110);    /* (0x110 - 256) + 0x060100 = 0x10 + 0x060100 */
+}
+
 /* --- Main --- */
 
 int main(void)
@@ -451,6 +540,12 @@ int main(void)
     RUN_TEST(test_reloc_split_mixed);
     RUN_TEST(test_reloc_contiguous_split_same_as_simple);
     RUN_TEST(test_reloc_md_address);
+
+    /* Dynamic load address (Phase 6) */
+    RUN_TEST(test_reloc_dynamic_same_binary_two_addresses);
+    RUN_TEST(test_reloc_dynamic_offset_entry);
+    RUN_TEST(test_reloc_dynamic_arbitrary_address);
+    RUN_TEST(test_reloc_dynamic_split_at_arbitrary);
 
     TEST_REPORT();
 }
