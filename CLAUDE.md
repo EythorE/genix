@@ -96,8 +96,7 @@ make emu             # Build workbench emulator only (host binary)
 make kernel          # Build kernel only (needs cross-compiler)
 make tools           # Build host tools (mkfs, mkbin)
 make libc            # Build C library for user programs
-make apps            # Build user programs (workbench, linked at 0x040000)
-make apps-md         # Build user programs (Mega Drive, linked at 0xFF8000)
+make apps            # Build user programs (relocatable, linked at address 0)
 make disk            # Create filesystem image (workbench)
 make disk-md         # Create filesystem image (Mega Drive)
 make run             # Build all + run in emulator
