@@ -1,7 +1,10 @@
 /*
  * Binary loader and exec() implementation
  *
- * Loads Genix flat binaries from the filesystem and executes them.
+ * Loads Genix relocatable flat binaries from the filesystem and executes
+ * them. All binaries are linked at address 0; the loader adds the actual
+ * load address to all absolute references using the relocation table.
+ *
  * Two modes:
  *   - Synchronous (do_exec): blocks caller until program exits.
  *     Used by autotest and the shell's single-tasking "exec" command.
@@ -26,18 +29,78 @@ int exec_validate_header(const struct genix_header *hdr)
     if (hdr->load_size == 0)
         return -ENOEXEC;
 
-    /* Check that the binary fits in user memory */
+    /* Entry must be within the loaded region (0-based offset) */
+    if (hdr->entry >= hdr->load_size)
+        return -ENOEXEC;
+
+    /* text_size must not exceed load_size */
+    if (hdr->text_size > hdr->load_size)
+        return -ENOEXEC;
+
+    /* Check that the binary fits in user memory.
+     * Need: load_size + bss_size + stack.
+     * The relocation table is loaded into BSS temporarily, so BSS
+     * must be large enough for the reloc table (or we pad if needed). */
     uint32_t stack = hdr->stack_size ? hdr->stack_size : USER_STACK_DEFAULT;
-    uint32_t total = hdr->load_size + hdr->bss_size + stack;
+    uint32_t reloc_bytes = hdr->reloc_count * 4;
+
+    /* BSS must be at least as large as the relocation table,
+     * since we load the reloc table into BSS area temporarily. */
+    uint32_t effective_bss = hdr->bss_size;
+    if (reloc_bytes > effective_bss)
+        effective_bss = reloc_bytes;
+
+    uint32_t total = hdr->load_size + effective_bss + stack;
     if (total > USER_SIZE)
         return -ENOMEM;
 
-    /* Entry point must be within the loaded region */
-    if (hdr->entry < USER_BASE ||
-        hdr->entry >= USER_BASE + hdr->load_size)
-        return -ENOEXEC;
-
     return 0;
+}
+
+/*
+ * Apply relocations to a loaded binary.
+ *
+ * Each relocation entry is an offset into the loaded image where a
+ * 32-bit word contains a zero-based absolute address. We add load_addr
+ * to each such word.
+ *
+ * When text_size > 0 (split text/data), the relocator can distinguish
+ * text references from data references:
+ *   - Values < text_size reference text -> add text_base
+ *   - Values >= text_size reference data -> subtract text_size, add data_base
+ *
+ * In the common case (contiguous load), text_base == load_addr and
+ * data_base == load_addr + text_size, so both paths produce the same
+ * result (value + load_addr). The split path exists for future XIP
+ * where text and data live at different addresses.
+ */
+static void apply_relocations(uint8_t *base, uint32_t load_addr,
+                               uint32_t text_size, uint32_t load_size,
+                               const uint32_t *relocs, uint32_t nrelocs)
+{
+    (void)load_size;
+
+    if (text_size == 0) {
+        /* Simple: all in one segment, just add load_addr */
+        for (uint32_t i = 0; i < nrelocs; i++) {
+            uint32_t off = relocs[i];
+            uint32_t *ptr = (uint32_t *)(base + off);
+            *ptr += load_addr;
+        }
+    } else {
+        /* Split-aware: determine which segment each value references */
+        uint32_t text_base = load_addr;
+        uint32_t data_base = load_addr + text_size;
+        for (uint32_t i = 0; i < nrelocs; i++) {
+            uint32_t off = relocs[i];
+            uint32_t *ptr = (uint32_t *)(base + off);
+            uint32_t val = *ptr;
+            if (val < text_size)
+                *ptr = val + text_base;
+            else
+                *ptr = (val - text_size) + data_base;
+        }
+    }
 }
 
 /*
@@ -120,6 +183,7 @@ uint32_t exec_setup_stack(uint32_t stack_top, const char *path,
  * Load a binary from the filesystem into user memory.
  *
  * Reads the binary header, validates it, loads text+data at USER_BASE,
+ * applies relocations (adds USER_BASE to all absolute addresses),
  * zeros BSS, and sets up the user stack with argc/argv.
  *
  * On success, fills in *entry_out and *user_sp_out and returns 0.
@@ -153,15 +217,38 @@ int load_binary(const char *path, const char **argv,
 
     /* Load text+data into user memory at USER_BASE */
     n = fs_read(ip, (void *)USER_BASE, GENIX_HDR_SIZE, hdr.load_size);
-    fs_iput(ip);
-
     if (n != (int)hdr.load_size) {
+        fs_iput(ip);
         kprintf("[exec] Short read: got %d, expected %d\n",
                 n, hdr.load_size);
         return -EIO;
     }
 
-    /* Zero BSS */
+    /* Apply relocations if present */
+    if (hdr.reloc_count > 0) {
+        uint32_t reloc_bytes = hdr.reloc_count * 4;
+
+        /* Load relocation table into BSS area (temporary).
+         * Validated in exec_validate_header: bss >= reloc_bytes,
+         * or effective_bss accounts for this. */
+        uint8_t *reloc_buf = (uint8_t *)(USER_BASE + hdr.load_size);
+        uint32_t reloc_off = GENIX_HDR_SIZE + hdr.load_size;
+        n = fs_read(ip, reloc_buf, reloc_off, reloc_bytes);
+        if (n != (int)reloc_bytes) {
+            fs_iput(ip);
+            kprintf("[exec] Short reloc read: got %d, expected %d\n",
+                    n, reloc_bytes);
+            return -EIO;
+        }
+
+        apply_relocations((uint8_t *)USER_BASE, USER_BASE,
+                          hdr.text_size, hdr.load_size,
+                          (const uint32_t *)reloc_buf, hdr.reloc_count);
+    }
+
+    fs_iput(ip);
+
+    /* Zero BSS (destroys the relocation table, which is no longer needed) */
     if (hdr.bss_size > 0)
         memset((void *)(USER_BASE + hdr.load_size), 0, hdr.bss_size);
 
@@ -175,10 +262,13 @@ int load_binary(const char *path, const char **argv,
         curproc->brk = USER_BASE + hdr.load_size + hdr.bss_size;
     }
 
-    kprintf("[exec] %s: %d bytes loaded at 0x%x, entry 0x%x\n",
-            path, hdr.load_size, USER_BASE, hdr.entry);
+    /* Entry is a 0-based offset; add load address */
+    uint32_t abs_entry = USER_BASE + hdr.entry;
 
-    *entry_out = hdr.entry;
+    kprintf("[exec] %s: %d bytes loaded at 0x%x, entry 0x%x, %d relocs\n",
+            path, hdr.load_size, USER_BASE, abs_entry, hdr.reloc_count);
+
+    *entry_out = abs_entry;
     *user_sp_out = user_sp;
     return 0;
 }
