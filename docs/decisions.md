@@ -121,21 +121,27 @@ USER_BASE at exec() time. One binary, any load address.
 
 ---
 
-## Decision: Fuzix libc (Planned)
+## Decision: Libc — Custom Instead of Fuzix
 
-**Date:** Plan phase
-**Status:** Not yet implemented (currently using minimal hand-written stubs)
+**Date:** Plan phase (initial), Phase 2f (implemented)
+**Status:** Done — custom libc with 16 modules
 
 | Library | Size | POSIX Coverage | Fits 64 KB? |
 |---------|------|---------------|-------------|
 | Fuzix libc | ~5-10 KB | Good enough | Yes |
 | newlib | ~50-100 KB | Excellent | Barely |
 | uClibc-ng | ~100-200 KB | Near-complete | No |
-| Hand-written | ~1 KB | Minimal | Yes |
+| **Custom libc** | ~5 KB | Good enough | Yes |
 
-We're using hand-written stubs now (~15 syscalls). When we port Fuzix
-utilities, we'll port the Fuzix libc — it provides stdio, stdlib,
-string, ctype, termios, and everything the 143 utilities need at ~5 KB.
+Originally planned to port Fuzix libc. Instead we wrote our own, which
+ended up being comparable in size but exactly tailored to our syscall
+interface. 16 modules: stdio, stdlib, string, ctype, termios, getopt,
+sprintf, strtol, perror, regex, and more. Supports 34 apps including
+grep and levee (vi clone).
+
+**Lesson:** Writing our own libc was roughly the same effort as porting
+Fuzix's, and the result fits our syscall convention perfectly without
+any adaptation layer.
 
 ---
 
@@ -2070,3 +2076,68 @@ in C.  On the 68000, the last function call's d0 value leaks through
 as the return value, which accidentally works for the success case but
 silently swallows errors.  The `-Wreturn-type` warning (enabled by
 `-Wall`) catches this — ensure it's enabled for all builds.
+
+---
+
+## Decision: Split XIP Relocator — Separate Function, Not Overloaded
+
+**Date:** Phase 7 (March 2026)
+**Status:** Core engine done, hardware integration pending
+
+### Context
+
+Phase 7 adds support for loading text and data at separate memory
+addresses. The primary use case is EverDrive Pro bank-swapping: text
+in banked SRAM (writable, patchable at load time), data+BSS+stack in
+main RAM. This enables per-process text isolation without PIC overhead.
+
+### Design Choice
+
+We added `apply_relocations_xip()` and `load_binary_xip()` as separate
+functions rather than overloading the existing `apply_relocations()` and
+`load_binary()` with extra parameters.
+
+**Why separate functions:**
+
+1. **Different memory layout.** The contiguous relocator works with a
+   single `base` pointer and single `load_addr`. The XIP relocator has
+   two independent memory regions (text_mem/data_mem) and two independent
+   base addresses (text_base/data_base). Cramming both into one function
+   would mean passing 8 parameters, most unused in each mode.
+
+2. **Different loading sequence.** Contiguous loading is one `fs_read()`.
+   XIP loading is two `fs_read()` calls to separate addresses. Stack
+   setup differs too (stack at data_top, not load_addr + USER_SIZE).
+
+3. **Hot path stays fast.** The contiguous `apply_relocations()` is used
+   for every exec() on both platforms today. Adding XIP branching to
+   it would slow the common case for a feature only used on EverDrive
+   Pro with bank-swapping. Separate function = zero overhead when unused.
+
+**What the XIP relocator handles that the contiguous one can't:**
+
+The contiguous split-mode relocator computes
+`data_base = load_addr + text_size` (data follows text). For XIP, text
+is at 0x200000 (SRAM) and data at 0xFF9000 (main RAM) — completely
+independent addresses. The XIP relocator locates each relocation in
+the correct memory region and patches with the correct base.
+
+### What's Left
+
+The relocator and loader are done and tested (11 new host tests). The
+remaining work for full EverDrive Pro bank-swapping is hardware-level:
+- Detect Pro mode at boot
+- SRAM bank allocator (~40 lines)
+- Per-process `sram_bank` field in struct proc
+- Context switch writes bank register (~5 lines of 68000 asm)
+
+This is straightforward but can't be tested without Pro hardware or
+BlastEm SSF mode support.
+
+### Lesson
+
+The relocation scaffolding (text_size field, split-aware algorithm)
+built in Phases 4-5 proved exactly right. The XIP relocator is a
+natural extension of the split-mode logic, just with separate memory
+pointers. Building split-awareness early (even though it wasn't needed
+at the time) saved us from a format change now.

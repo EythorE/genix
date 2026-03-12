@@ -5,11 +5,14 @@
  * them. All binaries are linked at address 0; the loader adds the actual
  * load address to all absolute references using the relocation table.
  *
- * Two modes:
+ * Three modes:
  *   - Synchronous (do_exec): blocks caller until program exits.
  *     Used by autotest and the shell's single-tasking "exec" command.
- *   - Async (load_binary): loads binary, returns entry/sp for caller
- *     to set up a schedulable process. Used by do_spawn.
+ *   - Async (load_binary): loads binary contiguously, returns entry/sp
+ *     for caller to set up a schedulable process. Used by do_spawn.
+ *   - Split XIP (load_binary_xip): loads text and data to separate
+ *     addresses with independent relocation bases. For bank-swapping
+ *     where text lives in SRAM and data in main RAM.
  */
 #include "kernel.h"
 
@@ -58,7 +61,7 @@ int exec_validate_header(const struct genix_header *hdr)
 }
 
 /*
- * Apply relocations to a loaded binary.
+ * Apply relocations to a loaded binary (contiguous layout).
  *
  * Each relocation entry is an offset into the loaded image where a
  * 32-bit word contains a zero-based absolute address. We add load_addr
@@ -69,10 +72,11 @@ int exec_validate_header(const struct genix_header *hdr)
  *   - Values < text_size reference text -> add text_base
  *   - Values >= text_size reference data -> subtract text_size, add data_base
  *
- * In the common case (contiguous load), text_base == load_addr and
+ * In the contiguous case, text_base == load_addr and
  * data_base == load_addr + text_size, so both paths produce the same
- * result (value + load_addr). The split path exists for future XIP
- * where text and data live at different addresses.
+ * result (value + load_addr).
+ *
+ * For non-contiguous layouts (XIP), use apply_relocations_xip().
  */
 static void apply_relocations(uint8_t *base, uint32_t load_addr,
                                uint32_t text_size, uint32_t load_size,
@@ -100,6 +104,49 @@ static void apply_relocations(uint8_t *base, uint32_t load_addr,
             else
                 *ptr = (val - text_size) + data_base;
         }
+    }
+}
+
+/*
+ * Apply relocations with text and data at separate addresses (XIP).
+ *
+ * Unlike apply_relocations() which assumes text+data are contiguous in
+ * memory, this function handles the case where text lives at one address
+ * (e.g., banked SRAM at 0x200000) and data at another (e.g., main RAM
+ * at 0xFF9000). This is the core mechanism for EverDrive Pro
+ * bank-swapping: text in per-process SRAM banks, data in shared RAM.
+ *
+ * For each relocation:
+ *   1. Locate the word to patch: if offset < text_size, it's in text_mem;
+ *      otherwise it's in data_mem at (offset - text_size).
+ *   2. Read the zero-based value and determine what it references:
+ *      values < text_size reference text, values >= text_size reference data.
+ *   3. Patch with the appropriate base address.
+ *
+ * text_size must be > 0 (split mode only). For contiguous loading,
+ * use apply_relocations() instead.
+ */
+void apply_relocations_xip(uint8_t *text_mem, uint32_t text_base,
+                            uint8_t *data_mem, uint32_t data_base,
+                            uint32_t text_size,
+                            const uint32_t *relocs, uint32_t nrelocs)
+{
+    for (uint32_t i = 0; i < nrelocs; i++) {
+        uint32_t off = relocs[i];
+
+        /* Locate the word to patch */
+        uint32_t *ptr;
+        if (off < text_size)
+            ptr = (uint32_t *)(text_mem + off);
+        else
+            ptr = (uint32_t *)(data_mem + (off - text_size));
+
+        /* Determine what the value references and patch */
+        uint32_t val = *ptr;
+        if (val < text_size)
+            *ptr = val + text_base;
+        else
+            *ptr = (val - text_size) + data_base;
     }
 }
 
@@ -274,6 +321,130 @@ int load_binary(const char *path, const char **argv, uint32_t load_addr,
 
     kprintf("[exec] %s: %d bytes loaded at 0x%x, entry 0x%x, %d relocs\n",
             path, hdr.load_size, load_addr, abs_entry, hdr.reloc_count);
+
+    *entry_out = abs_entry;
+    *user_sp_out = user_sp;
+    return 0;
+}
+
+/*
+ * Load a binary with text and data at separate addresses (XIP).
+ *
+ * Loads the text segment to text_addr and the data segment to data_addr.
+ * Applies split relocations so text references resolve to text_base
+ * and data references to data_base. BSS is zeroed after data.
+ * Stack is set up at data_top (top of the data memory region).
+ *
+ * This is for bank-swapping: text in banked SRAM (writable, patchable),
+ * data+BSS+stack in main RAM. text_size in the header must be > 0.
+ *
+ * The relocation table is loaded into the BSS area at data_addr + data_size
+ * temporarily (same BSS trick as load_binary), then BSS is zeroed.
+ *
+ * On success, fills in *entry_out and *user_sp_out and returns 0.
+ * On failure, returns negative errno.
+ */
+int load_binary_xip(const char *path, const char **argv,
+                    uint32_t text_addr, uint32_t data_addr,
+                    uint32_t data_top,
+                    uint32_t *entry_out, uint32_t *user_sp_out)
+{
+    struct inode *ip = fs_namei(path);
+    if (!ip)
+        return -ENOENT;
+
+    if (ip->type != FT_FILE) {
+        fs_iput(ip);
+        return -ENOEXEC;
+    }
+
+    /* Read and validate header */
+    struct genix_header hdr;
+    int n = fs_read(ip, &hdr, 0, sizeof(hdr));
+    if (n != sizeof(hdr)) {
+        fs_iput(ip);
+        return -ENOEXEC;
+    }
+
+    int err = exec_validate_header(&hdr);
+    if (err < 0) {
+        fs_iput(ip);
+        return err;
+    }
+
+    /* XIP requires split binary (text_size > 0) */
+    if (hdr.text_size == 0) {
+        fs_iput(ip);
+        return -ENOEXEC;
+    }
+
+    uint32_t data_size = hdr.load_size - hdr.text_size;
+
+    /* Load text segment into text_addr (e.g., banked SRAM) */
+    n = fs_read(ip, (void *)text_addr, GENIX_HDR_SIZE, hdr.text_size);
+    if (n != (int)hdr.text_size) {
+        fs_iput(ip);
+        kprintf("[xip] Short text read: got %d, expected %d\n",
+                n, hdr.text_size);
+        return -EIO;
+    }
+
+    /* Load data segment into data_addr (e.g., main RAM) */
+    if (data_size > 0) {
+        n = fs_read(ip, (void *)data_addr,
+                    GENIX_HDR_SIZE + hdr.text_size, data_size);
+        if (n != (int)data_size) {
+            fs_iput(ip);
+            kprintf("[xip] Short data read: got %d, expected %d\n",
+                    n, data_size);
+            return -EIO;
+        }
+    }
+
+    /* Apply relocations if present */
+    if (hdr.reloc_count > 0) {
+        uint32_t reloc_bytes = hdr.reloc_count * 4;
+
+        /* Load relocation table into BSS area after data (temporary) */
+        uint8_t *reloc_buf = (uint8_t *)(data_addr + data_size);
+        uint32_t reloc_off = GENIX_HDR_SIZE + hdr.load_size;
+        n = fs_read(ip, reloc_buf, reloc_off, reloc_bytes);
+        if (n != (int)reloc_bytes) {
+            fs_iput(ip);
+            kprintf("[xip] Short reloc read: got %d, expected %d\n",
+                    n, reloc_bytes);
+            return -EIO;
+        }
+
+        apply_relocations_xip((uint8_t *)text_addr, text_addr,
+                              (uint8_t *)data_addr, data_addr,
+                              hdr.text_size,
+                              (const uint32_t *)reloc_buf,
+                              hdr.reloc_count);
+    }
+
+    fs_iput(ip);
+
+    /* Zero BSS after data (destroys relocation table) */
+    if (hdr.bss_size > 0)
+        memset((void *)(data_addr + data_size), 0, hdr.bss_size);
+
+    /* Set up user stack at top of data region */
+    uint32_t user_sp = exec_setup_stack(data_top, path, argv);
+
+    /* Update process info */
+    if (curproc) {
+        curproc->mem_base = data_addr;
+        curproc->mem_size = data_top - data_addr;
+        curproc->brk = data_addr + data_size + hdr.bss_size;
+    }
+
+    /* Entry is a 0-based offset into text; add text address */
+    uint32_t abs_entry = text_addr + hdr.entry;
+
+    kprintf("[xip] %s: text %d@0x%x, data %d@0x%x, entry 0x%x, %d relocs\n",
+            path, hdr.text_size, text_addr, data_size, data_addr,
+            abs_entry, hdr.reloc_count);
 
     *entry_out = abs_entry;
     *user_sp_out = user_sp;

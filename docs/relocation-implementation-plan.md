@@ -524,11 +524,100 @@ relocator works with arbitrary load addresses.
 
 ---
 
-## Phase 7: Split Text/Data and XIP (Future)
+## Phase 7: Split Text/Data and XIP
 
-These are documented in `docs/relocatable-binaries.md` §7 and §11 as
-Steps 1, 3, 5, 7. They build on the relocation infrastructure from
-Phases 1-6 but are not needed for the initial implementation.
+**Goal:** Enable loading text and data segments at separate memory
+addresses — text in banked SRAM (writable, patchable), data+BSS+stack
+in main RAM. This is the foundation for EverDrive Pro bank-swapping
+and per-process text isolation.
+
+**Status:** Core engine and loader implemented. Hardware integration
+(SRAM bank switching, per-process bank tracking) deferred until
+EverDrive Pro becomes the active target.
+
+### 7.1 XIP Relocator: `apply_relocations_xip()`
+
+Unlike `apply_relocations()` which assumes text+data are contiguous at
+one base address, the XIP relocator handles separate memory regions:
+
+```c
+void apply_relocations_xip(
+    uint8_t *text_mem, uint32_t text_base,
+    uint8_t *data_mem, uint32_t data_base,
+    uint32_t text_size,
+    const uint32_t *relocs, uint32_t nrelocs);
+```
+
+For each relocation:
+1. **Locate the word to patch:** if offset < text_size, it's at
+   `text_mem + offset`; otherwise at `data_mem + (offset - text_size)`.
+2. **Determine what the value references:** values < text_size
+   reference text, values >= text_size reference data.
+3. **Patch:** text references get text_base added; data references
+   get `(value - text_size) + data_base`.
+
+This correctly handles all four cross-reference patterns:
+- Code → code (function pointers, jump tables)
+- Code → data (string literals, global addresses)
+- Data → code (callback pointers, vtables)
+- Data → data (linked lists, pointer arrays)
+
+### 7.2 XIP Loader: `load_binary_xip()`
+
+```c
+int load_binary_xip(const char *path, const char **argv,
+                    uint32_t text_addr, uint32_t data_addr,
+                    uint32_t data_top,
+                    uint32_t *entry_out, uint32_t *user_sp_out);
+```
+
+Loading sequence:
+1. Read header, validate (text_size must be > 0)
+2. Read text (text_size bytes) → text_addr (e.g., SRAM bank)
+3. Read data (load_size - text_size bytes) → data_addr (e.g., main RAM)
+4. Read relocation table → BSS area at data_addr + data_size (temporary)
+5. Apply XIP relocations with separate text_base and data_base
+6. Zero BSS (destroys relocation table)
+7. Set up stack at data_top, compute entry = text_addr + entry_offset
+
+### 7.3 EverDrive Pro Bank-Swapping (Future Hardware Integration)
+
+When EverDrive Pro becomes the active target, the remaining work is:
+
+1. **Detect Pro mode at boot** — check for SSF bank registers
+2. **SRAM bank allocator** — track which SRAM banks are allocated
+   to which processes (~40 lines in mem.c)
+3. **Per-process bank tracking** — add `sram_bank` and `text_base`
+   fields to `struct proc` (2 fields)
+4. **Context switch bank select** — write bank register on process
+   switch (~5 lines in exec_asm.S)
+5. **exec() integration** — call `load_binary_xip()` when SRAM
+   banks are available, fall back to `load_binary()` otherwise
+
+Total estimated kernel code: ~50-80 lines beyond what's already done.
+
+### 7.4 Host Tests
+
+11 new tests covering:
+- All four cross-reference patterns (text↔text, text↔data, etc.)
+- Boundary value (value == text_size)
+- Zero relocations
+- Equivalence with contiguous split relocator
+- Realistic EverDrive Pro scenario (text@0x200000, data@0xFF9000)
+- Open EverDrive scenario (same mechanism, smaller SRAM)
+- Entry point computation from text address
+
+### 7.5 Implementation Deviations
+
+| Plan | Implementation | Rationale |
+|------|---------------|-----------|
+| Modify `apply_relocations()` | Added separate `apply_relocations_xip()` | Keeps the contiguous fast path untouched; XIP has fundamentally different memory layout (two base pointers, two memory regions) |
+| `load_binary()` with split params | Separate `load_binary_xip()` | Different loading sequence (two fs_read calls, different stack/memory setup); cleaner than overloading one function |
+
+### Files Modified
+- `kernel/exec.c` (add `apply_relocations_xip`, `load_binary_xip`)
+- `kernel/kernel.h` (declarations)
+- `tests/test_reloc.c` (11 new XIP tests)
 
 ---
 
@@ -541,6 +630,7 @@ Phase 3 (kernel header)      ← no dependencies (can parallel Phase 1-2)
 Phase 4 (kernel relocator)   ← depends on Phase 3
 Phase 5 (end-to-end)         ← depends on Phases 2 + 4
 Phase 6 (dynamic address)    ← depends on Phase 5
+Phase 7 (split XIP)          ← depends on Phase 6 (uses split relocator)
 ```
 
 Phases 1+3 can be developed in parallel. Phase 2 and Phase 4 can be
@@ -557,9 +647,11 @@ path is: Phase 1 → Phase 2 → Phase 5.
 | Validation update | ~20 | 0 |
 | `apply_relocations()` | ~30 | 0 (uses BSS) |
 | `load_binary()` changes | ~25 | 0 |
-| Host tests | ~200 | 0 |
-| **Total kernel addition** | **~80 lines** | **0 bytes RAM** |
-| **Total including tools** | **~400 lines** | — |
+| `apply_relocations_xip()` | ~20 | 0 (uses BSS) |
+| `load_binary_xip()` | ~70 | 0 |
+| Host tests | ~400 | 0 |
+| **Total kernel addition** | **~170 lines** | **0 bytes RAM** |
+| **Total including tools** | **~600 lines** | — |
 
 ## Risk Mitigation
 
