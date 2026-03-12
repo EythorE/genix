@@ -97,7 +97,7 @@ The `bss_size` is computed as `total_memsz - total_filesz`.
 
 ## Loading Process (`kernel/exec.c`)
 
-`load_binary(path, argv, &entry, &user_sp)`:
+`load_binary(path, argv, load_addr, &entry, &user_sp)`:
 
 1. Open file, read 32-byte header
 2. Validate: magic = "GENX", entry < load_size (0-based offset),
@@ -163,12 +163,16 @@ Single-tasking exec uses a setjmp/longjmp-style mechanism:
 
 This avoids the complexity of a full context switch for single-tasking.
 
-## Future Work
+## Status
 
-- **Phase 6: Dynamic load address** — parameterize `load_binary()` to
-  accept a load address, enabling loading programs at different addresses
-  for multitasking.
-- **Phase 7: Split text/data and XIP** — use `text_size` field for
-  execute-in-place from ROM with data in RAM (bank-swapping). See
+- **Phase 6: Dynamic load address** — **Done.** `load_binary()` accepts
+  a `load_addr` parameter. Callers pass `USER_BASE` for single-tasking;
+  multitasking can pass different addresses per process.
+- **Phase 7: Split XIP relocator** — **Partially done.**
+  `apply_relocations_xip()` is implemented and tested (11 host tests).
+  The corresponding loader (`load_binary_xip`) is not yet written.
+  Hardware integration (SRAM bank detection, per-process bank tracking,
+  context switch bank register writes) deferred until EverDrive Pro
+  becomes the active target. See
   [docs/relocatable-binaries.md](relocatable-binaries.md) for the full
   research.

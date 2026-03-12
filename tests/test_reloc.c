@@ -61,16 +61,21 @@ static int exec_validate_header(const struct genix_header *hdr)
     return 0;
 }
 
-/* Re-implement relocator from exec.c for host testing */
+/* Re-implement relocator from exec.c for host testing.
+ * Keep in sync with kernel/exec.c apply_relocations(). */
+static int reloc_skip_count;  /* track skipped entries in tests */
 static void apply_relocations(uint8_t *base, uint32_t load_addr,
                                uint32_t text_size, uint32_t load_size,
                                const uint32_t *relocs, uint32_t nrelocs)
 {
-    (void)load_size;
-
+    reloc_skip_count = 0;
     if (text_size == 0) {
         for (uint32_t i = 0; i < nrelocs; i++) {
             uint32_t off = relocs[i];
+            if ((off & 1) || off + 4 > load_size) {
+                reloc_skip_count++;
+                continue;
+            }
             uint32_t *ptr = (uint32_t *)(base + off);
             *ptr += load_addr;
         }
@@ -79,6 +84,10 @@ static void apply_relocations(uint8_t *base, uint32_t load_addr,
         uint32_t data_base = load_addr + text_size;
         for (uint32_t i = 0; i < nrelocs; i++) {
             uint32_t off = relocs[i];
+            if ((off & 1) || off + 4 > load_size) {
+                reloc_skip_count++;
+                continue;
+            }
             uint32_t *ptr = (uint32_t *)(base + off);
             uint32_t val = *ptr;
             if (val < text_size)
@@ -90,14 +99,20 @@ static void apply_relocations(uint8_t *base, uint32_t load_addr,
 }
 
 /* Re-implement XIP relocator from exec.c for host testing.
- * Text and data at separate memory locations with independent bases. */
+ * Keep in sync with kernel/exec.c apply_relocations_xip(). */
+static int xip_skip_count;
 static void apply_relocations_xip(uint8_t *text_mem, uint32_t text_base,
                                    uint8_t *data_mem, uint32_t data_base,
-                                   uint32_t text_size,
+                                   uint32_t text_size, uint32_t load_size,
                                    const uint32_t *relocs, uint32_t nrelocs)
 {
+    xip_skip_count = 0;
     for (uint32_t i = 0; i < nrelocs; i++) {
         uint32_t off = relocs[i];
+        if ((off & 1) || off + 4 > load_size) {
+            xip_skip_count++;
+            continue;
+        }
 
         /* Locate the word to patch */
         uint32_t *ptr;
@@ -536,6 +551,199 @@ static void test_reloc_dynamic_split_at_arbitrary(void)
     ASSERT_EQ(*p4, 0x060110);    /* (0x110 - 256) + 0x060100 = 0x10 + 0x060100 */
 }
 
+/* --- Bounds/alignment validation tests --- */
+
+static void test_reloc_skip_odd_offset(void)
+{
+    /* Odd-aligned relocation offset must be skipped (68000 bus fault) */
+    memset(test_image, 0, sizeof(test_image));
+    uint32_t *p0 = (uint32_t *)(test_image + 0);
+    *p0 = 0x100;
+
+    uint32_t relocs[] = { 0, 3 };  /* offset 3 is odd */
+    apply_relocations(test_image, 0x040000, 0, 1024, relocs, 2);
+
+    ASSERT_EQ(*p0, 0x040100);      /* offset 0 applied */
+    ASSERT_EQ(reloc_skip_count, 1); /* offset 3 skipped */
+}
+
+static void test_reloc_skip_out_of_range(void)
+{
+    /* Offset past load_size must be skipped */
+    memset(test_image, 0, sizeof(test_image));
+    uint32_t *p0 = (uint32_t *)(test_image + 0);
+    *p0 = 0x100;
+
+    uint32_t relocs[] = { 0, 1024 };  /* offset 1024 + 4 > 1024 */
+    apply_relocations(test_image, 0x040000, 0, 1024, relocs, 2);
+
+    ASSERT_EQ(*p0, 0x040100);
+    ASSERT_EQ(reloc_skip_count, 1);
+}
+
+static void test_reloc_skip_straddles_end(void)
+{
+    /* Offset where the 4-byte word straddles the load_size boundary */
+    memset(test_image, 0, sizeof(test_image));
+    uint32_t *p0 = (uint32_t *)(test_image + 0);
+    *p0 = 0x100;
+
+    uint32_t relocs[] = { 0, 1022 };  /* 1022 + 4 = 1026 > 1024 */
+    apply_relocations(test_image, 0x040000, 0, 1024, relocs, 2);
+
+    ASSERT_EQ(*p0, 0x040100);
+    ASSERT_EQ(reloc_skip_count, 1);
+}
+
+static void test_reloc_skip_split_mode(void)
+{
+    /* Bounds/alignment checks also work in split mode */
+    memset(test_image, 0, sizeof(test_image));
+    uint32_t *p0 = (uint32_t *)(test_image + 0);
+    *p0 = 0x10;
+
+    uint32_t relocs[] = { 0, 5 };  /* offset 5 is odd */
+    apply_relocations(test_image, 0x040000, 256, 1024, relocs, 2);
+
+    ASSERT_EQ(*p0, 0x040010);      /* text ref applied */
+    ASSERT_EQ(reloc_skip_count, 1);
+}
+
+/* --- XIP relocator tests (split text/data in separate memory) --- */
+
+static uint8_t xip_text[2048] __attribute__((aligned(4)));
+static uint8_t xip_data[2048] __attribute__((aligned(4)));
+
+static void test_xip_basic(void)
+{
+    /* Basic XIP: text ref in text, data ref in data */
+    memset(xip_text, 0, sizeof(xip_text));
+    memset(xip_data, 0, sizeof(xip_data));
+
+    uint32_t text_size = 512;
+    /* Word in text (offset 0) referencing text (value 0x10 < 512) */
+    uint32_t *pt = (uint32_t *)(xip_text + 0);
+    *pt = 0x10;
+    /* Word in data (offset 600, data-relative 88) referencing data (value 0x210 >= 512) */
+    uint32_t *pd = (uint32_t *)(xip_data + 88);
+    *pd = 0x210;
+
+    uint32_t relocs[] = { 0, 600 };
+    uint32_t text_base = 0x200000;  /* SRAM bank */
+    uint32_t data_base = 0xFF9000;  /* main RAM */
+
+    apply_relocations_xip(xip_text, text_base, xip_data, data_base,
+                           text_size, 1024, relocs, 2);
+
+    ASSERT_EQ(*pt, 0x200010);   /* 0x10 + text_base */
+    /* (0x210 - 512) + data_base = 0x10 + 0xFF9000 */
+    ASSERT_EQ(*pd, 0xFF9010);
+}
+
+static void test_xip_text_refs_data(void)
+{
+    /* Word in text segment that references data */
+    memset(xip_text, 0, sizeof(xip_text));
+    memset(xip_data, 0, sizeof(xip_data));
+
+    uint32_t text_size = 256;
+    /* Offset 100 is in text; value 0x120 >= 256 means data ref */
+    uint32_t *p = (uint32_t *)(xip_text + 100);
+    *p = 0x120;
+
+    uint32_t relocs[] = { 100 };
+    apply_relocations_xip(xip_text, 0x200000, xip_data, 0xFF9000,
+                           text_size, 1024, relocs, 1);
+
+    /* (0x120 - 256) + 0xFF9000 = 0x20 + 0xFF9000 = 0xFF9020 */
+    ASSERT_EQ(*p, 0xFF9020);
+}
+
+static void test_xip_data_refs_text(void)
+{
+    /* Word in data segment that references text */
+    memset(xip_text, 0, sizeof(xip_text));
+    memset(xip_data, 0, sizeof(xip_data));
+
+    uint32_t text_size = 256;
+    /* Offset 300 is in data (300-256=44); value 0x10 < 256 means text ref */
+    uint32_t *p = (uint32_t *)(xip_data + 44);
+    *p = 0x10;
+
+    uint32_t relocs[] = { 300 };
+    apply_relocations_xip(xip_text, 0x200000, xip_data, 0xFF9000,
+                           text_size, 1024, relocs, 1);
+
+    /* 0x10 + 0x200000 = 0x200010 */
+    ASSERT_EQ(*p, 0x200010);
+}
+
+static void test_xip_skip_odd(void)
+{
+    /* XIP relocator also rejects odd offsets */
+    memset(xip_text, 0, sizeof(xip_text));
+    memset(xip_data, 0, sizeof(xip_data));
+
+    uint32_t *pt = (uint32_t *)(xip_text + 0);
+    *pt = 0x10;
+
+    uint32_t relocs[] = { 0, 7 };
+    apply_relocations_xip(xip_text, 0x200000, xip_data, 0xFF9000,
+                           256, 1024, relocs, 2);
+
+    ASSERT_EQ(*pt, 0x200010);
+    ASSERT_EQ(xip_skip_count, 1);
+}
+
+static void test_xip_skip_out_of_range(void)
+{
+    /* XIP relocator rejects offsets past load_size */
+    memset(xip_text, 0, sizeof(xip_text));
+    memset(xip_data, 0, sizeof(xip_data));
+
+    uint32_t *pt = (uint32_t *)(xip_text + 0);
+    *pt = 0x10;
+
+    uint32_t relocs[] = { 0, 2000 };  /* 2000 + 4 > 1024 */
+    apply_relocations_xip(xip_text, 0x200000, xip_data, 0xFF9000,
+                           256, 1024, relocs, 2);
+
+    ASSERT_EQ(*pt, 0x200010);
+    ASSERT_EQ(xip_skip_count, 1);
+}
+
+static void test_xip_contiguous_matches_simple(void)
+{
+    /* When text_base + text_size == data_base (contiguous), XIP must
+     * produce the same result as the simple contiguous relocator */
+    memset(test_image, 0, sizeof(test_image));
+    memset(xip_text, 0, sizeof(xip_text));
+    memset(xip_data, 0, sizeof(xip_data));
+
+    uint32_t text_size = 256;
+    uint32_t load_addr = 0x040000;
+
+    /* Set up contiguous image */
+    uint32_t *p0 = (uint32_t *)(test_image + 0);
+    uint32_t *p4 = (uint32_t *)(test_image + 260);
+    *p0 = 0x10;   /* text ref */
+    *p4 = 0x110;  /* data ref */
+
+    /* Set up split image (same values) */
+    uint32_t *xp0 = (uint32_t *)(xip_text + 0);
+    uint32_t *xp4 = (uint32_t *)(xip_data + 4);  /* 260 - 256 = 4 */
+    *xp0 = 0x10;
+    *xp4 = 0x110;
+
+    uint32_t relocs[] = { 0, 260 };
+    apply_relocations(test_image, load_addr, text_size, 1024, relocs, 2);
+    apply_relocations_xip(xip_text, load_addr, xip_data, load_addr + text_size,
+                           text_size, 1024, relocs, 2);
+
+    ASSERT_EQ(*p0, *xp0);
+    ASSERT_EQ(*p4, *xp4);
+}
+
 /* --- Main --- */
 
 int main(void)
@@ -572,6 +780,20 @@ int main(void)
     RUN_TEST(test_reloc_dynamic_offset_entry);
     RUN_TEST(test_reloc_dynamic_arbitrary_address);
     RUN_TEST(test_reloc_dynamic_split_at_arbitrary);
+
+    /* Bounds/alignment validation */
+    RUN_TEST(test_reloc_skip_odd_offset);
+    RUN_TEST(test_reloc_skip_out_of_range);
+    RUN_TEST(test_reloc_skip_straddles_end);
+    RUN_TEST(test_reloc_skip_split_mode);
+
+    /* XIP relocator (split text/data in separate memory) */
+    RUN_TEST(test_xip_basic);
+    RUN_TEST(test_xip_text_refs_data);
+    RUN_TEST(test_xip_data_refs_text);
+    RUN_TEST(test_xip_skip_odd);
+    RUN_TEST(test_xip_skip_out_of_range);
+    RUN_TEST(test_xip_contiguous_matches_simple);
 
     TEST_REPORT();
 }

@@ -5,14 +5,15 @@
  * them. All binaries are linked at address 0; the loader adds the actual
  * load address to all absolute references using the relocation table.
  *
- * Three modes:
+ * Two loader modes:
  *   - Synchronous (do_exec): blocks caller until program exits.
  *     Used by autotest and the shell's single-tasking "exec" command.
  *   - Async (load_binary): loads binary contiguously, returns entry/sp
  *     for caller to set up a schedulable process. Used by do_spawn.
- *   - Split XIP (load_binary_xip): loads text and data to separate
- *     addresses with independent relocation bases. For bank-swapping
- *     where text lives in SRAM and data in main RAM.
+ *
+ * The XIP relocator (apply_relocations_xip) handles split text/data
+ * at separate addresses for future EverDrive Pro bank-swapping.
+ * The corresponding loader (load_binary_xip) is not yet implemented.
  */
 #include "kernel.h"
 
@@ -82,12 +83,15 @@ static void apply_relocations(uint8_t *base, uint32_t load_addr,
                                uint32_t text_size, uint32_t load_size,
                                const uint32_t *relocs, uint32_t nrelocs)
 {
-    (void)load_size;
-
     if (text_size == 0) {
         /* Simple: all in one segment, just add load_addr */
         for (uint32_t i = 0; i < nrelocs; i++) {
             uint32_t off = relocs[i];
+            if ((off & 1) || off + 4 > load_size) {
+                kprintf("[reloc] bad offset 0x%x (load_size=0x%x), skipped\n",
+                        off, load_size);
+                continue;
+            }
             uint32_t *ptr = (uint32_t *)(base + off);
             *ptr += load_addr;
         }
@@ -97,6 +101,11 @@ static void apply_relocations(uint8_t *base, uint32_t load_addr,
         uint32_t data_base = load_addr + text_size;
         for (uint32_t i = 0; i < nrelocs; i++) {
             uint32_t off = relocs[i];
+            if ((off & 1) || off + 4 > load_size) {
+                kprintf("[reloc] bad offset 0x%x (load_size=0x%x), skipped\n",
+                        off, load_size);
+                continue;
+            }
             uint32_t *ptr = (uint32_t *)(base + off);
             uint32_t val = *ptr;
             if (val < text_size)
@@ -128,11 +137,16 @@ static void apply_relocations(uint8_t *base, uint32_t load_addr,
  */
 void apply_relocations_xip(uint8_t *text_mem, uint32_t text_base,
                             uint8_t *data_mem, uint32_t data_base,
-                            uint32_t text_size,
+                            uint32_t text_size, uint32_t load_size,
                             const uint32_t *relocs, uint32_t nrelocs)
 {
     for (uint32_t i = 0; i < nrelocs; i++) {
         uint32_t off = relocs[i];
+        if ((off & 1) || off + 4 > load_size) {
+            kprintf("[reloc-xip] bad offset 0x%x (load_size=0x%x), skipped\n",
+                    off, load_size);
+            continue;
+        }
 
         /* Locate the word to patch */
         uint32_t *ptr;
@@ -299,9 +313,13 @@ int load_binary(const char *path, const char **argv, uint32_t load_addr,
 
     fs_iput(ip);
 
-    /* Zero BSS (destroys the relocation table, which is no longer needed) */
-    if (hdr.bss_size > 0)
-        memset((void *)(load_addr + hdr.load_size), 0, hdr.bss_size);
+    /* Zero BSS (destroys the relocation table, which is no longer needed).
+     * When reloc table was larger than BSS, zero the full extent so
+     * stale relocation data doesn't leak into future sbrk() regions. */
+    uint32_t reloc_bytes = hdr.reloc_count * 4;  /* reloc_count * 4: small constant */
+    uint32_t zero_size = hdr.bss_size > reloc_bytes ? hdr.bss_size : reloc_bytes;
+    if (zero_size > 0)
+        memset((void *)(load_addr + hdr.load_size), 0, zero_size);
 
     /* Set up user stack at top of user region.
      * stack_top = load_addr + USER_SIZE places the stack at the same
