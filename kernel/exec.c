@@ -182,14 +182,18 @@ uint32_t exec_setup_stack(uint32_t stack_top, const char *path,
 /*
  * Load a binary from the filesystem into user memory.
  *
- * Reads the binary header, validates it, loads text+data at USER_BASE,
- * applies relocations (adds USER_BASE to all absolute addresses),
+ * Reads the binary header, validates it, loads text+data at load_addr,
+ * applies relocations (adds load_addr to all absolute addresses),
  * zeros BSS, and sets up the user stack with argc/argv.
+ *
+ * load_addr is the base address where the binary will be loaded.
+ * Callers pass USER_BASE for single-tasking; future multitasking
+ * can pass different addresses for each process.
  *
  * On success, fills in *entry_out and *user_sp_out and returns 0.
  * On failure, returns negative errno.
  */
-int load_binary(const char *path, const char **argv,
+int load_binary(const char *path, const char **argv, uint32_t load_addr,
                 uint32_t *entry_out, uint32_t *user_sp_out)
 {
     struct inode *ip = fs_namei(path);
@@ -215,8 +219,8 @@ int load_binary(const char *path, const char **argv,
         return err;
     }
 
-    /* Load text+data into user memory at USER_BASE */
-    n = fs_read(ip, (void *)USER_BASE, GENIX_HDR_SIZE, hdr.load_size);
+    /* Load text+data into user memory at load_addr */
+    n = fs_read(ip, (void *)load_addr, GENIX_HDR_SIZE, hdr.load_size);
     if (n != (int)hdr.load_size) {
         fs_iput(ip);
         kprintf("[exec] Short read: got %d, expected %d\n",
@@ -231,7 +235,7 @@ int load_binary(const char *path, const char **argv,
         /* Load relocation table into BSS area (temporary).
          * Validated in exec_validate_header: bss >= reloc_bytes,
          * or effective_bss accounts for this. */
-        uint8_t *reloc_buf = (uint8_t *)(USER_BASE + hdr.load_size);
+        uint8_t *reloc_buf = (uint8_t *)(load_addr + hdr.load_size);
         uint32_t reloc_off = GENIX_HDR_SIZE + hdr.load_size;
         n = fs_read(ip, reloc_buf, reloc_off, reloc_bytes);
         if (n != (int)reloc_bytes) {
@@ -241,7 +245,7 @@ int load_binary(const char *path, const char **argv,
             return -EIO;
         }
 
-        apply_relocations((uint8_t *)USER_BASE, USER_BASE,
+        apply_relocations((uint8_t *)load_addr, load_addr,
                           hdr.text_size, hdr.load_size,
                           (const uint32_t *)reloc_buf, hdr.reloc_count);
     }
@@ -250,23 +254,26 @@ int load_binary(const char *path, const char **argv,
 
     /* Zero BSS (destroys the relocation table, which is no longer needed) */
     if (hdr.bss_size > 0)
-        memset((void *)(USER_BASE + hdr.load_size), 0, hdr.bss_size);
+        memset((void *)(load_addr + hdr.load_size), 0, hdr.bss_size);
 
-    /* Set up user stack */
-    uint32_t user_sp = exec_setup_stack(USER_TOP, path, argv);
+    /* Set up user stack at top of user region.
+     * stack_top = load_addr + USER_SIZE places the stack at the same
+     * position relative to the loaded binary regardless of load_addr. */
+    uint32_t stack_top = load_addr + USER_SIZE;
+    uint32_t user_sp = exec_setup_stack(stack_top, path, argv);
 
     /* Update process info */
     if (curproc) {
-        curproc->mem_base = USER_BASE;
+        curproc->mem_base = load_addr;
         curproc->mem_size = USER_SIZE;
-        curproc->brk = USER_BASE + hdr.load_size + hdr.bss_size;
+        curproc->brk = load_addr + hdr.load_size + hdr.bss_size;
     }
 
     /* Entry is a 0-based offset; add load address */
-    uint32_t abs_entry = USER_BASE + hdr.entry;
+    uint32_t abs_entry = load_addr + hdr.entry;
 
     kprintf("[exec] %s: %d bytes loaded at 0x%x, entry 0x%x, %d relocs\n",
-            path, hdr.load_size, USER_BASE, abs_entry, hdr.reloc_count);
+            path, hdr.load_size, load_addr, abs_entry, hdr.reloc_count);
 
     *entry_out = abs_entry;
     *user_sp_out = user_sp;
@@ -285,7 +292,7 @@ int load_binary(const char *path, const char **argv,
 int do_exec(const char *path, const char **argv)
 {
     uint32_t entry, user_sp;
-    int err = load_binary(path, argv, &entry, &user_sp);
+    int err = load_binary(path, argv, USER_BASE, &entry, &user_sp);
     if (err < 0)
         return err;
 
