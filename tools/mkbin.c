@@ -301,10 +301,14 @@ int main(int argc, char *argv[])
                         return 1;
                     }
 
-                    /* 68000 requires word-aligned access for 32-bit values */
+                    /* 68000 bus-faults on word/long access at odd addresses */
                     if (off & 1) {
-                        fprintf(stderr, "mkbin: WARNING: reloc offset 0x%x is "
-                                "odd (unaligned 32-bit access on 68000)\n", off);
+                        fprintf(stderr, "mkbin: ERROR: reloc offset 0x%x is "
+                                "odd (would cause 68000 address error)\n", off);
+                        free(relocs);
+                        free(flat);
+                        free(elf);
+                        return 1;
                     }
 
                     /* Grow reloc array if needed */

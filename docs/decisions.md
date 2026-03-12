@@ -2093,9 +2093,10 @@ main RAM. This enables per-process text isolation without PIC overhead.
 
 ### Design Choice
 
-We added `apply_relocations_xip()` and `load_binary_xip()` as separate
-functions rather than overloading the existing `apply_relocations()` and
-`load_binary()` with extra parameters.
+We added `apply_relocations_xip()` as a separate function rather than
+overloading `apply_relocations()` with extra parameters. The
+corresponding loader `load_binary_xip()` is not yet implemented —
+it will be written when EverDrive Pro hardware integration begins.
 
 **Why separate functions:**
 
@@ -2124,8 +2125,9 @@ the correct memory region and patches with the correct base.
 
 ### What's Left
 
-The relocator and loader are done and tested (11 new host tests). The
-remaining work for full EverDrive Pro bank-swapping is hardware-level:
+The XIP relocator is done and tested (11 new host tests). The
+corresponding loader (`load_binary_xip`) and hardware integration
+remain. The remaining work for full EverDrive Pro bank-swapping:
 - Detect Pro mode at boot
 - SRAM bank allocator (~40 lines)
 - Per-process `sram_bank` field in struct proc
@@ -2141,3 +2143,75 @@ built in Phases 4-5 proved exactly right. The XIP relocator is a
 natural extension of the split-mode logic, just with separate memory
 pointers. Building split-awareness early (even though it wasn't needed
 at the time) saved us from a format change now.
+
+---
+
+## Pain Point: Relocation Code Review Findings (March 2026)
+
+A post-merge code review of the relocatable binaries implementation
+(Phases 1-7) found several issues. All have been fixed, but they're
+documented here as lessons learned.
+
+### 1. Missing runtime validation of relocation offsets
+
+`apply_relocations()` dereferenced `(uint32_t *)(base + off)` with no
+check that `off` was within `load_size` or even-aligned. A corrupt
+binary could cause the kernel to write to arbitrary memory or trigger a
+68000 address error (bus fault on odd-aligned long access).
+
+`mkbin` validates at build time, but the kernel must also validate at
+runtime — binaries could come from SD card, be corrupted in SRAM, or
+be hand-crafted by a user. CLAUDE.md section 4: "Validate all
+user-supplied pointers/sizes at the syscall boundary."
+
+**Fix:** Added bounds check (`off + 4 > load_size`) and alignment check
+(`off & 1`) to both `apply_relocations()` and `apply_relocations_xip()`.
+Bad entries are skipped with a kprintf warning.
+
+### 2. mkbin odd-alignment check was a warning, not an error
+
+`mkbin` printed a WARNING for odd-aligned R_68K_32 relocations but
+still emitted them. On the 68000, this is always a fatal bus fault —
+there's no valid reason for an odd-aligned 32-bit relocation.
+
+**Fix:** Changed to an ERROR that exits with failure.
+
+### 3. load_binary_xip() declared but never implemented
+
+The Phase 7 commit message said "Add apply_relocations_xip() and
+load_binary_xip()" but only the relocator was actually written. The
+`load_binary_xip()` declaration existed in `kernel.h` with no
+implementation in `exec.c`. `decisions.md` also claimed both were done.
+
+This is a dangling contract: anyone calling it would get a link error,
+and the documentation was misleading.
+
+**Fix:** Removed the declaration from `kernel.h`. Updated `exec.c`
+header comment and `decisions.md` to accurately reflect that only the
+XIP relocator is done, not the loader.
+
+### 4. BSS zeroing didn't cover the relocation table footprint
+
+When `reloc_count * 4 > bss_size`, the loader zeroed only `bss_size`
+bytes, leaving stale relocation table data in memory between BSS end
+and the reloc table extent. Future `sbrk()` calls could encounter
+non-zero data where they expected zeroes.
+
+**Fix:** Zero `max(bss_size, reloc_bytes)` bytes instead of just
+`bss_size`.
+
+### 5. Stale documentation
+
+`binary-format.md` "Future Work" section listed Phase 6 as upcoming
+even though it was already implemented. The `load_binary()` signature
+in the doc was also stale (missing the `load_addr` parameter).
+
+**Fix:** Updated to reflect current state.
+
+### Lesson
+
+Code review after merge catches things that implementation-time
+testing misses. The functional tests all passed (5123 host tests,
+workbench autotest, BlastEm autotest) — but they only test the happy
+path with well-formed binaries. Defensive validation, documentation
+accuracy, and dead code cleanup require human review.
