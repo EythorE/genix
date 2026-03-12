@@ -486,7 +486,7 @@ Detailed technical documentation is in `docs/`:
 | `docs/toolchain.md` | Cross-compiler setup (apt quick-start + build from source) |
 | `docs/megadrive.md` | Mega Drive target: memory, cartridges, SRAM, testing |
 | `docs/everdrive-pro.md` | EverDrive Pro hardware: FPGA memory, SSF mode, writable PSRAM |
-| `docs/decisions.md` | Design decisions, reversals, pain points, project history |
+| `docs/decisions.md` | Active design decisions guiding current development |
 | `docs/architecture.md` | System architecture, memory maps, layers |
 | `docs/kernel.md` | Kernel subsystems |
 | `docs/syscalls.md` | Syscall interface and convention |
@@ -496,7 +496,9 @@ Detailed technical documentation is in `docs/`:
 | `docs/multitasking.md` | Process model, vfork/exec, scheduling |
 | `docs/automated-testing.md` | Testing ladder, AUTOTEST kernel, discrepancy procedures |
 | `docs/68000-programming.md` | ISA constraints, division, ABI |
-| `docs/fuzix-heritage.md` | What we took from Fuzix, what's different |
+| `docs/everdrive-sd-card.md` | SD card access on Open EverDrive and Pro cartridges |
+| `docs/relocatable-binaries.md` | Relocation research, XIP strategies, EverDrive bank-swapping |
+| `HISTORY.md` | Comprehensive project history (FUZIX heritage, phases, bugs, lessons) |
 | `OPTIMIZATION_PLAN.md` | 68000 performance gaps vs FUZIX, with full source references |
 
 ## Project Status

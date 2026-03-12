@@ -34,8 +34,8 @@ See the [main CLAUDE.md](../CLAUDE.md) for setup instructions and quick start.
 | Document | Description |
 |----------|-------------|
 | [68000 Programming](68000-programming.md) | ISA constraints, division, ABI, alignment |
-| [Fuzix Heritage](fuzix-heritage.md) | What we took from Fuzix, what's different |
-| [Design Decisions](decisions.md) | Project history, design choices, reversals, pain points |
+| [Project History](../HISTORY.md) | FUZIX heritage, implementation timeline, bugs, lessons |
+| [Design Decisions](decisions.md) | Active design decisions guiding development |
 
 ## Quick Reference
 
