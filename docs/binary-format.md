@@ -97,18 +97,18 @@ The `bss_size` is computed as `total_memsz - total_filesz`.
 
 ## Loading Process (`kernel/exec.c`)
 
-`load_binary(path, argv, load_addr, &entry, &user_sp)`:
+`load_binary(path, argv, &entry, &user_sp)`:
 
 1. Open file, read 32-byte header
 2. Validate: magic = "GENX", entry < load_size (0-based offset),
    text_size <= load_size, total size fits in user memory,
    effective_bss >= reloc table size
-3. Copy `load_size` bytes from file (offset 32) to `load_addr`
+3. Copy `load_size` bytes from file (offset 32) to `USER_BASE`
 4. If `reloc_count > 0`: load relocation table into BSS area,
-   apply relocations (add load_addr to each 32-bit word), then
+   apply relocations (add USER_BASE to each 32-bit word), then
    zero BSS (destroying the reloc table)
-5. Set up user stack at `load_addr + USER_SIZE` with argc, argv, envp
-6. Compute absolute entry: `load_addr + hdr.entry`
+5. Set up user stack at `USER_TOP` with argc, argv, envp
+6. Compute absolute entry: `USER_BASE + hdr.entry`
 
 ### User Stack Layout
 
@@ -163,26 +163,12 @@ Single-tasking exec uses a setjmp/longjmp-style mechanism:
 
 This avoids the complexity of a full context switch for single-tasking.
 
-## XIP Loading (Phase 7)
-
-`load_binary_xip()` loads text and data to separate addresses for
-execute-in-place scenarios (e.g., text in banked SRAM, data in main
-RAM):
-
-1. Read text (text_size bytes) → text_addr (e.g., SRAM at 0x200000)
-2. Read data (load_size - text_size bytes) → data_addr (e.g., RAM at 0xFF9000)
-3. Load relocation table into BSS area at data_addr + data_size
-4. Apply `apply_relocations_xip()` with separate text_base/data_base
-5. Zero BSS, set up stack at data_top
-
-Entry point = text_addr + entry (always in text segment).
-
-See [docs/relocation-implementation-plan.md](relocation-implementation-plan.md)
-Phase 7 for details.
-
 ## Future Work
 
-- **EverDrive Pro bank-swapping** — per-process SRAM bank allocation,
-  context switch bank register writes, SSF mode detection. See
+- **Phase 6: Dynamic load address** — parameterize `load_binary()` to
+  accept a load address, enabling loading programs at different addresses
+  for multitasking.
+- **Phase 7: Split text/data and XIP** — use `text_size` field for
+  execute-in-place from ROM with data in RAM (bank-swapping). See
   [docs/relocatable-binaries.md](relocatable-binaries.md) for the full
-  research and [docs/megadrive.md](megadrive.md) for hardware details.
+  research.
