@@ -358,6 +358,14 @@ extern int nproc;
 void proc_init(void);
 int  load_binary(const char *path, const char **argv, uint32_t load_addr,
                  uint32_t *entry_out, uint32_t *user_sp_out);
+int  load_binary_xip(const char *path, const char **argv,
+                     uint32_t text_addr, uint32_t data_addr,
+                     uint32_t data_top,
+                     uint32_t *entry_out, uint32_t *user_sp_out);
+void apply_relocations_xip(uint8_t *text_mem, uint32_t text_base,
+                            uint8_t *data_mem, uint32_t data_base,
+                            uint32_t text_size,
+                            const uint32_t *relocs, uint32_t nrelocs);
 int  do_exec(const char *path, const char **argv);
 void do_exit(int code);
 int  do_waitpid(int pid, int *status);

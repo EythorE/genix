@@ -89,6 +89,32 @@ static void apply_relocations(uint8_t *base, uint32_t load_addr,
     }
 }
 
+/* Re-implement XIP relocator from exec.c for host testing.
+ * Text and data at separate memory locations with independent bases. */
+static void apply_relocations_xip(uint8_t *text_mem, uint32_t text_base,
+                                   uint8_t *data_mem, uint32_t data_base,
+                                   uint32_t text_size,
+                                   const uint32_t *relocs, uint32_t nrelocs)
+{
+    for (uint32_t i = 0; i < nrelocs; i++) {
+        uint32_t off = relocs[i];
+
+        /* Locate the word to patch */
+        uint32_t *ptr;
+        if (off < text_size)
+            ptr = (uint32_t *)(text_mem + off);
+        else
+            ptr = (uint32_t *)(data_mem + (off - text_size));
+
+        /* Determine what the value references and patch */
+        uint32_t val = *ptr;
+        if (val < text_size)
+            *ptr = val + text_base;
+        else
+            *ptr = (val - text_size) + data_base;
+    }
+}
+
 /* --- Header validation tests --- */
 
 static void test_header_valid_reloc(void)
