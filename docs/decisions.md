@@ -74,45 +74,50 @@ See [docs/filesystem.md](filesystem.md) for the on-disk layout.
 
 ---
 
-## Decision: Binary Format — Genix Flat Binary (Stepping Stone)
+## Decision: Binary Format — Genix Relocatable Flat Binary
 
-**Date:** Phase 2a
-**Status:** Current, planned migration to Fuzix a.out
+**Date:** Phase 2a (initial), March 2026 (relocation added)
+**Status:** Done — relocatable binaries are the default
 
 We started with a custom 32-byte flat binary header ("GENX" magic) for
-single-tasking exec(). It's simple: header + text+data blob loaded at a
-fixed address (USER_BASE), BSS zeroed, entry point jumped to.
+single-tasking exec(). Initially it was simple: header + text+data blob
+loaded at a fixed address (USER_BASE), BSS zeroed, entry point jumped to.
 
-**Planned migration:** When we add multitasking and relocation, we'll
-switch to the Fuzix a.out format (16-byte header with relocation
-support). This gives us access to 143+ Fuzix utilities compiled for
-68000 systems with 64 KB RAM. The formats are similar enough that the
-loader change is straightforward.
-
-**Lesson:** Design choices are cheap. Starting with the simpler format
-let us get exec() working fast. Migrating later is a known cost.
-
-See [docs/binary-format.md](binary-format.md) for the current format.
-
----
-
-## Decision: Fuzix a.out for Multitasking (Planned)
-
-**Date:** Plan phase
-**Status:** Not yet implemented
-
-We evaluated four binary formats:
+**Relocation added (March 2026):** Rather than migrating to Fuzix a.out,
+we extended the existing Genix header to support relocation directly.
+After evaluating four options (Fuzix a.out, bFLT v4, PIC/GOT, extended
+Genix header), we chose to extend the Genix header because:
 
 | Format | Ecosystem | Complexity | Fits 64 KB? |
 |--------|-----------|------------|-------------|
 | Fuzix a.out | 143+ utilities | Low (16-byte header) | Yes |
 | bFLT v4 | uClinux apps | Medium (64-byte header) | Barely |
 | Raw ELF | Huge (in theory) | High (complex loader) | No |
-| Flat binary | Custom only | Trivial | Yes |
+| **Genix extended** | Custom (34 apps) | Low (32-byte header) | Yes |
 
-Fuzix a.out wins: right-sized header, kernel-applied relocations (~30
-lines of C), and the largest collection of Unix programs designed for
-exactly this scale.
+Extending our own header gave us exactly the relocation semantics we
+need (zero extra RAM via BSS-trick, split text/data awareness for future
+XIP) without forcing a format migration that would have been disruptive
+for no practical benefit. The Fuzix a.out header uses 16-bit size fields
+which would limit programs to 64 KB segments — fine for now but limiting.
+Our 32-bit fields future-proof for SRAM-extended programs.
+
+**Design:** Programs are linked at address 0 with `--emit-relocs`. mkbin
+extracts R_68K_32 relocations from the ELF and appends them as a uint32_t
+offset array. At exec() time, the kernel loads the relocation table into
+the BSS area (temporary), adds USER_BASE to each relocated 32-bit word,
+then zeros BSS. One binary works on both workbench (USER_BASE=0x040000)
+and Mega Drive (USER_BASE=0xFF9000).
+
+**Lesson:** Extending our own format was cheaper than migrating to an
+external format. The relocation mechanism is identical to FUZIX's, but
+the header stays familiar. See [docs/binary-format.md](binary-format.md)
+and [docs/relocation-implementation-plan.md](relocation-implementation-plan.md).
+
+**Previous pain point resolved:** Entry points were previously absolute
+addresses, which meant `user-md.ld` link address and `pal_user_base()`
+had to match exactly. Now entry is a 0-based offset — the loader adds
+USER_BASE at exec() time. One binary, any load address.
 
 ---
 
@@ -780,8 +785,11 @@ binaries.
 
 **Lesson:** `user-md.ld` link address and `pal_user_base()` return
 value MUST match exactly. The binary format uses absolute entry points.
-Any mismatch causes `exec_validate_header` to reject the binary with
--ENOEXEC. When we add relocation, entry points should become offsets.
+Any mismatch caused `exec_validate_header` to reject the binary with
+-ENOEXEC. **Resolved:** Relocatable binaries (March 2026) changed entry
+points to 0-based offsets. The loader adds USER_BASE at exec() time, so
+separate `user.ld` / `user-md.ld` scripts are no longer needed — one
+unified `user-reloc.ld` links at address 0.
 
 ### What changed
 

@@ -5,6 +5,36 @@ Based on the research in `docs/relocatable-binaries.md` (which is the
 canonical reference — do NOT delete or overwrite that document).
 
 **Date:** 2026-03-11
+**Updated:** 2026-03-12
+
+### Implementation Status
+
+| Phase | Description | Status |
+|-------|-------------|--------|
+| 1 | Linker script (link at 0) | **Done** |
+| 2 | mkbin relocation extraction | **Done** |
+| 3 | Kernel header update | **Done** |
+| 4 | Kernel relocation engine | **Done** |
+| 5 | End-to-end validation | **Done** |
+| 6 | Dynamic load address | **Done** |
+| 7 | Split text/data and XIP | Future |
+
+### Implementation Deviations from Plan
+
+1. **`reloc_count` instead of `reloc_size`**: The header field stores the
+   number of relocation entries (not bytes). This eliminates the need to
+   validate that `reloc_size` is a multiple of 4. Bytes = `reloc_count * 4`.
+
+2. **No `GENIX_FLAG_RELOC` flag**: All binaries are now relocatable (linked
+   at 0 with relocation table). The `flags` field stays reserved=0. There
+   is no backward-compatible non-relocatable path because all 34 apps were
+   migrated at once. The simplification is cleaner: entry is always a
+   0-based offset, reloc_count=0 means no relocations needed.
+
+3. **mkbin processes `SHT_RELA` (not `SHT_REL`)**: m68k-elf-ld with
+   `--emit-relocs` produces RELA sections (with explicit addend). The plan
+   mentioned both but the implementation handles RELA only, which is correct
+   for this toolchain.
 
 ---
 

@@ -570,7 +570,7 @@ int do_spawn(const char *path, const char **argv)
 
     /* Load binary into user memory */
     uint32_t entry, user_sp;
-    int rc = load_binary(path, argv, &entry, &user_sp);
+    int rc = load_binary(path, argv, USER_BASE, &entry, &user_sp);
 
     /* Restore curproc to parent */
     curproc = parent;
