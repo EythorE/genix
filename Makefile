@@ -1,6 +1,6 @@
 # Genix top-level Makefile
 
-.PHONY: all emu kernel tools libc apps apps-md disk disk-md run test test-emu test-md test-md-auto test-md-screenshot test-md-imshow test-all megadrive clean
+.PHONY: all emu kernel tools libc apps disk disk-md run test test-emu test-md test-md-auto test-md-screenshot test-md-imshow test-all megadrive clean
 
 all: emu kernel tools apps disk
 
@@ -20,14 +20,10 @@ tools:
 libc:
 	$(MAKE) -C libc
 
-# Build user programs (workbench — linked at 0x040000)
+# Build user programs (relocatable binaries, linked at address 0)
 apps: libc tools
 	$(MAKE) -C apps
 	$(MAKE) -C apps/levee
-
-# Build user programs for Mega Drive (same relocatable binaries)
-apps-md: libc tools
-	$(MAKE) -C apps
 
 # Core app binaries (built for both workbench and Mega Drive)
 CORE_BINS = apps/hello apps/echo apps/cat apps/wc apps/head apps/true apps/false \
@@ -61,7 +57,7 @@ test:
 	$(MAKE) -C tests check
 
 # Scripted emulator test — pipe commands, check stdout
-# Rebuilds apps + disk to ensure workbench linker script is used.
+# Rebuilds apps + disk, then runs AUTOTEST kernel under workbench emulator.
 # Always restores the normal (non-AUTOTEST) kernel when done, even on failure.
 test-emu: emu libc tools
 	@$(MAKE) -C apps clean
