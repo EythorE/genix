@@ -215,9 +215,9 @@ uint32_t pal_mem_end(void)
 uint32_t pal_user_base(void)
 {
     /* Per-process kstacks (512 bytes × 16 procs) push _end past 0xFF8000.
-     * USER_BASE must match user-md.ld link address exactly because
-     * binaries have absolute entry points. 0xFF9000 gives ~1.5 KB
-     * for heap and ~27.5 KB for user programs. */
+     * Binaries are linked at address 0 and relocated at exec() time,
+     * so USER_BASE can be adjusted without rebuilding apps.
+     * 0xFF9000 gives ~1.5 KB for heap and ~27.5 KB for user programs. */
     return 0xFF9000;
 }
 

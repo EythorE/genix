@@ -3,3 +3,12 @@ test_mem
 test_exec
 test_proc
 test_libc
+test_vdp
+test_signal
+test_redir
+test_tty
+test_fs
+test_buf
+test_kprintf
+test_pipe
+test_reloc

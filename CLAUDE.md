@@ -135,7 +135,7 @@ Hardware / Emulator
 - **Single-tasking first** — then add multi-tasking
 - **Workbench emulator** for rapid development (Musashi 68000 SBC)
 - **BlastEm** for Mega Drive validation before real hardware
-- **Simple binary format** — flat binary with 32-byte header, relocatable later
+- **Relocatable binary format** — flat binary linked at 0, relocated at exec() time
 - **Modular memory layout** — supports different cartridge configurations
 - **SRAM is optional** — system runs on 64 KB main RAM alone; SRAM adds
   persistent storage and extended RAM
@@ -192,22 +192,31 @@ See `docs/megadrive.md` for cartridge configurations and SRAM details.
 0x100000  Top of RAM / kernel stack
 ```
 
-## Binary Format (Genix flat binary)
+## Binary Format (Genix relocatable flat binary)
 
-32-byte big-endian header followed by program text+data:
+32-byte big-endian header followed by program text+data and relocation table:
 ```c
 struct genix_header {
     uint32_t magic;       /* 0x47454E58 "GENX" */
-    uint32_t load_size;   /* bytes to load (text+data) */
+    uint32_t load_size;   /* text+data bytes to load */
     uint32_t bss_size;    /* bytes to zero after load */
-    uint32_t entry;       /* absolute entry point address */
+    uint32_t entry;       /* entry point offset (0-based) */
     uint32_t stack_size;  /* stack hint (0 = default 4KB) */
-    uint32_t flags;       /* reserved */
-    uint32_t reserved[2]; /* pad to 32 bytes */
+    uint32_t flags;       /* reserved, 0 */
+    uint32_t text_size;   /* text segment size (for split reloc) */
+    uint32_t reloc_count; /* number of uint32_t relocation entries */
 };
 ```
 
-Build flow: `.c → .o → .elf (${CROSS}ld) → mkbin → genix binary`
+Binary layout: `[32B header][text+data][reloc table: reloc_count × 4 bytes]`
+
+Programs are linked at address 0 with `--emit-relocs`. mkbin extracts
+R_68K_32 relocations from the ELF. At exec() time, the kernel loads
+text+data at USER_BASE, reads the relocation table into BSS temporarily,
+adds USER_BASE to each relocated 32-bit word, then zeros BSS. One binary
+works on both workbench (USER_BASE=0x040000) and Mega Drive (0xFF9000).
+
+Build flow: `.c → .o → .elf (ld -T user-reloc.ld --emit-relocs) → mkbin → genix binary`
 
 ## Syscall Convention
 
@@ -341,10 +350,11 @@ These guidelines are critical for making this project succeed. Follow them stric
 
 ### 8. Design flexibility
 
-- **Binary format**: Currently flat binary at fixed load address. Will add relocation
-  for multitasking. The format is intentionally simple — changing it later is cheap.
-- **Load address**: USER_BASE is a compile-time constant for now. When we add
-  relocation/multitasking, programs will load at dynamic addresses.
+- **Binary format**: Relocatable flat binary linked at address 0 with relocation
+  table. One binary runs on both workbench and Mega Drive. The kernel relocates
+  absolute addresses at exec() time. Stage 2 will add `-msep-data` for XIP from ROM.
+- **Load address**: USER_BASE is a runtime value provided by PAL. Programs are
+  relocated to whatever address the kernel loads them at.
 - **Memory layout must be modular**: USER_BASE, USER_TOP, and SRAM configuration
   must be platform-provided (via PAL), not hardcoded in the kernel. Different
   cartridge configurations (no SRAM, small SRAM, large SRAM) require different
