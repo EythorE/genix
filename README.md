@@ -9,8 +9,7 @@ while reusing proven Mega Drive drivers from
 
 Genix boots and runs user programs on both the workbench emulator and real
 Mega Drive hardware. See [docs/decisions.md](docs/decisions.md) for design
-history and [docs/status-review.md](docs/status-review.md) for detailed
-plan-vs-reality analysis.
+history and [HISTORY.md](HISTORY.md) for the full project timeline.
 
 | Phase | Description | Status |
 |-------|-------------|--------|
@@ -198,5 +197,5 @@ See [docs/](docs/) for detailed technical documentation:
 | [TTY & Console](docs/tty.md) | VDP console and TTY subsystem |
 | [Automated Testing](docs/automated-testing.md) | Testing ladder, AUTOTEST, discrepancy procedures |
 | [68000 Programming](docs/68000-programming.md) | ISA constraints, division, ABI |
-| [Design Decisions](docs/decisions.md) | Project history, choices, reversals |
-| [Fuzix Heritage](docs/fuzix-heritage.md) | What we took from Fuzix, what's different |
+| [Design Decisions](docs/decisions.md) | Active design decisions guiding development |
+| [Project History](HISTORY.md) | FUZIX heritage, implementation timeline, bugs, lessons |

@@ -50,6 +50,11 @@ void pal_disk_write(uint8_t dev, uint16_t blockno, const uint8_t *buf)
 /* Prevent kernel.h inclusion */
 #define KERNEL_H
 
+/* Forward declarations needed by buf.c (normally in kernel.h) */
+struct buf *bread(uint8_t dev, uint16_t blockno);
+void bwrite(struct buf *b);
+void brelse(struct buf *b);
+
 /* ---- Include the real buf.c ---- */
 #include "../kernel/buf.c"
 

@@ -95,6 +95,61 @@ relocatable binary:
 
 The `bss_size` is computed as `total_memsz - total_filesz`.
 
+### mkbin Validation Rules
+
+mkbin performs several validation steps to reject malformed ELF inputs
+and produce safe relocatable binaries:
+
+**ELF validation:**
+- Magic bytes must match `\x7fELF`
+- Class must be 32-bit (`ELFCLASS32`)
+- Endianness must be big-endian (`ELFDATA2MSB`)
+- Machine must be m68k (`EM_68K = 4`)
+- At least one `PT_LOAD` segment must exist
+
+**Relocation type handling:**
+
+| Type | Name | Action |
+|------|------|--------|
+| 1 | `R_68K_32` | **Emit** — absolute 32-bit address reference |
+| 2 | `R_68K_16` | **Error** — 16-bit absolute not supported |
+| 4 | `R_68K_PC32` | **Skip** — PC-relative, no patching needed |
+| 5 | `R_68K_PC16` | **Skip** — PC-relative |
+| 6 | `R_68K_PC8` | **Skip** — PC-relative |
+| — | `R_68K_GOT*` | **Skip** — GOT-relative, link-time resolved |
+
+**Alignment check:** Relocation offsets must be even. On the 68000,
+an odd-aligned 32-bit access is always a fatal bus fault. mkbin
+rejects odd offsets as an error (not a warning).
+
+**Non-loaded section filtering:** Only `SHT_RELA` sections targeting
+`SHF_ALLOC` sections are processed. This filters out `.rela.debug_*`
+and other non-loaded relocation sections.
+
+**Post-processing:**
+- Relocation offsets are sorted by value (cache-friendly runtime access)
+- Duplicate offsets are removed (can occur with merged sections)
+
+**text_size computation:** Scans section headers for `SHT_PROGBITS`
+sections with `SHF_EXECINSTR` flag. The maximum end address of these
+sections becomes `text_size`, enabling the split text/data relocator.
+
+### Runtime Bounds Checking
+
+The kernel validates each relocation offset at runtime before
+dereferencing it. This protects against corrupt binaries (from SD card,
+SRAM, or hand-crafted inputs).
+
+Two checks per relocation entry:
+- **Bounds:** `off + 4 > load_size` — offset must not straddle or
+  exceed the loaded image. Bad entries are skipped with a kprintf warning.
+- **Alignment:** `off & 1` — offset must be even. The 68000 faults on
+  word/long access at odd addresses. Bad entries are skipped with a
+  kprintf warning.
+
+Both checks are applied in `apply_relocations()` and
+`apply_relocations_xip()`.
+
 ## Loading Process (`kernel/exec.c`)
 
 `load_binary(path, argv, load_addr, &entry, &user_sp)`:
