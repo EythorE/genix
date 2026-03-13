@@ -229,6 +229,85 @@ At 7.67 MHz, one cycle ≈ 130 ns.
 | `TRAP #n` | 34 | Software interrupt |
 | `RTE` | 20 | Return from exception |
 
+## Performance Primitives
+
+The 68000 has no barrel shifter, no 32-bit divide, and MOVE.B is nearly
+as expensive as MOVE.L. Naive C loops that look fine on a modern CPU can
+be 4-20x slower than idiomatic 68000 assembly. Use assembly for
+performance-critical primitives. See `OPTIMIZATION_PLAN.md` for the full
+audit with FUZIX source references.
+
+### memcpy / memset
+
+Must use MOVE.L for medium sizes, MOVEM.L for large sizes. A
+byte-at-a-time C loop costs 32 cycles per 4 bytes; a single MOVE.L
+costs 12 cycles for the same 4 bytes. MOVEM.L with 11 registers moves
+44 bytes per instruction pair. Never use a naive `while (n--) *d++ = *s++`
+loop for anything performance-sensitive.
+
+### Block copies (512 bytes)
+
+Use dedicated `copy_block_512` / `copy_blocks` routines with fully
+unrolled MOVEM.L (see FUZIX's `lowlevel-68000.S:872-907`). This is the
+pattern for all filesystem block I/O, exec loading, and large buffer
+operations.
+
+### DBRA for counted loops
+
+The 68000's DBRA instruction combines decrement-and-branch in a single
+2-byte instruction. Use it for all counted loops in assembly instead of
+separate sub/bne.
+
+### Post-increment addressing
+
+`(a0)+` auto-increments after access, eliminating a separate `addq`
+instruction. Use it in all copy loops.
+
+### setjmp / longjmp
+
+Must use MOVEM.L for bulk register save/restore (12 registers = 48 bytes
+in one instruction). See FUZIX's `Library/libs/setjmp_68000.S` for the
+reference implementation.
+
+### When porting code from FUZIX
+
+- **Always check for a 68000 assembly version first.** FUZIX often has
+  both a generic C implementation and a `_68000.S` variant (e.g.,
+  `setjmp.c` vs `setjmp_68000.S`). Always use the assembly version.
+- **Even between two C implementations, one may be vastly superior.**
+  Example: FUZIX's `__umodsi3` calls `__udivsi3` then computes
+  `remainder = dividend - quotient * divisor` (3 instructions + function
+  call). Genix's old version duplicated the entire 30-line
+  shift-and-subtract algorithm. Same result, wildly different cost. When
+  porting C code, study the algorithm — don't just copy the first
+  version you find.
+- **Check `OPTIMIZATION_PLAN.md`** before writing any new memory copy,
+  block I/O, or arithmetic routine. It documents every optimization gap
+  found between FUZIX and Genix with full source references.
+
+## Constrained System Programming
+
+The Mega Drive has 64 KB main RAM, a 7.67 MHz CPU, and no MMU. Every
+byte and cycle matters.
+
+- **Measure before optimizing**: Profile in the emulator first. Most
+  kernel code is not hot-path.
+- **Prefer computation over memory**: RAM is scarcer than cycles. A few
+  extra instructions to avoid a lookup table is usually better.
+- **Use fixed-size arrays**: Dynamic allocation should be rare. Process
+  table, buffer cache, inode cache — all statically sized.
+- **Avoid deep call stacks**: Each function call costs 18 cycles (JSR) +
+  register saves. Keep the call depth shallow.
+- **Inline tiny functions**: Small helpers (< 5 instructions) should be
+  `static inline` or macros to avoid call overhead.
+- **Keep structures aligned**: All fields at even offsets. The 68000
+  faults on unaligned word/long access. Pad with `uint8_t` if needed.
+- **Use `volatile` for hardware registers**: The compiler will reorder
+  or eliminate accesses to memory-mapped I/O without it.
+- **Test on host, verify on target**: Host tests catch logic bugs. The
+  emulator catches ABI and alignment bugs. Real hardware catches timing
+  bugs.
+
 ## Memory-Mapped I/O
 
 The 68000 uses memory-mapped I/O (no separate I/O address space).
