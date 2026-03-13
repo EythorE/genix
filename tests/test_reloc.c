@@ -744,6 +744,157 @@ static void test_xip_contiguous_matches_simple(void)
     ASSERT_EQ(*p4, *xp4);
 }
 
+/* --- XIP header validation tests --- */
+
+#define GENIX_FLAG_XIP 0x01
+
+/* Re-implement XIP validation from exec.c for host testing */
+static int exec_validate_header_xip(const struct genix_header *hdr)
+{
+    if (hdr->magic != GENIX_MAGIC)
+        return -ENOEXEC;
+    if (hdr->load_size == 0)
+        return -ENOEXEC;
+    if (hdr->entry >= hdr->load_size)
+        return -ENOEXEC;
+    if (hdr->text_size == 0 || hdr->text_size > hdr->load_size)
+        return -ENOEXEC;
+    if (!(hdr->flags & GENIX_FLAG_XIP))
+        return -ENOEXEC;
+
+    uint32_t data_size = hdr->load_size - hdr->text_size;
+    uint32_t stack = hdr->stack_size ? hdr->stack_size : USER_STACK_DEFAULT;
+    uint32_t total = data_size + hdr->bss_size + stack;
+    if (total > USER_SIZE)
+        return -ENOMEM;
+
+    return 0;
+}
+
+static void test_xip_header_valid(void)
+{
+    struct genix_header hdr = {
+        .magic = GENIX_MAGIC,
+        .load_size = 4096,
+        .bss_size = 256,
+        .entry = 0,
+        .stack_size = 4096,
+        .flags = GENIX_FLAG_XIP,
+        .text_size = 3072,
+        .reloc_count = 0,
+    };
+    ASSERT_EQ(exec_validate_header_xip(&hdr), 0);
+}
+
+static void test_xip_header_no_flag(void)
+{
+    /* Missing XIP flag should fail */
+    struct genix_header hdr = {
+        .magic = GENIX_MAGIC,
+        .load_size = 4096,
+        .bss_size = 256,
+        .entry = 0,
+        .flags = 0,
+        .text_size = 3072,
+    };
+    ASSERT_EQ(exec_validate_header_xip(&hdr), -ENOEXEC);
+}
+
+static void test_xip_header_no_text_size(void)
+{
+    /* text_size=0 should fail for XIP */
+    struct genix_header hdr = {
+        .magic = GENIX_MAGIC,
+        .load_size = 4096,
+        .bss_size = 256,
+        .entry = 0,
+        .flags = GENIX_FLAG_XIP,
+        .text_size = 0,
+    };
+    ASSERT_EQ(exec_validate_header_xip(&hdr), -ENOEXEC);
+}
+
+static void test_xip_header_only_data_in_ram(void)
+{
+    /* XIP: only data+bss+stack must fit in RAM.
+     * Large text_size is OK because it stays in ROM. */
+    struct genix_header hdr = {
+        .magic = GENIX_MAGIC,
+        .load_size = 100000,   /* 100KB total (large text in ROM) */
+        .bss_size = 256,
+        .entry = 0,
+        .stack_size = 4096,
+        .flags = GENIX_FLAG_XIP,
+        .text_size = 99000,    /* 99KB text in ROM */
+    };
+    /* data = 100000 - 99000 = 1000 bytes
+     * total RAM = 1000 + 256 + 4096 = 5352, well within USER_SIZE */
+    ASSERT_EQ(exec_validate_header_xip(&hdr), 0);
+}
+
+static void test_xip_header_data_too_large(void)
+{
+    /* Even with XIP, data+bss+stack must fit in RAM */
+    struct genix_header hdr = {
+        .magic = GENIX_MAGIC,
+        .load_size = USER_SIZE + 10000,
+        .bss_size = 256,
+        .entry = 0,
+        .stack_size = 4096,
+        .flags = GENIX_FLAG_XIP,
+        .text_size = 10000,    /* small text */
+    };
+    /* data = USER_SIZE + 10000 - 10000 = USER_SIZE
+     * total = USER_SIZE + 256 + 4096 > USER_SIZE */
+    ASSERT_EQ(exec_validate_header_xip(&hdr), -ENOMEM);
+}
+
+static void test_xip_header_text_exceeds_load(void)
+{
+    struct genix_header hdr = {
+        .magic = GENIX_MAGIC,
+        .load_size = 4096,
+        .bss_size = 0,
+        .entry = 0,
+        .flags = GENIX_FLAG_XIP,
+        .text_size = 8000,  /* > load_size */
+    };
+    ASSERT_EQ(exec_validate_header_xip(&hdr), -ENOEXEC);
+}
+
+static void test_xip_header_saves_ram(void)
+{
+    /* Demonstrate the RAM savings: a binary that would fail regular
+     * validation (too large for RAM) passes XIP validation because
+     * only data segment needs to fit. */
+    struct genix_header hdr_regular = {
+        .magic = GENIX_MAGIC,
+        .load_size = USER_SIZE,  /* fills all user RAM */
+        .bss_size = 256,
+        .entry = 0,
+        .stack_size = 4096,
+        .flags = 0,
+        .text_size = 0,
+        .reloc_count = 0,
+    };
+    /* Regular: load_size + bss + stack > USER_SIZE → ENOMEM */
+    ASSERT_EQ(exec_validate_header(&hdr_regular), -ENOMEM);
+
+    /* Same binary as XIP: text in ROM, only data fits */
+    struct genix_header hdr_xip = {
+        .magic = GENIX_MAGIC,
+        .load_size = USER_SIZE,
+        .bss_size = 256,
+        .entry = 0,
+        .stack_size = 4096,
+        .flags = GENIX_FLAG_XIP,
+        .text_size = USER_SIZE - 1024,  /* almost all is text (in ROM) */
+        .reloc_count = 0,
+    };
+    /* XIP: data=1024, total=1024+256+4096=5376 << USER_SIZE → OK */
+    ASSERT_EQ(exec_validate_header_xip(&hdr_xip), 0);
+}
+
 /* --- Main --- */
 
 int main(void)
@@ -794,6 +945,15 @@ int main(void)
     RUN_TEST(test_xip_skip_odd);
     RUN_TEST(test_xip_skip_out_of_range);
     RUN_TEST(test_xip_contiguous_matches_simple);
+
+    /* XIP header validation (Phase 5) */
+    RUN_TEST(test_xip_header_valid);
+    RUN_TEST(test_xip_header_no_flag);
+    RUN_TEST(test_xip_header_no_text_size);
+    RUN_TEST(test_xip_header_only_data_in_ram);
+    RUN_TEST(test_xip_header_data_too_large);
+    RUN_TEST(test_xip_header_text_exceeds_load);
+    RUN_TEST(test_xip_header_saves_ram);
 
     TEST_REPORT();
 }

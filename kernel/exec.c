@@ -5,15 +5,16 @@
  * them. All binaries are linked at address 0; the loader adds the actual
  * load address to all absolute references using the relocation table.
  *
- * Two loader modes:
+ * Three loader modes:
  *   - Synchronous (do_exec): blocks caller until program exits.
  *     Used by autotest and the shell's single-tasking "exec" command.
  *   - Async (load_binary): loads binary contiguously, returns entry/sp
  *     for caller to set up a schedulable process. Used by do_spawn.
+ *   - XIP (load_binary_xip): text stays in ROM, only data+BSS in RAM.
+ *     Used on Mega Drive when binaries have GENIX_FLAG_XIP set by romfix.
  *
  * The XIP relocator (apply_relocations_xip) handles split text/data
- * at separate addresses for future EverDrive Pro bank-swapping.
- * The corresponding loader (load_binary_xip) is not yet implemented.
+ * at separate addresses for EverDrive Pro bank-swapping.
  */
 #include "kernel.h"
 
@@ -55,6 +56,43 @@ int exec_validate_header(const struct genix_header *hdr)
         effective_bss = reloc_bytes;
 
     uint32_t total = hdr->load_size + effective_bss + stack;
+    if (total > USER_SIZE)
+        return -ENOMEM;
+
+    return 0;
+}
+
+/*
+ * Validate a Genix binary header for XIP loading.
+ *
+ * XIP binaries execute text from ROM; only data+BSS+stack must fit in RAM.
+ * Requires text_size > 0 (split text/data) and GENIX_FLAG_XIP set.
+ * Returns 0 on success, negative errno on failure.
+ */
+int exec_validate_header_xip(const struct genix_header *hdr)
+{
+    if (hdr->magic != GENIX_MAGIC)
+        return -ENOEXEC;
+
+    if (hdr->load_size == 0)
+        return -ENOEXEC;
+
+    /* Entry must be within the text segment */
+    if (hdr->entry >= hdr->load_size)
+        return -ENOEXEC;
+
+    /* XIP requires split text/data info */
+    if (hdr->text_size == 0 || hdr->text_size > hdr->load_size)
+        return -ENOEXEC;
+
+    /* XIP flag must be set (binary was resolved by romfix) */
+    if (!(hdr->flags & GENIX_FLAG_XIP))
+        return -ENOEXEC;
+
+    /* Only data+BSS+stack must fit in user RAM (text is in ROM) */
+    uint32_t data_size = hdr->load_size - hdr->text_size;
+    uint32_t stack = hdr->stack_size ? hdr->stack_size : USER_STACK_DEFAULT;
+    uint32_t total = data_size + hdr->bss_size + stack;
     if (total > USER_SIZE)
         return -ENOMEM;
 
@@ -346,6 +384,95 @@ int load_binary(const char *path, const char **argv, uint32_t load_addr,
 }
 
 /*
+ * Load a binary for XIP (Execute-in-Place) from ROM.
+ *
+ * Text stays in ROM at text_addr; only data+BSS are loaded into RAM
+ * at data_addr. The binary must have GENIX_FLAG_XIP set (by romfix),
+ * meaning all relocations were already resolved at build time:
+ *   - text refs → absolute ROM addresses
+ *   - data refs → USER_BASE addresses
+ *
+ * No runtime relocation is needed. This saves precious RAM on the
+ * Mega Drive by keeping text in ROM (~70% of a typical binary).
+ *
+ * On success, fills in *entry_out and *user_sp_out and returns 0.
+ * On failure, returns negative errno.
+ */
+int load_binary_xip(const char *path, const char **argv,
+                    uint32_t text_addr, uint32_t data_addr,
+                    uint32_t *entry_out, uint32_t *user_sp_out)
+{
+    struct inode *ip = fs_namei(path);
+    if (!ip)
+        return -ENOENT;
+
+    if (ip->type != FT_FILE) {
+        fs_iput(ip);
+        return -ENOEXEC;
+    }
+
+    /* Read and validate header */
+    struct genix_header hdr;
+    int n = fs_read(ip, &hdr, 0, sizeof(hdr));
+    if (n != sizeof(hdr)) {
+        fs_iput(ip);
+        return -ENOEXEC;
+    }
+
+    int err = exec_validate_header_xip(&hdr);
+    if (err < 0) {
+        fs_iput(ip);
+        return err;
+    }
+
+    /* Data segment size (everything after text in load_size) */
+    uint32_t data_size = hdr.load_size - hdr.text_size;
+
+    /* Copy only the data segment from ROM to RAM.
+     * Text stays in ROM — the CPU executes it directly.
+     * Data init values are at file offset: GENIX_HDR_SIZE + text_size */
+    if (data_size > 0) {
+        n = fs_read(ip, (void *)data_addr,
+                    GENIX_HDR_SIZE + hdr.text_size, data_size);
+        if (n != (int)data_size) {
+            fs_iput(ip);
+            kprintf("[xip] Short data read: got %d, expected %d\n",
+                    n, data_size);
+            return -EIO;
+        }
+    }
+
+    fs_iput(ip);
+
+    /* Zero BSS after data */
+    if (hdr.bss_size > 0)
+        memset((void *)(data_addr + data_size), 0, hdr.bss_size);
+
+    /* Set up user stack at top of user region */
+    uint32_t stack_top = data_addr + USER_SIZE;
+    uint32_t user_sp = exec_setup_stack(stack_top, path, argv);
+
+    /* Update process info */
+    if (curproc) {
+        curproc->mem_base = data_addr;
+        curproc->mem_size = USER_SIZE;
+        curproc->brk = data_addr + data_size + hdr.bss_size;
+    }
+
+    /* Entry: text_addr + entry offset (romfix already resolved all
+     * internal references, but entry in the header is still 0-based) */
+    uint32_t abs_entry = text_addr + hdr.entry;
+
+    kprintf("[xip] %s: text %d @ 0x%x, data %d @ 0x%x, entry 0x%x\n",
+            path, hdr.text_size, text_addr, data_size, data_addr,
+            abs_entry);
+
+    *entry_out = abs_entry;
+    *user_sp_out = user_sp;
+    return 0;
+}
+
+/*
  * Synchronous exec: load and run a binary, blocking until it exits.
  *
  * Uses exec_enter/exec_leave to save kernel context, enter user mode,
@@ -357,9 +484,30 @@ int load_binary(const char *path, const char **argv, uint32_t load_addr,
 int do_exec(const char *path, const char **argv)
 {
     uint32_t entry, user_sp;
-    int err = load_binary(path, argv, USER_BASE, &entry, &user_sp);
+    int err;
+
+    /* Try XIP first: if the file is in memory-mapped ROM and has the
+     * XIP flag, execute text directly from ROM (saves precious RAM). */
+    struct inode *ip = fs_namei(path);
+    if (ip) {
+        uint32_t rom_addr = pal_rom_file_addr(ip);
+        fs_iput(ip);
+        if (rom_addr) {
+            err = load_binary_xip(path, argv,
+                                  rom_addr + GENIX_HDR_SIZE, USER_BASE,
+                                  &entry, &user_sp);
+            if (err == 0)
+                goto run;
+            /* XIP failed (not XIP-flagged, or validation error) —
+             * fall through to regular loading */
+        }
+    }
+
+    err = load_binary(path, argv, USER_BASE, &entry, &user_sp);
     if (err < 0)
         return err;
+
+run:
 
     /* Transfer control to the user program.
      * exec_enter saves kernel context, switches to user mode, and jumps

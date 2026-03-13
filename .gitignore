@@ -8,6 +8,7 @@ emu/musashi/m68kops.c
 emu/musashi/m68kops.h
 tools/mkfs.minifs
 tools/mkbin
+tools/romfix
 libc/libc.a
 apps/hello
 apps/echo
