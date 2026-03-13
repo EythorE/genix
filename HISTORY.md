@@ -268,6 +268,12 @@ The workbench gives terminal I/O, instant startup, and printf debugging.
 **Lesson:** The workbench cut iteration time from minutes to seconds.
 Worth the ~400 lines of emulator code.
 
+**Emulator exit mechanism:** Ctrl+C doesn't work in raw mode, so the
+emulator uses Ctrl+] (like telnet) as a force-quit key. Clean shutdown
+goes through `pal_halt()` which writes to a power-off register at
+0xF30000. The pal_halt() abstraction ensures both workbench (exit
+emulator) and Mega Drive (halt CPU) have a clean shutdown path.
+
 ### Phase 2a: Single-Tasking Kernel
 
 **Status:** Complete
@@ -300,15 +306,33 @@ the child. Initially single-tasking (parent blocks while child runs).
 
 **Per-process kernel stacks:** Each process gets a 512-byte kernel stack
 embedded in struct proc. User programs run in 68000 user mode (S=0 in SR)
-with separated USP/SSP stacks.
+with separated USP/SSP stacks. Architecture: exec_enter() saves callee-saved
+regs on supervisor stack, switches SSP to process's kstack_top, sets USP,
+enters user mode via RTE with SR=0x0000. TRAP #0 handler saves all user
+registers (d0-d7/a0-a6) + USP on kstack, pushes syscall args, calls
+syscall_dispatch, restores and RTEs back. exec_leave() abandons kstack
+and longjmps back via saved_ksp.
 
-**swtch() context switch:** Assembly function that saves callee-saved
-registers (d2-d7, a2-a6), swaps stack pointers, and restores. Used by
-both preemptive (timer ISR) and voluntary (sleep/waitpid) paths.
+**Two-level context switching:** (1) `swtch(old_ksp, new_ksp)` — assembly
+that saves callee-saved registers (d2-d7, a2-a6), swaps stack pointers,
+restores, and RTS. Used by both preemptive (timer ISR) and voluntary
+(sleep/waitpid) paths. (2) `proc_first_run` trampoline — when swtch()
+resumes a brand-new process, RTS lands here, pops user-mode state frame,
+RTEs to enter user mode. (3) `proc_setup_kstack(proc, entry, user_sp)` —
+builds initial kstack frame: swtch frame (d2-d7/a2-a6 zero, retaddr →
+proc_first_run), user state (USP, d0-d7/a0-a6 zero), exception frame
+(SR=0x0000, PC=entry). Total: 118 bytes, leaving 394 bytes for syscall
+call chains.
 
-**proc_first_run trampoline:** When swtch() resumes a brand-new process
-for the first time, RTS lands at proc_first_run, which pops the
-user-mode state frame and RTEs to enter user mode.
+**Preemptive scheduling:** Timer ISR saves user state on kstack → calls
+schedule() → swtch() → new process runs. Cooperative scheduling was
+rejected because it requires every program to yield voluntarily — a busy
+loop would hang the system, breaking POSIX expectations.
+
+**ISR nesting safety concern:** With preemptive scheduling, a timer ISR can
+fire while a syscall is in progress on the kstack, nesting another exception
+frame + ISR register saves (~40 bytes). The "don't preempt kernel mode" rule
+prevents this. If kernel preemption is ever needed, kstacks must grow larger.
 
 **Async do_spawn:** Non-blocking — allocates process slot, loads binary,
 sets up kstack, marks child P_READY and returns child PID. Parent
@@ -316,6 +340,15 @@ continues immediately.
 
 **Blocking waitpid/pipes:** Parent sleeps when child hasn't exited;
 pipe read/write sleep when empty/full.
+
+**Multitasking pain points:** Blocking pipe + single-threaded test — autotest
+pipe test writes 5 bytes then reads 8; with blocking pipes the reader would
+block forever. Fixed with POSIX partial-read semantics (return once any data
+available). Single user memory space: all user programs load at USER_BASE, two
+can't coexist; shell runs in supervisor mode so shell + one child work. kstack
+layout must match ISR exactly — byte offsets in proc_setup_kstack must match
+what proc_first_run expects; 68000 exception frame is 6 bytes (2-byte SR +
+4-byte PC) creating misalignment with 4-byte register slots.
 
 ### Phase 2c: Pipes and I/O Redirection
 
@@ -330,6 +363,12 @@ USER_BASE (no MMU), two user processes cannot be loaded simultaneously.
 The pipe buffer holds intermediate data.
 
 **SIGPIPE:** Generated when writing to a pipe with no readers.
+
+**Pipeline pain points:** 512-byte pipe buffer limits pipelines to small
+outputs; `cat /bin/ls | wc` would overflow and lose data. do_spawn_fd() FD
+replacement logic (decrement refcount, handle pipe cleanup, set new FD,
+increment refcount) repeated 3 times for stdin/stdout/stderr — kept explicit
+to avoid abstraction for a one-use pattern.
 
 ### Phase 2d: Signals
 
@@ -351,6 +390,38 @@ stopped processes. SIGCONT wakes them to P_READY.
 **Process groups:** Each process gets pgrp=pid by default. Infrastructure
 for shell job control (kill(-pgrp, sig)).
 
+**Signal design decisions:** (1) Frame pointer parameter: sig_deliver() and
+sys_sigreturn() receive pointer to saved user state on kstack from asm code,
+avoiding fragile stack offset calculations in C. (2) SYS_SIGRETURN handled
+in asm: _vec_syscall checks for syscall 119 before calling syscall_dispatch,
+letting sigreturn modify the kstack frame directly without normal return path
+overwriting d0. (3) Full 70-byte frame save: essential for timer-delivered
+signals where interrupt can happen at any point — all registers must be
+preserved exactly (not just d0+PC). (4) Trampoline on user stack: 4-byte
+`moveq #119,%d0; trap #0` lives in signal frame; 68000 has no NX bit so
+executable stack is fine. (5) One-shot handlers (classic signal() semantics —
+handler resets to SIG_DFL after delivery; future: add sigaction() with
+SA_RESTART if needed). (6) One handler per sig_deliver call (multiple pending
+signals delivered one at a time via nested sigreturn, avoids nested frames).
+
+**Job control limitations (no-MMU):** Full fg/bg/jobs is limited by shared
+USER_BASE. A stopped process's code/data at USER_BASE is intact only until
+another command runs. Background processes cannot truly run concurrently with
+the shell. Real job control requires either an MMU or process relocation.
+SYS_SIGRETURN handled in asm before syscall_dispatch to avoid d0 overwrite.
+Trampoline lives on user stack (68000 has no NX bit). 84 bytes per signal
+frame on user stack.
+
+**Signal pain points:** ERANGE missing from kernel.h — cross-compilation
+caught it but host tests didn't (they use host `<errno.h>`). dev_init()
+called before fs_init() — dev_create_nodes() tried to create /dev/null
+before filesystem was mounted; all fs operations silently failed. Fixed by
+splitting into dev_init() (hardware) and dev_create_nodes() (after fs_init).
+SYS_GETDENTS didn't advance file offset in ofile struct, causing readdir()
+to return the same entry forever. Full job control limited by shared
+USER_BASE — stopped process's memory is intact only until another command
+runs.
+
 ### Phase 2e: TTY Subsystem
 
 **Date:** Phase 2e
@@ -365,6 +436,17 @@ mode (immediate delivery), signal generation (^C→SIGINT, ^\→SIGQUIT,
 (TCGETS/TCSETS/TIOCGWINSZ), /dev/tty and /dev/console device nodes.
 
 78 host unit tests.
+
+**TTY pain points:** Kernel shell now reads through tty_read() instead of
+doing its own line editing — simplified shell code but required testing
+both paths. Double echo risk: old con_read() echoed characters AND shell
+echoed them too; with TTY layer, echo happens only in tty_inproc(). kputc
+vs tty_write output paths: kernel diagnostic output bypasses OPOST (correct
+behavior, but means NL→CRNL handling differs between kernel and user
+output). Incomplete element type: `extern struct tty tty_table[]` in
+kernel.h fails because C requires complete type for extern arrays — keep
+declaration in tty.h only. Rule: never put extern arrays of incomplete
+types in shared headers.
 
 ### Phase 2f: Libc + 34 Utilities
 
@@ -396,6 +478,42 @@ exec (no need to type "exec").
 stack: FILE*, malloc, termios, indirect blocks. 44 KB binary — too large
 for Mega Drive (~31 KB user space), workbench-only.
 
+**What was needed for levee:** (1) C library additions: ctype.c, stdlib.c
+(malloc/free via sbrk, atoi, getenv), stdio.c (FILE*, fopen/fclose/fgets/
+fprintf), termios.c (tcgetattr/tcsetattr wrapping ioctl). (2) Header files:
+`<ctype.h>`, `<termios.h>`, `<fcntl.h>`, `<sys/stat.h>`. (3) Kernel termios:
+console raw mode via `con_raw` flag, toggled by TCGETS/TCSETS ioctl.
+(4) Filesystem indirect blocks in both mkfs and kernel bmap(). (5) Missing
+source file `ucsd.c`: levee depends on moveleft(), moveright(), fillchar(),
+lvscan() from ucsd.c — not obvious from the Makefile, must trace undefined
+symbols.
+
+**Levee pain points:** ucsd.c not listed in obvious SRCS variable; K&R-style
+C from the 1980s needing extensive `-Wno-*` flags (-Wno-implicit-int,
+-Wno-return-type, -Wno-parentheses, -Wno-implicit-function-declaration,
+-Wno-char-subscripts); conflicting open() declarations between fcntl.h
+(variadic) and unistd.h (non-variadic) — both must be variadic.
+
+**What levee validates:** The full stack (raw terminal I/O, file I/O, dynamic
+memory, ANSI escape codes) works correctly. Proves Genix can run real Unix
+software, not just toy programs.
+
+**Phase 2f pain points:** Shell sort chosen over quicksort for qsort — on
+68000, recursion costs 18 cycles per JSR + register saves, and kernel stacks
+are 512 bytes. Shell sort is O(n^1.5) worst case with constant stack usage.
+sscanf uses `(&fmt + 1)` to walk stack-passed arguments which doesn't work
+on x86-64 host; test sscanf helpers on host, full sscanf only via guest
+programs. grep is 7 KB with regex library — fits in MD's ~28 KB user space
+but is one of the larger utilities. sed was omitted as requiring significant
+regex integration (substitution, addresses, hold/pattern space). Environment
+variables are process-local since there's no fork() — each exec'd process
+starts fresh.
+
+**Tier 1 pain points:** tac uses a 4 KB static buffer (limits reversible
+file size). paste reads one byte at a time (one syscall per byte — simple
+and correct but slow). expand uses modulo for tab stops (DIVU.W safe:
+small constant divisor).
+
 ### Phase 3: Mega Drive Port
 
 **Status:** Complete early (concurrent with Phase 2a)
@@ -404,6 +522,21 @@ PAL implementation reuses proven Fuzix drivers: devvt.S (VDP text),
 keyboard.c/keyboard_read.S (Saturn keyboard), crt0.S (boot, vectors,
 VDP init). The ROM builds, boots in BlastEm, and runs on real hardware
 with EverDrive.
+
+**Own VDP driver, not SGDK:** SGDK is the most popular Mega Drive SDK but
+assumes exclusive ownership of CPU, interrupts, memory, and all hardware.
+Running it under an OS would require replacing most of its internals.
+Instead: a kernel VDP driver with userspace libgfx library via ioctls,
+following the pattern from Fuzix.
+
+**BlastEm 0.6.3-pre and headless testing:** Extensive investigation of
+automated keyboard input in BlastEm: tried XTest, xdotool, LD_PRELOAD shim,
+GL on/off, BlastEm debugger, GDB remote — all failed. Root cause: SDL2 uses
+XInput2 (XI_RawKeyPress) for keyboard input on X11, which doesn't receive
+synthetic events from xdotool. Solution: upgraded to BlastEm 0.6.3-pre
+nightly which has `-b N` flag for truly headless runs (run N frames then
+exit, exit code 0 = no crash). Screenshot tests use external scrot capture
+instead of BlastEm's native screenshot key (also blocked by XInput2).
 
 ### Phase 4: Polish
 
@@ -421,7 +554,46 @@ with EverDrive.
 
 4. **SRAM validation:** Boot-time check for valid minifs magic. Zeroes
    SRAM if invalid. Standard Sega mapper (0xA130F1 = 0x03) works on
-   real carts, all EverDrive models, and BlastEm.
+   real carts, all EverDrive models, and BlastEm. Key practical finding:
+   no bank switching is needed because ROM is < 2 MB, leaving the SRAM
+   address space (0x200000) free on all cartridge configurations.
+
+**Phase 4 pain points:** VBlank ISR keyboard vs polling — the polling
+approach in pal_console_getc() still exists for the rare case where getc
+is called directly; ISR path is primary; both handle F12 filtering; no race
+because inq_head write is atomic (uint8_t) on 68000. NBUFS=8 on Mega Drive:
+each buffer is 1 KB + header, reducing from 16 to 8 saves ~8 KB; trade-off
+is more disk I/O on cache misses but sequential access patterns keep hit rate
+acceptable. Multi-TTY is wiring only — actual TTY switching (foreground/
+background) needs keyboard shortcuts and VDP context switching. SRAM zeroing
+on invalid magic rather than auto-formatting with mkfs — safer than assuming
+a specific filesystem layout.
+
+**Automated imshow screenshot test:** Added `make test-md-imshow` — spawns
+imshow on Mega Drive (BlastEm under Xvfb) and captures a screenshot of the
+VDP color bar test pattern. imshow is not an image viewer — it generates
+test patterns dynamically using VDP tile-based 4bpp graphics: 16-color test
+palette, 18 tiles (15 solid + 2 checkerboards + 1 gradient), fills 40x28
+tile screen. Uses `-n` flag (no-wait mode, 120 vsync frames then exits).
+Pain points: gfx_close() doesn't fully restore VDP state (cosmetic); no
+automated pixel comparison (visual inspection only); BlastEm screenshot
+capture is fragile (can't use native key, must use scrot); imshow is Mega
+Drive only (/dev/vdp); slow rebuild cycle (~30s for special ROM approach).
+
+**Test coverage expansion (2026-03-10):** Added test_buf.c (36 assertions,
+buffer cache with mock PAL disk layer — cache hits/misses, dirty/clean
+eviction, write-back), test_kprintf.c (24 assertions, captures kputc output
+via mock — %d, %u, %x, %s, %c, %%, negative numbers, zero, NULL string),
+test_pipe.c (2170 assertions, non-blocking pipe reimplementation — exact
+fill, overflow, partial reads, EOF, EPIPE, circular wrap, 512 individual
+byte writes, alternating patterns). Brought total from 2675 to 4924 host
+test assertions across 13 test files (84% increase).
+
+**CI pipeline expansion (2026-03-10):** Expanded from 1 job to 3:
+(1) host-tests (`make test`), (2) cross-build (fetches m68k-elf toolchain,
+builds kernel + ROM + emulator), (3) emu-tests (workbench autotest, BlastEm
+headless boot, BlastEm AUTOTEST — the primary quality gate). Jobs run
+sequentially matching the testing ladder order.
 
 ### Three-Branch Merge
 
