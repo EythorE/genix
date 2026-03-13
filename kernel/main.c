@@ -844,28 +844,26 @@ static void parse_redirections(char *cmd,
     *outfile = NULL;
     *append = 0;
 
-    for (char *p = cmd; *p; p++) {
+    char *p = cmd;
+    while (*p) {
         if (*p == '<') {
-            *p = '\0';
-            p++;
+            *p++ = '\0';
             while (*p == ' ') p++;
             *infile = p;
-            while (*p && *p != ' ' && *p != '>' && *p != '|') p++;
-            if (*p) { *p = '\0'; p++; }
-            p--; /* loop increment will advance */
+            while (*p && *p != ' ' && *p != '>' && *p != '<' && *p != '|') p++;
+            if (*p == ' ') *p++ = '\0';
         } else if (*p == '>') {
-            *p = '\0';
-            p++;
+            *p++ = '\0';
             if (*p == '>') {
                 *append = 1;
-                *p = '\0';
-                p++;
+                *p++ = '\0';
             }
             while (*p == ' ') p++;
             *outfile = p;
-            while (*p && *p != ' ' && *p != '<' && *p != '|') p++;
-            if (*p) { *p = '\0'; p++; }
-            p--; /* loop increment will advance */
+            while (*p && *p != ' ' && *p != '<' && *p != '>' && *p != '|') p++;
+            if (*p == ' ') *p++ = '\0';
+        } else {
+            p++;
         }
     }
 }
