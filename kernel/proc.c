@@ -568,9 +568,23 @@ int do_spawn(const char *path, const char **argv)
     struct proc *parent = curproc;
     curproc = child;
 
-    /* Load binary into user memory */
+    /* Load binary into user memory.
+     * Try XIP first if ROM address is available. */
     uint32_t entry, user_sp;
-    int rc = load_binary(path, argv, USER_BASE, &entry, &user_sp);
+    int rc = -ENOEXEC;
+    {
+        struct inode *xip = fs_namei(path);
+        if (xip) {
+            uint32_t rom_addr = pal_rom_file_addr(xip);
+            fs_iput(xip);
+            if (rom_addr)
+                rc = load_binary_xip(path, argv,
+                                     rom_addr + GENIX_HDR_SIZE, USER_BASE,
+                                     &entry, &user_sp);
+        }
+    }
+    if (rc < 0)
+        rc = load_binary(path, argv, USER_BASE, &entry, &user_sp);
 
     /* Restore curproc to parent */
     curproc = parent;
