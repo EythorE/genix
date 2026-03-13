@@ -268,6 +268,12 @@ The workbench gives terminal I/O, instant startup, and printf debugging.
 **Lesson:** The workbench cut iteration time from minutes to seconds.
 Worth the ~400 lines of emulator code.
 
+**Emulator exit mechanism:** Ctrl+C doesn't work in raw mode, so the
+emulator uses Ctrl+] (like telnet) as a force-quit key. Clean shutdown
+goes through `pal_halt()` which writes to a power-off register at
+0xF30000. The pal_halt() abstraction ensures both workbench (exit
+emulator) and Mega Drive (halt CPU) have a clean shutdown path.
+
 ### Phase 2a: Single-Tasking Kernel
 
 **Status:** Complete
@@ -300,15 +306,33 @@ the child. Initially single-tasking (parent blocks while child runs).
 
 **Per-process kernel stacks:** Each process gets a 512-byte kernel stack
 embedded in struct proc. User programs run in 68000 user mode (S=0 in SR)
-with separated USP/SSP stacks.
+with separated USP/SSP stacks. Architecture: exec_enter() saves callee-saved
+regs on supervisor stack, switches SSP to process's kstack_top, sets USP,
+enters user mode via RTE with SR=0x0000. TRAP #0 handler saves all user
+registers (d0-d7/a0-a6) + USP on kstack, pushes syscall args, calls
+syscall_dispatch, restores and RTEs back. exec_leave() abandons kstack
+and longjmps back via saved_ksp.
 
-**swtch() context switch:** Assembly function that saves callee-saved
-registers (d2-d7, a2-a6), swaps stack pointers, and restores. Used by
-both preemptive (timer ISR) and voluntary (sleep/waitpid) paths.
+**Two-level context switching:** (1) `swtch(old_ksp, new_ksp)` — assembly
+that saves callee-saved registers (d2-d7, a2-a6), swaps stack pointers,
+restores, and RTS. Used by both preemptive (timer ISR) and voluntary
+(sleep/waitpid) paths. (2) `proc_first_run` trampoline — when swtch()
+resumes a brand-new process, RTS lands here, pops user-mode state frame,
+RTEs to enter user mode. (3) `proc_setup_kstack(proc, entry, user_sp)` —
+builds initial kstack frame: swtch frame (d2-d7/a2-a6 zero, retaddr →
+proc_first_run), user state (USP, d0-d7/a0-a6 zero), exception frame
+(SR=0x0000, PC=entry). Total: 118 bytes, leaving 394 bytes for syscall
+call chains.
 
-**proc_first_run trampoline:** When swtch() resumes a brand-new process
-for the first time, RTS lands at proc_first_run, which pops the
-user-mode state frame and RTEs to enter user mode.
+**Preemptive scheduling:** Timer ISR saves user state on kstack → calls
+schedule() → swtch() → new process runs. Cooperative scheduling was
+rejected because it requires every program to yield voluntarily — a busy
+loop would hang the system, breaking POSIX expectations.
+
+**ISR nesting safety concern:** With preemptive scheduling, a timer ISR can
+fire while a syscall is in progress on the kstack, nesting another exception
+frame + ISR register saves (~40 bytes). The "don't preempt kernel mode" rule
+prevents this. If kernel preemption is ever needed, kstacks must grow larger.
 
 **Async do_spawn:** Non-blocking — allocates process slot, loads binary,
 sets up kstack, marks child P_READY and returns child PID. Parent
@@ -366,9 +390,24 @@ stopped processes. SIGCONT wakes them to P_READY.
 **Process groups:** Each process gets pgrp=pid by default. Infrastructure
 for shell job control (kill(-pgrp, sig)).
 
-**Signal design decisions:** One-shot handlers (classic signal() semantics —
-handler resets to SIG_DFL after delivery). One handler per sig_deliver call
-(multiple pending signals delivered one at a time via nested sigreturn).
+**Signal design decisions:** (1) Frame pointer parameter: sig_deliver() and
+sys_sigreturn() receive pointer to saved user state on kstack from asm code,
+avoiding fragile stack offset calculations in C. (2) SYS_SIGRETURN handled
+in asm: _vec_syscall checks for syscall 119 before calling syscall_dispatch,
+letting sigreturn modify the kstack frame directly without normal return path
+overwriting d0. (3) Full 70-byte frame save: essential for timer-delivered
+signals where interrupt can happen at any point — all registers must be
+preserved exactly (not just d0+PC). (4) Trampoline on user stack: 4-byte
+`moveq #119,%d0; trap #0` lives in signal frame; 68000 has no NX bit so
+executable stack is fine. (5) One-shot handlers (classic signal() semantics —
+handler resets to SIG_DFL after delivery; future: add sigaction() with
+SA_RESTART if needed). (6) One handler per sig_deliver call (multiple pending
+signals delivered one at a time via nested sigreturn, avoids nested frames).
+
+**Job control limitations (no-MMU):** Full fg/bg/jobs is limited by shared
+USER_BASE. A stopped process's code/data at USER_BASE is intact only until
+another command runs. Background processes cannot truly run concurrently with
+the shell. Real job control requires either an MMU or process relocation.
 SYS_SIGRETURN handled in asm before syscall_dispatch to avoid d0 overwrite.
 Trampoline lives on user stack (68000 has no NX bit). 84 bytes per signal
 frame on user stack.
@@ -484,6 +523,21 @@ keyboard.c/keyboard_read.S (Saturn keyboard), crt0.S (boot, vectors,
 VDP init). The ROM builds, boots in BlastEm, and runs on real hardware
 with EverDrive.
 
+**Own VDP driver, not SGDK:** SGDK is the most popular Mega Drive SDK but
+assumes exclusive ownership of CPU, interrupts, memory, and all hardware.
+Running it under an OS would require replacing most of its internals.
+Instead: a kernel VDP driver with userspace libgfx library via ioctls,
+following the pattern from Fuzix.
+
+**BlastEm 0.6.3-pre and headless testing:** Extensive investigation of
+automated keyboard input in BlastEm: tried XTest, xdotool, LD_PRELOAD shim,
+GL on/off, BlastEm debugger, GDB remote — all failed. Root cause: SDL2 uses
+XInput2 (XI_RawKeyPress) for keyboard input on X11, which doesn't receive
+synthetic events from xdotool. Solution: upgraded to BlastEm 0.6.3-pre
+nightly which has `-b N` flag for truly headless runs (run N frames then
+exit, exit code 0 = no crash). Screenshot tests use external scrot capture
+instead of BlastEm's native screenshot key (also blocked by XInput2).
+
 ### Phase 4: Polish
 
 **Date:** 2026-03-10
@@ -500,7 +554,9 @@ with EverDrive.
 
 4. **SRAM validation:** Boot-time check for valid minifs magic. Zeroes
    SRAM if invalid. Standard Sega mapper (0xA130F1 = 0x03) works on
-   real carts, all EverDrive models, and BlastEm.
+   real carts, all EverDrive models, and BlastEm. Key practical finding:
+   no bank switching is needed because ROM is < 2 MB, leaving the SRAM
+   address space (0x200000) free on all cartridge configurations.
 
 **Phase 4 pain points:** VBlank ISR keyboard vs polling — the polling
 approach in pal_console_getc() still exists for the rare case where getc
