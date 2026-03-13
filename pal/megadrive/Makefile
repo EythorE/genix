@@ -31,12 +31,27 @@ OBJS = $(ASM_OBJS) $(C_OBJS)
 TARGET = genix-md.elf
 BINARY = genix-md.bin
 DISK_IMG = ../../disk.img
+ROMFIX = ../../tools/romfix
+
+# Mega Drive USER_BASE (must match pal_user_base() in platform.c)
+MD_USER_BASE = 0xFF9000
 
 all: $(BINARY)
 
-$(BINARY): $(TARGET)
+$(BINARY): $(TARGET) $(ROMFIX)
 	$(OBJCOPY) -O binary $< $@
 	@echo "ROM size: $$(wc -c < $@) bytes"
+	@# Extract romdisk offset from ELF symbols and run romfix
+	@romdisk_off=$$($(CROSS)nm $(TARGET) | grep ' _rom_disk_start$$' | awk '{print "0x"$$1}'); \
+	if [ -n "$$romdisk_off" ]; then \
+		echo "Running romfix (romdisk at $$romdisk_off, USER_BASE=$(MD_USER_BASE))..."; \
+		$(ROMFIX) $@ $$romdisk_off $(MD_USER_BASE); \
+	else \
+		echo "Warning: _rom_disk_start not found, skipping romfix"; \
+	fi
+
+$(ROMFIX):
+	$(MAKE) -C ../../tools romfix
 
 # Embed filesystem image as .romdisk section.
 # Copy to a fixed name so objcopy always generates predictable symbols.

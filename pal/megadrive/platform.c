@@ -245,6 +245,40 @@ void pal_halt(void)
         ;
 }
 
+/*
+ * Return the memory-mapped ROM address of a file's first data byte.
+ * Only works for ROM disk (dev 0) with contiguous block allocation.
+ * Returns 0 if blocks are not contiguous or file is empty.
+ */
+uint32_t pal_rom_file_addr(struct inode *ip)
+{
+    if (!ip || ip->size == 0)
+        return 0;
+
+    uint16_t first_block = ip->direct[0];
+    if (first_block == 0)
+        return 0;
+
+    /* Check that all blocks are contiguous.
+     * BLOCK_SIZE is 1024 (power of 2): use >> 10 for division. */
+    uint32_t nblocks = (ip->size + BLOCK_SIZE - 1) >> 10;
+
+    /* Check direct blocks (up to 12) */
+    uint32_t check = nblocks < 12 ? nblocks : 12;
+    for (uint32_t i = 1; i < check; i++) {
+        if (ip->direct[i] != first_block + i)
+            return 0;  /* not contiguous */
+    }
+
+    /* Don't support indirect blocks for XIP (files > 12 KB).
+     * Most apps are well under this limit. */
+    if (nblocks > 12)
+        return 0;
+
+    /* BLOCK_SIZE is 1024: use << 10 for multiplication */
+    return (uint32_t)&_rom_disk_start + ((uint32_t)first_block << 10);
+}
+
 /* Called from VBlank interrupt handler in crt0.S */
 void md_vblank_handler(void)
 {

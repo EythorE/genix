@@ -21,4 +21,10 @@ void     pal_timer_init(int hz);
 uint32_t pal_timer_ticks(void);
 void     pal_halt(void);
 
+/* ROM XIP support: return the memory-mapped ROM address of a file's data,
+ * or 0 if the disk is not memory-mapped (workbench) or blocks aren't
+ * contiguous. Only valid for dev=0 (ROM disk). */
+struct inode;
+uint32_t pal_rom_file_addr(struct inode *ip);
+
 #endif
