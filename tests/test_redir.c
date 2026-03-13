@@ -40,28 +40,26 @@ static void parse_redirections(char *cmd,
     *outfile = NULL;
     *append = 0;
 
-    for (char *p = cmd; *p; p++) {
+    char *p = cmd;
+    while (*p) {
         if (*p == '<') {
-            *p = '\0';
-            p++;
+            *p++ = '\0';
             while (*p == ' ') p++;
             *infile = p;
-            while (*p && *p != ' ' && *p != '>' && *p != '|') p++;
-            if (*p) { *p = '\0'; p++; }
-            p--;
+            while (*p && *p != ' ' && *p != '>' && *p != '<' && *p != '|') p++;
+            if (*p == ' ') *p++ = '\0';
         } else if (*p == '>') {
-            *p = '\0';
-            p++;
+            *p++ = '\0';
             if (*p == '>') {
                 *append = 1;
-                *p = '\0';
-                p++;
+                *p++ = '\0';
             }
             while (*p == ' ') p++;
             *outfile = p;
-            while (*p && *p != ' ' && *p != '<' && *p != '|') p++;
-            if (*p) { *p = '\0'; p++; }
-            p--;
+            while (*p && *p != ' ' && *p != '<' && *p != '>' && *p != '|') p++;
+            if (*p == ' ') *p++ = '\0';
+        } else {
+            p++;
         }
     }
 }
@@ -253,6 +251,35 @@ static void test_combined_redir_and_parse(void)
     ASSERT_STR_EQ(outfile, "outfile");
 }
 
+static void test_redir_both_no_space(void)
+{
+    /* Regression: adjacent redirects without spaces lost the second operator.
+     * The old for-loop with p--/p++ destroyed the '>' when null-terminating
+     * the infile boundary, so outfile was never parsed. */
+    char cmd[] = "/bin/cat <infile>outfile";
+    char *infile, *outfile;
+    int append;
+    parse_redirections(cmd, &infile, &outfile, &append);
+    ASSERT_NOT_NULL(infile);
+    ASSERT_STR_EQ(infile, "infile");
+    ASSERT_NOT_NULL(outfile);
+    ASSERT_STR_EQ(outfile, "outfile");
+    ASSERT_EQ(append, 0);
+}
+
+static void test_redir_input_then_output_no_gap(void)
+{
+    /* Space after < but none before > */
+    char cmd[] = "/bin/cat < infile>outfile";
+    char *infile, *outfile;
+    int append;
+    parse_redirections(cmd, &infile, &outfile, &append);
+    ASSERT_NOT_NULL(infile);
+    ASSERT_STR_EQ(infile, "infile");
+    ASSERT_NOT_NULL(outfile);
+    ASSERT_STR_EQ(outfile, "outfile");
+}
+
 static void test_redir_no_space(void)
 {
     char cmd[] = "/bin/echo hello>outfile";
@@ -318,6 +345,8 @@ int main(void)
     RUN_TEST(test_count_pipes_two);
     RUN_TEST(test_count_pipes_three);
     RUN_TEST(test_combined_redir_and_parse);
+    RUN_TEST(test_redir_both_no_space);
+    RUN_TEST(test_redir_input_then_output_no_gap);
     RUN_TEST(test_redir_no_space);
     RUN_TEST(test_pipe_sigpipe_on_broken);
 
