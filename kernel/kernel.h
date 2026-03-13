@@ -119,14 +119,17 @@ extern uint32_t USER_SIZE;   /* USER_TOP - USER_BASE */
 #define GENIX_MAGIC  0x47454E58  /* "GENX" */
 #define GENIX_HDR_SIZE 32
 
+/* Header flags */
+#define GENIX_FLAG_XIP  0x01  /* XIP-resolved: text in ROM, data refs → USER_BASE */
+
 struct genix_header {
     uint32_t magic;       /* 0x47454E58 "GENX" */
     uint32_t load_size;   /* text+data bytes to load */
     uint32_t bss_size;    /* bytes to zero after load */
     uint32_t entry;       /* entry point offset (0-based) */
     uint32_t stack_size;  /* stack size hint (0 = default 4KB) */
-    uint32_t flags;       /* reserved, 0 */
-    uint32_t text_size;   /* text segment size (for future split reloc) */
+    uint32_t flags;       /* GENIX_FLAG_XIP etc. */
+    uint32_t text_size;   /* text segment size (for split reloc / XIP) */
     uint32_t reloc_count; /* number of uint32_t relocation entries */
 };
 
@@ -358,6 +361,11 @@ extern int nproc;
 void proc_init(void);
 int  load_binary(const char *path, const char **argv, uint32_t load_addr,
                  uint32_t *entry_out, uint32_t *user_sp_out);
+int  load_binary_xip(const char *path, const char **argv,
+                     uint32_t text_addr, uint32_t data_addr,
+                     uint32_t *entry_out, uint32_t *user_sp_out);
+int  exec_validate_header(const struct genix_header *hdr);
+int  exec_validate_header_xip(const struct genix_header *hdr);
 void apply_relocations_xip(uint8_t *text_mem, uint32_t text_base,
                             uint8_t *data_mem, uint32_t data_base,
                             uint32_t text_size, uint32_t load_size,

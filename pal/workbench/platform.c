@@ -126,3 +126,10 @@ void pal_halt(void)
     for (;;)
         ;
 }
+
+/* Workbench disk is I/O-mapped, not memory-mapped — no XIP support */
+uint32_t pal_rom_file_addr(struct inode *ip)
+{
+    (void)ip;
+    return 0;
+}
