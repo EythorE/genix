@@ -476,6 +476,31 @@ byte and cycle matters. Follow these rules:
   may contain 68020 instructions.
 - See `docs/toolchain.md` for the full toolchain build instructions.
 
+### 13. Documentation preservation rules
+
+Project history is a critical asset. Follow these rules strictly:
+
+- **Every design decision, bug fix, and pain point must be recorded in
+  `HISTORY.md`** with enough detail that a future developer can understand
+  the root cause, the fix, and the lesson learned. Never discard this
+  information.
+- **Never remove content from documentation without relocating it first.**
+  If trimming a document for readability, move the removed content to the
+  appropriate place (`HISTORY.md` for resolved history, `docs/` for
+  technical details) before deleting it from the original file.
+- **HISTORY.md is append-mostly.** Add new sections at the end of the
+  relevant chapter (e.g., new bugs go in "Bugs and Lessons Learned").
+  Do not summarize away existing detail — the verbose version is the
+  valuable one.
+- **README.md is user-facing and should keep all completed phases** in the
+  status table with their descriptions. Do not remove completed items.
+  Only add new items or update status.
+- **CLAUDE.md Common Pitfalls must stay in CLAUDE.md** — these are active
+  developer warnings, not historical notes. They may be duplicated in
+  HISTORY.md for context but must remain here for quick reference.
+- **When consolidating or reorganizing docs**, always diff before and after
+  to verify no content was dropped. If in doubt, keep the longer version.
+
 ## Documentation
 
 Detailed technical documentation is in `docs/`:
@@ -543,7 +568,7 @@ standard Sega mapper and boot-time validation, configurable buffer cache
 ## Common Pitfalls
 
 These are lessons learned from debugging sessions (documented in full in
-`docs/decisions.md`). Keep them in mind:
+`HISTORY.md`). Keep them in mind:
 
 - **68020 instructions in libgcc**: The distro `libgcc.a` contains `BSR.L`
   and other 68020 opcodes. Programs using `/` or `%` will crash on real
