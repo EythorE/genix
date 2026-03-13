@@ -92,12 +92,20 @@ pipelines execute sequentially. See [PLAN.md](PLAN.md) for details.
 
 | Phase | Description | Status |
 |-------|-------------|--------|
-| 1–4 | Emulator, kernel, multitasking, Mega Drive port, polish | **Complete** |
-| 5 | **ROM Execute-in-Place** — run text from ROM, only copy .data to RAM. Triples usable memory. | Planned |
-| 6 | **Concurrent multitasking** — fixed RAM slots for .data, shared ROM text, true concurrent pipes | Planned |
-| 7 | **SD card** — load programs at runtime (Open EverDrive SPI + Mega EverDrive Pro FIFO) | Planned |
-| 8 | **EverDrive Pro PSRAM** — banked 512 KB per process, enables large programs like levee on MD | Planned |
-| 9 | **Performance** — assembly memcpy/memset, DIVU.W fast path, VDP DMA scroll | Anytime |
+| Phase 1 | Workbench emulator (Musashi SBC) | **Complete** |
+| Phase 2a | Kernel core + binary loading + single-tasking exec | **Complete** |
+| Phase 2b | Multitasking (spawn, waitpid, preemptive scheduler) | **Complete** |
+| Phase 2c | Pipes and I/O redirection | **Complete** |
+| Phase 2d | Signals and job control | **Complete** |
+| Phase 2e | TTY subsystem (line discipline, termios) | **Complete** |
+| Phase 2f | Fuzix libc + utilities | **Complete** |
+| Phase 3 | Mega Drive port (PAL drivers from Fuzix) | **Complete** |
+| Phase 4 | Polish (interrupt keyboard, multi-TTY, /dev/null) | **Complete** |
+| Phase 5 | **ROM Execute-in-Place** — run text from ROM, only copy .data to RAM. Triples usable memory. | Planned |
+| Phase 6 | **Concurrent multitasking** — fixed RAM slots for .data, shared ROM text, true concurrent pipes | Planned |
+| Phase 7 | **SD card** — load programs at runtime (Open EverDrive SPI + Mega EverDrive Pro FIFO) | Planned |
+| Phase 8 | **EverDrive Pro PSRAM** — banked 512 KB per process, enables large programs like levee on MD | Planned |
+| Phase 9 | **Performance** — assembly memcpy/memset, DIVU.W fast path, VDP DMA scroll | Anytime |
 
 ## Documentation
 
