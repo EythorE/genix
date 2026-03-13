@@ -679,6 +679,36 @@ with slightly different signatures.
 **Rule:** Single source of truth for declarations. Never duplicate
 function prototypes across headers.
 
+### Bug 16: Redirection Parsing Destroys Adjacent Operators
+
+**Symptom:** `cat <infile>outfile` (redirections without spaces) silently
+lost the second operator. Only the input redirect was parsed; the output
+file was never opened.
+
+**Root cause:** `parse_redirections()` used a `for` loop with a
+`p--`/`p++` pattern to compensate for the loop increment after processing
+each redirect. When the filename scanner stopped at another redirect
+operator (e.g., `>` immediately after `infile`), the code executed
+`*p = '\0'; p++;` — null-terminating the `>` character and advancing past
+it — then `p--` moved back to the null, and the loop's `p++` advanced
+past where the operator had been. The `>` was destroyed and never parsed.
+
+The bug was masked by the test suite because all existing tests used
+spaces around redirect operators (`< infile > outfile`), where the
+filename scanner stopped at the space instead of the operator.
+
+**Fix:** Replaced the `for` loop with a `while` loop using explicit
+pointer control. Each branch advances `p` only as needed. Spaces after
+filenames are null-terminated and skipped; redirect operators are left
+intact for the next iteration to process. Added `<` to the infile
+scanner's stop set and `>` to the outfile scanner's stop set for
+defensive robustness.
+
+**Lesson:** Compensating for a loop increment with `p--` is fragile when
+the pointer position depends on what character terminated the inner scan.
+Explicit pointer control in a `while` loop is clearer and avoids
+off-by-one errors that depend on input formatting.
+
 ### Meta-Lesson: Workbench vs Mega Drive Divergence
 
 | Behavior | Workbench (Musashi) | Mega Drive (68000) |
