@@ -317,6 +317,15 @@ continues immediately.
 **Blocking waitpid/pipes:** Parent sleeps when child hasn't exited;
 pipe read/write sleep when empty/full.
 
+**Multitasking pain points:** Blocking pipe + single-threaded test — autotest
+pipe test writes 5 bytes then reads 8; with blocking pipes the reader would
+block forever. Fixed with POSIX partial-read semantics (return once any data
+available). Single user memory space: all user programs load at USER_BASE, two
+can't coexist; shell runs in supervisor mode so shell + one child work. kstack
+layout must match ISR exactly — byte offsets in proc_setup_kstack must match
+what proc_first_run expects; 68000 exception frame is 6 bytes (2-byte SR +
+4-byte PC) creating misalignment with 4-byte register slots.
+
 ### Phase 2c: Pipes and I/O Redirection
 
 **Date:** 2026-03-10
@@ -330,6 +339,12 @@ USER_BASE (no MMU), two user processes cannot be loaded simultaneously.
 The pipe buffer holds intermediate data.
 
 **SIGPIPE:** Generated when writing to a pipe with no readers.
+
+**Pipeline pain points:** 512-byte pipe buffer limits pipelines to small
+outputs; `cat /bin/ls | wc` would overflow and lose data. do_spawn_fd() FD
+replacement logic (decrement refcount, handle pipe cleanup, set new FD,
+increment refcount) repeated 3 times for stdin/stdout/stderr — kept explicit
+to avoid abstraction for a one-use pattern.
 
 ### Phase 2d: Signals
 
@@ -351,6 +366,23 @@ stopped processes. SIGCONT wakes them to P_READY.
 **Process groups:** Each process gets pgrp=pid by default. Infrastructure
 for shell job control (kill(-pgrp, sig)).
 
+**Signal design decisions:** One-shot handlers (classic signal() semantics —
+handler resets to SIG_DFL after delivery). One handler per sig_deliver call
+(multiple pending signals delivered one at a time via nested sigreturn).
+SYS_SIGRETURN handled in asm before syscall_dispatch to avoid d0 overwrite.
+Trampoline lives on user stack (68000 has no NX bit). 84 bytes per signal
+frame on user stack.
+
+**Signal pain points:** ERANGE missing from kernel.h — cross-compilation
+caught it but host tests didn't (they use host `<errno.h>`). dev_init()
+called before fs_init() — dev_create_nodes() tried to create /dev/null
+before filesystem was mounted; all fs operations silently failed. Fixed by
+splitting into dev_init() (hardware) and dev_create_nodes() (after fs_init).
+SYS_GETDENTS didn't advance file offset in ofile struct, causing readdir()
+to return the same entry forever. Full job control limited by shared
+USER_BASE — stopped process's memory is intact only until another command
+runs.
+
 ### Phase 2e: TTY Subsystem
 
 **Date:** Phase 2e
@@ -365,6 +397,17 @@ mode (immediate delivery), signal generation (^C→SIGINT, ^\→SIGQUIT,
 (TCGETS/TCSETS/TIOCGWINSZ), /dev/tty and /dev/console device nodes.
 
 78 host unit tests.
+
+**TTY pain points:** Kernel shell now reads through tty_read() instead of
+doing its own line editing — simplified shell code but required testing
+both paths. Double echo risk: old con_read() echoed characters AND shell
+echoed them too; with TTY layer, echo happens only in tty_inproc(). kputc
+vs tty_write output paths: kernel diagnostic output bypasses OPOST (correct
+behavior, but means NL→CRNL handling differs between kernel and user
+output). Incomplete element type: `extern struct tty tty_table[]` in
+kernel.h fails because C requires complete type for extern arrays — keep
+declaration in tty.h only. Rule: never put extern arrays of incomplete
+types in shared headers.
 
 ### Phase 2f: Libc + 34 Utilities
 
@@ -396,6 +439,42 @@ exec (no need to type "exec").
 stack: FILE*, malloc, termios, indirect blocks. 44 KB binary — too large
 for Mega Drive (~31 KB user space), workbench-only.
 
+**What was needed for levee:** (1) C library additions: ctype.c, stdlib.c
+(malloc/free via sbrk, atoi, getenv), stdio.c (FILE*, fopen/fclose/fgets/
+fprintf), termios.c (tcgetattr/tcsetattr wrapping ioctl). (2) Header files:
+`<ctype.h>`, `<termios.h>`, `<fcntl.h>`, `<sys/stat.h>`. (3) Kernel termios:
+console raw mode via `con_raw` flag, toggled by TCGETS/TCSETS ioctl.
+(4) Filesystem indirect blocks in both mkfs and kernel bmap(). (5) Missing
+source file `ucsd.c`: levee depends on moveleft(), moveright(), fillchar(),
+lvscan() from ucsd.c — not obvious from the Makefile, must trace undefined
+symbols.
+
+**Levee pain points:** ucsd.c not listed in obvious SRCS variable; K&R-style
+C from the 1980s needing extensive `-Wno-*` flags (-Wno-implicit-int,
+-Wno-return-type, -Wno-parentheses, -Wno-implicit-function-declaration,
+-Wno-char-subscripts); conflicting open() declarations between fcntl.h
+(variadic) and unistd.h (non-variadic) — both must be variadic.
+
+**What levee validates:** The full stack (raw terminal I/O, file I/O, dynamic
+memory, ANSI escape codes) works correctly. Proves Genix can run real Unix
+software, not just toy programs.
+
+**Phase 2f pain points:** Shell sort chosen over quicksort for qsort — on
+68000, recursion costs 18 cycles per JSR + register saves, and kernel stacks
+are 512 bytes. Shell sort is O(n^1.5) worst case with constant stack usage.
+sscanf uses `(&fmt + 1)` to walk stack-passed arguments which doesn't work
+on x86-64 host; test sscanf helpers on host, full sscanf only via guest
+programs. grep is 7 KB with regex library — fits in MD's ~28 KB user space
+but is one of the larger utilities. sed was omitted as requiring significant
+regex integration (substitution, addresses, hold/pattern space). Environment
+variables are process-local since there's no fork() — each exec'd process
+starts fresh.
+
+**Tier 1 pain points:** tac uses a 4 KB static buffer (limits reversible
+file size). paste reads one byte at a time (one syscall per byte — simple
+and correct but slow). expand uses modulo for tab stops (DIVU.W safe:
+small constant divisor).
+
 ### Phase 3: Mega Drive Port
 
 **Status:** Complete early (concurrent with Phase 2a)
@@ -422,6 +501,43 @@ with EverDrive.
 4. **SRAM validation:** Boot-time check for valid minifs magic. Zeroes
    SRAM if invalid. Standard Sega mapper (0xA130F1 = 0x03) works on
    real carts, all EverDrive models, and BlastEm.
+
+**Phase 4 pain points:** VBlank ISR keyboard vs polling — the polling
+approach in pal_console_getc() still exists for the rare case where getc
+is called directly; ISR path is primary; both handle F12 filtering; no race
+because inq_head write is atomic (uint8_t) on 68000. NBUFS=8 on Mega Drive:
+each buffer is 1 KB + header, reducing from 16 to 8 saves ~8 KB; trade-off
+is more disk I/O on cache misses but sequential access patterns keep hit rate
+acceptable. Multi-TTY is wiring only — actual TTY switching (foreground/
+background) needs keyboard shortcuts and VDP context switching. SRAM zeroing
+on invalid magic rather than auto-formatting with mkfs — safer than assuming
+a specific filesystem layout.
+
+**Automated imshow screenshot test:** Added `make test-md-imshow` — spawns
+imshow on Mega Drive (BlastEm under Xvfb) and captures a screenshot of the
+VDP color bar test pattern. imshow is not an image viewer — it generates
+test patterns dynamically using VDP tile-based 4bpp graphics: 16-color test
+palette, 18 tiles (15 solid + 2 checkerboards + 1 gradient), fills 40x28
+tile screen. Uses `-n` flag (no-wait mode, 120 vsync frames then exits).
+Pain points: gfx_close() doesn't fully restore VDP state (cosmetic); no
+automated pixel comparison (visual inspection only); BlastEm screenshot
+capture is fragile (can't use native key, must use scrot); imshow is Mega
+Drive only (/dev/vdp); slow rebuild cycle (~30s for special ROM approach).
+
+**Test coverage expansion (2026-03-10):** Added test_buf.c (36 assertions,
+buffer cache with mock PAL disk layer — cache hits/misses, dirty/clean
+eviction, write-back), test_kprintf.c (24 assertions, captures kputc output
+via mock — %d, %u, %x, %s, %c, %%, negative numbers, zero, NULL string),
+test_pipe.c (2170 assertions, non-blocking pipe reimplementation — exact
+fill, overflow, partial reads, EOF, EPIPE, circular wrap, 512 individual
+byte writes, alternating patterns). Brought total from 2675 to 4924 host
+test assertions across 13 test files (84% increase).
+
+**CI pipeline expansion (2026-03-10):** Expanded from 1 job to 3:
+(1) host-tests (`make test`), (2) cross-build (fetches m68k-elf toolchain,
+builds kernel + ROM + emulator), (3) emu-tests (workbench autotest, BlastEm
+headless boot, BlastEm AUTOTEST — the primary quality gate). Jobs run
+sequentially matching the testing ladder order.
 
 ### Three-Branch Merge
 
