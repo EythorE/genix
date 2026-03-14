@@ -138,6 +138,18 @@ Design choices that ARE flexible right now:
   the reasoning.
 - PLAN.md is the forward roadmap. It should always reflect the
   current state of what's planned and what's completed.
+- During implementation, document pain points and surprises as they
+  arise — don't wait until the end.
+- Non-trivial analysis, research, and design decisions go in
+  `docs/decisions.md` (active) or the relevant `docs/*-plan.md`.
+- Stale pain-points and resolved implementation details move to
+  `HISTORY.md` — don't leave dead warnings in active docs.
+- After completing each phase, add an implementation report to the
+  relevant `docs/*-plan.md` covering: what was built, deviations
+  from the plan, gotchas, and measured results (binary sizes, RAM
+  usage, cycle counts where relevant).
+- CLAUDE.md must stay brief. Don't duplicate content from docs/.
+  Link instead.
 
 ## Documentation Preservation Rules
 
