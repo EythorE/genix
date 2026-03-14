@@ -13,7 +13,8 @@ ASFLAGS = -m68000 -nostdlib -nostartfiles -ffreestanding \
 # in these routines, causing illegal instruction faults on real 68000.
 # By including divmod.o in libc.a, our safe versions take priority.
 OBJS = syscalls.o string.o stdio.o stdlib.o ctype.o termios.o gfx.o divmod.o \
-       getopt.o strtol.o perror.o sprintf.o isatty.o dirent.o regex.o
+       getopt.o strtol.o perror.o sprintf.o isatty.o dirent.o regex.o \
+       setjmp_68000.o signal.o unistd_stubs.o
 TARGET = libc.a
 
 all: $(TARGET)

@@ -323,12 +323,12 @@ static void test_stat_basic(void)
     build_test_fs();
     fs_init();
     struct inode *ip = fs_iget(1);
-    struct kstat st;
+    struct posix_stat st;
     int r = fs_stat(ip, &st);
     ASSERT_EQ(r, 0);
-    ASSERT_EQ(st.inum, 1);
-    ASSERT_EQ(st.type, FT_DIR);
-    ASSERT_EQ(st.nlink, 2);
+    ASSERT_EQ(st.st_ino, 1);
+    ASSERT_EQ(st.st_mode, 0040755);  /* S_IFDIR | 0755 */
+    ASSERT_EQ(st.st_nlink, 2);
     fs_iput(ip);
 }
 
