@@ -632,6 +632,69 @@ we extended the existing Genix header to support relocation directly.
 See [Section 5: The Relocation Story](#5-the-relocation-story) for the
 full narrative.
 
+### Phase 6: `-msep-data` + Slot Allocator (March 2026)
+
+**Date:** 2026-03-14
+
+Enabled concurrent multitasking with shared ROM text. All user programs
+now compile with GCC's `-msep-data` flag, which makes all data access
+go through register a5 (GOT-relative). The kernel sets a5 per-process
+to point at each process's data slot.
+
+**What was built:**
+
+1. **Build system:** Added `-msep-data` to CFLAGS for all .c files in
+   apps/ and libc/. Assembly files (.S) use separate ASFLAGS without
+   `-msep-data` since the assembler doesn't understand it.
+
+2. **Linker script (`apps/user-reloc.ld`):** Added `.got` section
+   between `.data` and `.bss` (GOT must be in RAM for writes). Added
+   `ALIGN(4)` at end of `.text` to ensure text_size is 4-byte aligned
+   (68000 faults on odd word/long access).
+
+3. **mkbin (`tools/mkbin.c`):** Encodes GOT offset as (offset+1) in
+   upper 16 bits of `stack_size` header field. Generates synthetic
+   relocations for GOT entries (see bug below). 0=no GOT, N=GOT at
+   offset N-1 from data section start.
+
+4. **romfix (`tools/romfix.c`):** Detects `-msep-data` binaries via
+   GOT offset field. Resolves text-segment relocations at build time
+   (ROM addresses). Defers data-segment relocations for runtime (slot
+   addresses vary per process). Preserves reloc table for kernel use.
+
+5. **Kernel slot allocator (`kernel/mem.c`):** Divides user RAM into
+   fixed-size slots. Mega Drive: 2 slots of ~13.75 KB each from 27.5 KB
+   user space. Workbench: 8 slots of ~88 KB each from 704 KB.
+   `slot_init()`, `slot_alloc()`, `slot_free()`, `slot_base()`,
+   `slot_size()`.
+
+6. **Process management (`kernel/proc.c`):** `do_spawn` allocates a
+   slot, loads binary into it, sets a5 in the new process's register
+   frame. `do_exit` frees the slot. `proc_setup_kstack` takes a
+   `user_a5` parameter for a5 at offset 52 in the register block.
+
+7. **Exec (`kernel/exec.c`):** Updated `load_binary` and
+   `load_binary_xip` to compute a5 from GOT offset. XIP loader applies
+   runtime data-segment relocations (text relocs done by romfix, data
+   relocs deferred because slot address varies). Validates against
+   `slot_size()` instead of `USER_SIZE`. `do_exec` allocates a
+   temporary slot for synchronous exec.
+
+8. **User mode entry (`kernel/exec_asm.S`):** Loads a5 from global
+   `exec_user_a5` before RTE to user mode.
+
+9. **Concurrent pipelines (`kernel/main.c`):** Shell now spawns all
+   pipeline stages first, then waits for all. Previously sequential.
+
+**Measured results:**
+
+- 11 files changed, 378 insertions, 81 deletions
+- Binary sizes slightly larger due to GOT (hello: 616→660 bytes with
+  GOT relocs). Reloc counts increased (hello: 1→3, levee: 2533→2560).
+- Workbench: 8 slots × 88 KB. Mega Drive: 2 slots × ~13.75 KB.
+- All 63 host tests pass, 31/31 workbench autotest pass, Mega Drive
+  builds and runs (600 frames, no crash).
+
 ---
 
 ## 4. Bugs and Lessons Learned
@@ -892,6 +955,70 @@ off-by-one errors that depend on input formatting.
 
 **Rule:** Always verify `make megadrive` and `make test-md` alongside
 workbench testing.
+
+### `--emit-relocs` Does NOT Emit GOT Entry Relocations (Phase 6)
+
+**Symptom:** Programs compiled with `-msep-data` loaded successfully
+but hung immediately. No address error, no crash — just silence.
+
+**Root cause:** When GCC uses `-msep-data`, the linker creates a GOT
+(Global Offset Table) with absolute addresses for functions and data
+accessed through a5. The linker's `--emit-relocs` flag preserves
+relocations from input `.o` files, but the GOT entries are
+**linker-generated** — they don't come from input relocations. So
+`--emit-relocs` does NOT emit R_68K_32 relocations for them.
+
+Result: mkbin extracted only 1 relocation for hello (the `jsr main` in
+crt0), but the 2 GOT entries (addresses of `write` and `msg.0`) were
+left at their zero-based values. When the program tried to call `write`
+through GOT[0], it jumped to address 0x6e instead of 0x4006e.
+
+**Fix:** mkbin now scans the `.got` section and generates synthetic
+R_68K_32 relocations for each non-zero 4-byte entry. These are added
+to the relocation table alongside the ELF-extracted relocations,
+sorted and deduplicated normally.
+
+**Lesson:** `--emit-relocs` is not a complete solution for
+position-independent binaries that use linker-generated sections (GOT,
+PLT). Always verify that ALL absolute addresses in the binary have
+corresponding relocation entries. A quick check: compare the number of
+non-zero 32-bit values in the data section against the relocation
+count.
+
+### Odd text_size Causes Address Error in GOT (Phase 6)
+
+**Symptom:** `ADDRESS ERROR: read.L at odd address 0x040005`.
+
+**Root cause:** The `.text` section ended at an odd size (595 bytes for
+hello). Since `.data` (containing the GOT) follows immediately, the GOT
+started at an odd VMA. The 68000 faults on word/long access at odd
+addresses, so reading GOT entries via `move.l (offset, a5)` crashed.
+
+**Fix:** Added `ALIGN(4)` at the end of `.text` in `user-reloc.ld`.
+This pads text_size to a 4-byte boundary, ensuring `.data` and `.got`
+start at an even address.
+
+**Lesson:** Always ensure section boundaries are at least word-aligned
+when the next section contains data accessed as words or longs.
+
+### GOT Offset Zero Ambiguity (Phase 6)
+
+**Symptom:** Programs with GOT at the very start of the data section
+(got_offset=0) were treated as having no GOT.
+
+**Root cause:** The header used `got_offset == 0` to mean "no GOT",
+but 0 is a valid offset (GOT at data section start). This is common —
+most small programs have empty `.data` and the GOT is the first thing
+in the data region.
+
+**Fix:** Changed to offset+1 encoding: 0 = no GOT, N = GOT at offset
+(N-1). Added `HDR_HAS_GOT()` and `HDR_GOT_OFFSET()` macros to
+kernel.h. mkbin encodes as `(got_vma - text_size) + 1`. Kernel
+decodes with `(field >> 16) - 1`.
+
+**Lesson:** Classic sentinel-value problem. When zero is a valid value,
+use a separate flag or offset-by-one encoding. Document the encoding
+prominently since multiple tools (mkbin, romfix, kernel) must agree.
 
 ---
 
