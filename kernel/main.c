@@ -123,7 +123,26 @@ void kmain(void)
     for (;;)
         __asm__ volatile("nop");
 #else
-    builtin_shell();
+    /* Try to launch dash as the interactive shell.
+     * Fall back to the builtin kernel shell if dash is not found. */
+    {
+        const char *argv[] = { "/bin/dash", NULL };
+        int pid = do_spawn("/bin/dash", argv);
+        if (pid > 0) {
+            int status;
+            do_waitpid(pid, &status, 0);
+            /* Respawn dash if it exits */
+            while (1) {
+                pid = do_spawn("/bin/dash", argv);
+                if (pid > 0)
+                    do_waitpid(pid, &status, 0);
+                else
+                    break;
+            }
+        }
+        /* Fall back to builtin shell if dash not found */
+        builtin_shell();
+    }
 #endif
 
     kputs("System halted.\n");

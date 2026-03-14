@@ -24,6 +24,7 @@ libc:
 apps: libc tools
 	$(MAKE) -C apps
 	$(MAKE) -C apps/levee
+	$(MAKE) -C apps/dash
 
 # Core app binaries (built for both workbench and Mega Drive)
 CORE_BINS = apps/hello apps/echo apps/cat apps/wc apps/head apps/true apps/false \
@@ -31,7 +32,8 @@ CORE_BINS = apps/hello apps/echo apps/cat apps/wc apps/head apps/true apps/false
             apps/rev apps/nl apps/cmp apps/cut apps/tr apps/uniq apps/imshow \
             apps/ls apps/sleep apps/strings apps/fold apps/expand apps/unexpand \
             apps/paste apps/comm apps/seq apps/tac \
-            apps/grep apps/od apps/env apps/expr
+            apps/grep apps/od apps/env apps/expr \
+            apps/dash/dash
 
 # All app binaries (levee is workbench-only — too large for MD 31KB user space)
 APP_BINS = $(CORE_BINS) $(wildcard apps/levee/levee)
@@ -204,5 +206,6 @@ clean:
 	$(MAKE) -C libc clean
 	$(MAKE) -C apps clean
 	$(MAKE) -C apps/levee clean
+	$(MAKE) -C apps/dash clean
 	$(MAKE) -C tests clean
 	rm -f disk.img disk-md.img
