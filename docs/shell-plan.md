@@ -170,6 +170,47 @@ Phase A. Convert type field to st_mode.
 - `make test` — updated tests pass
 - `make test-all` — full ladder passes
 
+### Outcome
+
+**Implemented:** 2026-03-14. 4 files changed, +301/-25 lines.
+
+fs_stat POSIX struct was already completed in Phase A, so only two
+items remained: fcntl F_DUPFD and waitpid WNOHANG.
+
+**fcntl:** Replaced the SYS_FCNTL stub with a real implementation.
+Added `fd_alloc_from(of, minfd)` helper for F_DUPFD's "lowest fd >=
+arg" semantics. F_DUPFD increments refcount before allocating, with
+rollback on failure. F_GETFL returns flags masked with 0x0FFF to
+exclude internal pipe endpoint bits (OFILE_PIPE_READ/WRITE at 0x1000/
+0x2000). F_GETFD/F_SETFD accept but ignore cloexec (no exec-close
+support yet). F_SETFL is a no-op stub.
+
+**waitpid:** Changed `do_waitpid(pid, status)` → `do_waitpid(pid,
+status, options)`. After scanning all children and finding no zombie,
+checks `(options & WNOHANG)` → returns 0. Updated all 13 callers in
+kernel/main.c to pass 0. The libc waitpid stub already passed d3
+(options) to the kernel, so no assembly changes were needed.
+
+**Host tests (9 new):** 4 fcntl tests (basic dup, skip occupied, table
+full, getfl), 5 waitpid tests (WNOHANG no zombie, WNOHANG with zombie,
+no children, blocking reap, specific PID).
+
+**Deviations from plan:** None.
+
+**Known weak spots:**
+
+1. **F_GETFL pipe bit leakage.** The 0x0FFF mask in F_GETFL strips
+   internal OFILE_PIPE_READ/WRITE bits, but if future internal flags
+   are added in the 0x0001-0x0FFF range, they could leak into the
+   user-visible flags. Currently safe because the only internal flags
+   are above 0x0FFF.
+
+2. **Process 0 self-parenting.** Process 0 has ppid=0, so
+   do_waitpid called from process 0 sees itself as its own child.
+   Not a bug (process 0 always has real children when it calls
+   waitpid), but the test suite had to use a non-zero process to
+   test the "no children → -ECHILD" path.
+
 ---
 
 ## Phase C: Port dash
