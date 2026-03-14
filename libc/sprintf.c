@@ -203,17 +203,43 @@ int vsnprintf(char *buf, unsigned int size, const char *fmt, va_list ap)
             break;
         }
         case 'd': case 'i': {
-            long long val;
-            if (is_longlong) val = va_arg(ap, long long);
-            else val = va_arg(ap, int);
-            int neg = 0;
-            if (val < 0) { neg = 1; val = -val; }
+            /* Use 32-bit arithmetic to avoid __divdi3/__moddi3 from
+             * libgcc which contain 68020 MULU.L/DIVU.L instructions.
+             * Only widen to 64-bit for explicit %lld/%jd formats. */
             char tmp[22];
             int len = 0;
-            if (val == 0) tmp[len++] = '0';
-            else while (val > 0) {
-                tmp[len++] = '0' + (int)(val % 10);
-                val /= 10;
+            int neg = 0;
+            if (is_longlong) {
+                long long llval = va_arg(ap, long long);
+                if (llval < 0) { neg = 1; llval = -llval; }
+                /* Convert using 32-bit division: extract low/high halves */
+                unsigned long hi = (unsigned long)(llval >> 32);
+                unsigned long lo = (unsigned long)llval;
+                if (hi == 0) {
+                    if (lo == 0) tmp[len++] = '0';
+                    else while (lo > 0) { tmp[len++] = '0' + (lo % 10); lo /= 10; }
+                } else {
+                    /* Full 64-bit: divide hi:lo by 10 using 32-bit ops */
+                    while (hi > 0 || lo > 0) {
+                        unsigned long r = hi % 10;
+                        hi /= 10;
+                        /* Combine remainder with lo: (r << 32 | lo) / 10 */
+                        unsigned long lo_hi = (r << 16) | (lo >> 16);
+                        unsigned long q_hi = lo_hi / 10;
+                        unsigned long r2 = lo_hi % 10;
+                        unsigned long lo_lo = (r2 << 16) | (lo & 0xFFFF);
+                        unsigned long q_lo = lo_lo / 10;
+                        tmp[len++] = '0' + (int)(lo_lo % 10);
+                        lo = (q_hi << 16) | q_lo;
+                    }
+                    if (len == 0) tmp[len++] = '0';
+                }
+            } else {
+                long sval = (long)va_arg(ap, int);
+                if (sval < 0) { neg = 1; sval = -sval; }
+                unsigned long val = (unsigned long)sval;
+                if (val == 0) tmp[len++] = '0';
+                else while (val > 0) { tmp[len++] = '0' + (val % 10); val /= 10; }
             }
             int total = len + neg;
             int pad = width > total ? width - total : 0;
@@ -229,15 +255,33 @@ int vsnprintf(char *buf, unsigned int size, const char *fmt, va_list ap)
             break;
         }
         case 'u': {
-            unsigned long long val;
-            if (is_longlong) val = va_arg(ap, unsigned long long);
-            else val = va_arg(ap, unsigned int);
             char tmp[22];
             int len = 0;
-            if (val == 0) tmp[len++] = '0';
-            else while (val > 0) {
-                tmp[len++] = '0' + (int)(val % 10);
-                val /= 10;
+            if (is_longlong) {
+                unsigned long long ullval = va_arg(ap, unsigned long long);
+                unsigned long hi = (unsigned long)(ullval >> 32);
+                unsigned long lo = (unsigned long)ullval;
+                if (hi == 0) {
+                    if (lo == 0) tmp[len++] = '0';
+                    else while (lo > 0) { tmp[len++] = '0' + (lo % 10); lo /= 10; }
+                } else {
+                    while (hi > 0 || lo > 0) {
+                        unsigned long r = hi % 10;
+                        hi /= 10;
+                        unsigned long lo_hi = (r << 16) | (lo >> 16);
+                        unsigned long q_hi = lo_hi / 10;
+                        unsigned long r2 = lo_hi % 10;
+                        unsigned long lo_lo = (r2 << 16) | (lo & 0xFFFF);
+                        unsigned long q_lo = lo_lo / 10;
+                        tmp[len++] = '0' + (int)(lo_lo % 10);
+                        lo = (q_hi << 16) | q_lo;
+                    }
+                    if (len == 0) tmp[len++] = '0';
+                }
+            } else {
+                unsigned long val = (unsigned long)va_arg(ap, unsigned int);
+                if (val == 0) tmp[len++] = '0';
+                else while (val > 0) { tmp[len++] = '0' + (val % 10); val /= 10; }
             }
             int pad = width > len ? width - len : 0;
             if (!left_align && !pad_zero)
@@ -251,6 +295,7 @@ int vsnprintf(char *buf, unsigned int size, const char *fmt, va_list ap)
             break;
         }
         case 'o': {
+            /* Octal uses shifts — no 64-bit division needed */
             unsigned long long val;
             if (is_longlong) val = va_arg(ap, unsigned long long);
             else val = va_arg(ap, unsigned int);
@@ -266,6 +311,7 @@ int vsnprintf(char *buf, unsigned int size, const char *fmt, va_list ap)
             break;
         }
         case 'x': case 'X': {
+            /* Hex uses shifts — no 64-bit division needed */
             unsigned long long val;
             if (is_longlong) val = va_arg(ap, unsigned long long);
             else val = va_arg(ap, unsigned int);

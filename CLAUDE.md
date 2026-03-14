@@ -229,10 +229,19 @@ considering any change done.
 These are lessons learned from debugging sessions (documented in full in
 `HISTORY.md`). Keep them in mind:
 
-- **68020 instructions in libgcc**: The distro `libgcc.a` contains `BSR.L`
-  and other 68020 opcodes. Programs using `/` or `%` will crash on real
-  68000 hardware. Fix: use `m68k-elf-gcc` (from `fetch-toolchain.sh`) or
-  ensure `divmod.S` symbols take priority over libgcc.
+- **68020 instructions in libgcc**: The distro `libgcc.a` contains 68020
+  opcodes (`BSR.L`, `MULU.L`, `DIVU.L`). Any 64-bit arithmetic
+  (`long long` multiply, divide, modulus) pulls in `__muldi3`,
+  `__divdi3`, `__moddi3` which use these illegal opcodes. This affects
+  `strtoull`, `vsnprintf %d`, and any code with `unsigned long long`
+  math. Fix: avoid 64-bit ops in libc (use 32-bit with manual
+  hi:lo splitting), or use `m68k-elf-gcc` (from `fetch-toolchain.sh`).
+  `divmod.S` covers 32-bit division only.
+- **kstack overflow in deep syscalls**: The per-process kstack is only
+  512 bytes. Syscalls with large local arrays (e.g., `sys_getcwd`'s
+  `names[8][32]` = 256 bytes) can overflow it, corrupting the proc
+  struct fields below. Keep syscall stack frames small; move large
+  buffers to static/global storage or split into helper functions.
 - **Unaligned stack buffers**: `char buf[13]` on the stack may land at an
   odd address. The 68000 faults on word/long access at odd addresses.
   Always use even-sized local buffers.

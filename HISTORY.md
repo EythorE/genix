@@ -1209,6 +1209,45 @@ load-bearing for shell implementations. A synchronous exec that returns
 an exit code violates this contract. On no-MMU systems, vfork+exec must
 convert to async process creation at the exec boundary.
 
+### libgcc 68020 opcodes in 64-bit arithmetic (dash hang)
+
+**Date:** March 2026
+**Symptom:** Dash hung during `init()` at `setvareq(defoptindvar, ...)`.
+No crash, no output — just a silent freeze.
+
+**Root cause:** The distro `libgcc.a` (`m68k-linux-gnu-gcc`) contains
+68020 `MULU.L` and `DIVU.L` instructions in `__muldi3`, `__divdi3`,
+and `__moddi3`. These are illegal on the 68000 and cause the CPU to
+enter an exception loop (the Musashi emulator silently hangs instead
+of reporting the fault).
+
+The call chain: `setvareq` → `getoptsreset` → `number` → `atomax10` →
+`strtoimax` → `strtoll` → `strtoull`. The `strtoull` function did
+`result * base` as `unsigned long long` multiplication, pulling in
+`__muldi3`. Similarly, `vsnprintf`'s `%d` handler used `long long`
+for the accumulator, pulling in `__divdi3`/`__moddi3` for `val % 10`.
+
+**Fix:** Rewrote `strtoull` in `libc/strtol.c` to accumulate using
+two 32-bit halves (hi:lo) with 16-bit split multiplication, avoiding
+`__muldi3` entirely. Rewrote `vsnprintf` integer formatting in
+`libc/sprintf.c` to use `unsigned long` for non-`%lld` formats, and
+manual 32-bit division for the `%lld` path.
+
+**Known remaining issue:** `sys_getcwd` in `kernel/proc.c` allocates
+a 256-byte `names[8][32]` local array, consuming most of the 512-byte
+per-process kstack. This may cause kstack overflow when combined with
+the TRAP frame and syscall dispatch overhead, corrupting the proc
+struct and causing subsequent syscalls to malfunction. Dash still hangs
+after the libgcc fixes due to this kstack pressure during `setpwd` →
+`getpwd` → `getcwd` → `savestr` → `malloc` → `sbrk`.
+
+**Lesson:** The existing CLAUDE.md pitfall about libgcc only mentioned
+division (`/`, `%`). Multiplication of `long long` values is equally
+dangerous. Any `unsigned long long` arithmetic — including `*` — pulls
+in 68020-only libgcc functions. Audit all libc functions that touch
+64-bit types. Also: 512-byte kstacks are extremely tight; any syscall
+with >100 bytes of locals is a risk.
+
 ---
 
 ## 5. The Relocation Story
