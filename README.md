@@ -22,8 +22,9 @@ history and [HISTORY.md](HISTORY.md) for the full project timeline.
 | Phase 2f | Fuzix libc + utilities | **Complete** |
 | Phase 3 | Mega Drive port (PAL drivers from Fuzix) | **Complete** |
 | Phase 4 | Polish (interrupt keyboard, multi-TTY, /dev/null) | **Complete** |
-| Phase 5 | ROM Execute-in-Place — run text from ROM, only copy .data to RAM | Planned |
-| Phase 6 | Concurrent multitasking — fixed RAM slots for .data, shared ROM text | Planned |
+| Phase 5 | ROM Execute-in-Place — run text from ROM, only copy .data to RAM | **Complete** |
+| — | Port dash shell (POSIX scripting, job control, history) | Next |
+| Phase 6 | Concurrent multitasking — `-msep-data`, fixed RAM slots, shared ROM text | Planned |
 | Phase 7 | SD card — load programs at runtime (Open EverDrive SPI + Mega EverDrive Pro FIFO) | Planned |
 | Phase 8 | EverDrive Pro PSRAM — banked 512 KB per process, enables large programs on MD | Planned |
 | Phase 9 | Performance — assembly memcpy/memset, DIVU.W fast path, VDP DMA scroll | Anytime |
@@ -207,4 +208,9 @@ See [docs/](docs/) for detailed technical documentation:
 | [Design Decisions](docs/decisions.md) | Active design decisions guiding development |
 | [Project History](HISTORY.md) | FUZIX heritage, implementation timeline, bugs, lessons |
 | [Forward Plan](PLAN.md) | Roadmap with implementation details for phases 5-9 |
+| [Relocatable Binaries](docs/relocatable-binaries.md) | Relocation research, XIP strategies, EverDrive bank-swapping |
+| [Relocation Implementation](docs/relocation-implementation-plan.md) | Relocation phases 1-7, split XIP engine |
+| [Shell Research](docs/shell-research.md) | Shell candidates for Genix (RAM budget, features, porting effort) |
+| [Shell Plan](docs/shell-plan.md) | Phased implementation plan for userspace shell + dash port |
+| [EverDrive SD Card](docs/everdrive-sd-card.md) | SD card access on Open EverDrive and Pro cartridges |
 | [Optimization Plan](OPTIMIZATION_PLAN.md) | 68000 performance gaps vs FUZIX |
