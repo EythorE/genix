@@ -272,6 +272,70 @@ With `-msep-data`, data+bss must fit in one slot (~14 KB on MD).
 - `exec /bin/dash -c "if true; then echo yes; fi"` → "yes"
 - `make test-all` — full ladder passes
 
+### Outcome
+
+**Implemented:** 2026-03-14. dash 0.5.12 ported and integrated.
+
+**Binary size (m68k-elf-size):**
+```
+   text    data     bss     dec     hex filename
+  91236    4500    2296   98032   17ef0 apps/dash/dash.elf
+```
+Data+bss = 6,796 bytes (49% of 14 KB Mega Drive slot).
+
+**Source files:** 32 dash C files + 3 bltin files (printf.c, test.c,
+bltin.h) + genix_stubs.c = 36 compiled objects.
+
+**Configuration:** JOBS=0, SMALL=1, no line editing, no glob/fnmatch.
+`config.h` defines feature flags, `genix_compat.h` provides shims
+(fork→vfork, wait3→waitpid, strtoimax→strtoll, etc.).
+
+**Libc additions required (significant):**
+- 7 new headers: inttypes.h, pwd.h, sys/ioctl.h, sys/param.h,
+  sys/resource.h, sys/time.h, sys/times.h
+- 15+ new functions: strtoll, strtoull, strtod (integer-only), abort,
+  vsnprintf (full format string implementation), strpbrk, stpncpy,
+  strsignal (with signal name table for 21 signals), isblank, isgraph,
+  ispunct, isxdigit
+- Updated headers: errno.h, fcntl.h, signal.h, ctype.h, string.h,
+  stdlib.h, stdio.h, sys/stat.h, sys/types.h
+
+**Integration:** kernel/main.c spawns `/bin/dash` in a respawn loop,
+falls back to `builtin_shell()`. dash added to CORE_BINS for both
+platforms.
+
+**Deviations from plan:**
+1. No `_setjmp`/`_longjmp` mapping needed — dash uses `setjmp`/`longjmp`
+   directly.
+2. `mempcpy`/`stpcpy`/`strchrnul` — not added to libc; instead unset
+   the HAVE_ flags so dash's own `system.c` provides implementations.
+3. `strsignal` — added to libc with full signal name table rather than
+   returning a static string, because dash's fallback uses `sys_siglist`
+   which Genix doesn't have.
+4. `vsnprintf` — needed a full implementation (~180 lines) with va_list
+   support, format flags, and length modifiers. dash's printf builtin
+   and error reporting depend on it.
+5. Libc grew more than expected — 7 new stub headers + 15 new functions.
+   Each was a real dependency that couldn't be stubbed away.
+
+**Gotchas:**
+1. GCC's `stdint.h` defines `intmax_t` as `long long` (8 bytes on 68000).
+   Initial attempt to typedef as `long` caused conflicts. Must use GCC's
+   types and set `SIZEOF_INTMAX_T=8`.
+2. `#include <sys/param.h>` requires a physical file — can't be handled
+   with header guard tricks in config.h. Same for all the other stub
+   headers.
+3. mkbuiltins (dash's code generator) produces garbled output if run
+   outside the proper autotools build. Must use `make -C src builtins.c
+   builtins.h` from a configured dash source tree.
+4. Duplicate symbol conflicts between genix_stubs.c and libc (fstat
+   defined in both). Must carefully partition which stubs go where.
+5. `-DSHELL` must be in CFLAGS — bltin files include dash internal
+   headers conditionally on `#ifdef SHELL`.
+
+**All tests pass:** host (63/63), test-emu (31/31), test-all (megadrive +
+BlastEm headless + BlastEm autotest).
+
 ---
 
 ## Phase D: Line Editing (separate task)

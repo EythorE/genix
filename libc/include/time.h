@@ -4,7 +4,10 @@
 
 #include <stdint.h>
 
+#ifndef _TIME_T_DEFINED
+#define _TIME_T_DEFINED
 typedef long time_t;
+#endif
 typedef long clock_t;
 
 struct timeval {

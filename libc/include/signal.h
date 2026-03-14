@@ -22,8 +22,10 @@
 #define SIGCONT  18
 #define SIGSTOP  19
 #define SIGTSTP  20
+#define SIGTTIN  21
+#define SIGTTOU  22
 
-#define NSIG     21   /* signals 0..20 */
+#define NSIG     23   /* signals 0..22 */
 
 /* Signal dispositions */
 #define SIG_DFL  ((void (*)(int))0)
@@ -31,6 +33,7 @@
 #define SIG_ERR  ((void (*)(int))-1)
 
 typedef void (*sighandler_t)(int);
+typedef int sig_atomic_t;
 
 /* Signal set type and operations */
 typedef unsigned long sigset_t;

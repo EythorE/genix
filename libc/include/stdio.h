@@ -7,6 +7,7 @@
 #endif
 
 #define EOF (-1)
+#define BUFSIZ 512
 
 typedef struct _FILE FILE;
 
@@ -29,6 +30,9 @@ int    fprintf(FILE *f, const char *fmt, ...);
 int    sprintf(char *buf, const char *fmt, ...);
 int    snprintf(char *buf, unsigned int size, const char *fmt, ...);
 int    sscanf(const char *str, const char *fmt, ...);
+
+#include <stdarg.h>
+int    vsnprintf(char *buf, unsigned int size, const char *fmt, va_list ap);
 
 int          fputs(const char *s, FILE *f);
 unsigned int fread(void *ptr, unsigned int size, unsigned int nmemb, FILE *f);
