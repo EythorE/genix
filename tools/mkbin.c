@@ -29,9 +29,9 @@ struct genix_header {
     uint32_t load_size;    /* text+data bytes */
     uint32_t bss_size;     /* BSS bytes to zero */
     uint32_t entry;        /* entry offset (0-based) */
-    uint32_t stack_size;   /* stack hint (0 = default 4KB) */
-    uint32_t flags;        /* reserved, 0 */
-    uint32_t text_size;    /* text segment size (for future split reloc) */
+    uint32_t stack_size;   /* bits 0-15: stack hint, bits 16-31: GOT offset from data start */
+    uint32_t flags;        /* GENIX_FLAG_XIP etc. */
+    uint32_t text_size;    /* text segment size (for split reloc / XIP) */
     uint32_t reloc_count;  /* number of relocation entries */
 };
 
@@ -54,6 +54,8 @@ struct genix_header {
 #define R_68K_PC16   5   /* PC-relative 16-bit (skip) */
 #define R_68K_PC8    6   /* PC-relative 8-bit (skip) */
 #define R_68K_GOT16O 11  /* GOT offset 16-bit (skip, resolved at link) */
+
+#define SHT_STRTAB   3   /* string table */
 
 /* Big-endian read helpers */
 static uint16_t be16(const uint8_t *p)
@@ -200,9 +202,21 @@ int main(int argc, char *argv[])
      * Text = all SHF_EXECINSTR sections (.text).
      * Data = everything in load_size after text ends. */
     uint32_t text_size = 0;
+    uint32_t got_vma = 0;   /* VMA of .got section (0 = no GOT) */
+    uint32_t got_size = 0;  /* size of .got section */
     if (shoff != 0 && shnum > 0) {
+        /* Find section name string table */
+        uint16_t shstrndx = be16(elf + 50);
+        uint8_t *shstrtab = NULL;
+        if (shstrndx < shnum) {
+            uint8_t *sh_str = elf + shoff + shstrndx * shentsize;
+            uint32_t str_off = be32(sh_str + 16);
+            shstrtab = elf + str_off;
+        }
+
         for (int i = 0; i < shnum; i++) {
             uint8_t *sh = elf + shoff + i * shentsize;
+            uint32_t sh_name = be32(sh + 0);
             uint32_t sh_type = be32(sh + 4);
             uint32_t sh_flags = be32(sh + 8);
             uint32_t sh_addr = be32(sh + 12);
@@ -214,8 +228,25 @@ int main(int argc, char *argv[])
                 if (end > text_size)
                     text_size = end;
             }
+
+            /* Find .got section VMA for -msep-data GOT offset */
+            if (shstrtab && sh_size > 0 &&
+                strcmp((const char *)(shstrtab + sh_name), ".got") == 0) {
+                got_vma = sh_addr;
+                got_size = sh_size;
+            }
         }
     }
+
+    /* Compute GOT offset from data start (for -msep-data a5 setup).
+     * Stored as (offset + 1) to distinguish "no GOT" (0) from
+     * "GOT at data start" (1). The kernel subtracts 1 to get the
+     * actual offset.
+     * 0 = no GOT (binary not compiled with -msep-data)
+     * N = GOT at offset (N-1) from start of data section */
+    uint32_t got_offset = 0;
+    if (got_vma > 0 && got_vma >= text_size)
+        got_offset = (got_vma - text_size) + 1;
 
     /* Build flat binary from PT_LOAD segments */
     uint8_t *flat = calloc(1, load_size);
@@ -338,6 +369,35 @@ int main(int argc, char *argv[])
         }
     }
 
+    /* Add synthetic relocations for GOT entries.
+     * With -msep-data, the linker fills GOT entries with absolute addresses
+     * but --emit-relocs does NOT emit R_68K_32 relocations for them.
+     * We scan the .got section and add a relocation for each non-zero entry. */
+    if (got_vma > 0 && got_size >= 4) {
+        uint32_t got_file_off = got_vma - load_base;
+        uint32_t got_entries = got_size / 4;
+        for (uint32_t i = 0; i < got_entries; i++) {
+            uint32_t off = got_file_off + i * 4;
+            if (off + 4 > load_size)
+                break;
+            uint32_t val = be32(flat + off);
+            if (val == 0)
+                continue;  /* skip empty entries */
+            /* Grow reloc array if needed */
+            if (reloc_count >= reloc_cap) {
+                reloc_cap *= 2;
+                relocs = realloc(relocs, reloc_cap * sizeof(uint32_t));
+                if (!relocs) {
+                    fprintf(stderr, "Out of memory\n");
+                    free(flat);
+                    free(elf);
+                    return 1;
+                }
+            }
+            relocs[reloc_count++] = off;
+        }
+    }
+
     free(elf);
 
     /* Sort relocation offsets (cache-friendly access during relocation) */
@@ -355,9 +415,12 @@ int main(int argc, char *argv[])
     }
 
     printf("mkbin: base=0x%06x load=%u (text=%u data=%u) bss=%u "
-           "entry=0x%06x relocs=%u\n",
+           "entry=0x%06x relocs=%u",
            load_base, load_size, text_size, load_size - text_size,
            bss_size, entry, reloc_count);
+    if (got_offset > 0)
+        printf(" got_offset=%u", got_offset);
+    printf("\n");
 
     /* Write output: 32-byte header + flat binary + relocation table */
     FILE *out = fopen(argv[2], "wb");
@@ -368,14 +431,20 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    /* Write big-endian header */
+    /* Write big-endian header.
+     * stack_size field packs two values:
+     *   bits 0-15:  actual stack size (0 = default 4KB)
+     *   bits 16-31: GOT offset from data start (for -msep-data a5 setup)
+     * Programs without -msep-data have got_offset=0 (backward compatible). */
+    uint32_t stack_field = 4096 | (got_offset << 16);
+
     uint8_t hdr[32];
     memset(hdr, 0, sizeof(hdr));
     put32(hdr + 0,  GENIX_MAGIC);
     put32(hdr + 4,  load_size);
     put32(hdr + 8,  bss_size);
     put32(hdr + 12, entry);
-    put32(hdr + 16, 4096);          /* default stack size */
+    put32(hdr + 16, stack_field);   /* stack size + GOT offset */
     put32(hdr + 20, 0);             /* flags: reserved */
     put32(hdr + 24, text_size);     /* text segment size */
     put32(hdr + 28, reloc_count);   /* relocation entry count */

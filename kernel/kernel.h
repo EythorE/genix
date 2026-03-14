@@ -122,12 +122,20 @@ extern uint32_t USER_SIZE;   /* USER_TOP - USER_BASE */
 /* Header flags */
 #define GENIX_FLAG_XIP  0x01  /* XIP-resolved: text in ROM, data refs → USER_BASE */
 
+/* Extract actual stack size and GOT offset from packed stack_size field.
+ * GOT offset is stored as (offset + 1) to distinguish "no GOT" (0)
+ * from "GOT at data start" (1). HDR_HAS_GOT checks if GOT exists,
+ * HDR_GOT_OFFSET returns the actual byte offset. */
+#define HDR_STACK_SIZE(hdr)  ((hdr)->stack_size & 0xFFFF)
+#define HDR_HAS_GOT(hdr)    (((hdr)->stack_size >> 16) != 0)
+#define HDR_GOT_OFFSET(hdr)  (((hdr)->stack_size >> 16) - 1)
+
 struct genix_header {
     uint32_t magic;       /* 0x47454E58 "GENX" */
     uint32_t load_size;   /* text+data bytes to load */
     uint32_t bss_size;    /* bytes to zero after load */
     uint32_t entry;       /* entry point offset (0-based) */
-    uint32_t stack_size;  /* stack size hint (0 = default 4KB) */
+    uint32_t stack_size;  /* bits 0-15: stack hint, bits 16-31: GOT offset */
     uint32_t flags;       /* GENIX_FLAG_XIP etc. */
     uint32_t text_size;   /* text segment size (for split reloc / XIP) */
     uint32_t reloc_count; /* number of uint32_t relocation entries */
@@ -173,6 +181,17 @@ void  mem_init(uint32_t start, uint32_t end);
 void *kmalloc(uint32_t size);
 void  kfree(void *ptr);
 void *sbrk_proc(int32_t incr);
+
+/* ======== Slot allocator (Phase 6) ======== */
+
+#define MAX_SLOTS   8
+
+void slot_init(void);
+int  slot_alloc(void);     /* returns slot index or -1 */
+void slot_free(int slot);
+uint32_t slot_base(int slot);
+uint32_t slot_size(void);
+extern int num_slots;
 
 /* ======== Filesystem (minifs) ======== */
 
@@ -341,13 +360,16 @@ struct proc {
     uint8_t  ppid;
     int8_t   exitcode;
     uint32_t ksp;          /* saved kernel stack pointer (into kstack[]) */
-    uint32_t mem_base;     /* start of process memory */
-    uint32_t mem_size;     /* size of allocated memory */
+    uint32_t mem_base;     /* start of process memory (slot base) */
+    uint32_t mem_size;     /* size of allocated memory (slot size) */
     uint32_t brk;          /* current break (top of data) */
-    uint32_t vfork_ctx[13]; /* vfork_save context (d2-d7,a2-a6,sp,retaddr) */
+    uint32_t data_a5;      /* a5 value for -msep-data (GOT base in slot) */
+    int8_t   mem_slot;     /* slot index (-1 = no slot) */
+    uint8_t  _pad1;
     uint16_t cwd;          /* current working directory inode */
+    uint32_t vfork_ctx[13]; /* vfork_save context (d2-d7,a2-a6,sp,retaddr) */
     uint8_t  pgrp;         /* process group ID (for job control) */
-    uint8_t  _pad;         /* align to even boundary */
+    uint8_t  _pad2;        /* align to even boundary */
     uint32_t sig_pending;  /* bitmask of pending signals */
     uint32_t sig_handler[NSIG]; /* signal handlers (0=SIG_DFL, 1=SIG_IGN, else addr) */
     struct ofile *fd[MAXFD];
@@ -384,13 +406,16 @@ extern int exec_enter(uint32_t entry, uint32_t user_sp, uint32_t kstack_top);
 extern void exec_leave(void);
 extern int exec_exit_code;
 extern int exec_active;
+extern uint32_t exec_user_a5;
 
 /* Context switch (assembly in exec_asm.S) */
 extern void swtch(uint32_t *old_ksp, uint32_t new_ksp);
 extern void proc_first_run(void);  /* trampoline for new process entry */
 
-/* Set up a process's kstack for its first context switch */
-void proc_setup_kstack(struct proc *p, uint32_t entry, uint32_t user_sp);
+/* Set up a process's kstack for its first context switch.
+ * user_a5 is the GOT base for -msep-data processes (0 if not applicable). */
+void proc_setup_kstack(struct proc *p, uint32_t entry, uint32_t user_sp,
+                       uint32_t user_a5);
 
 /* Helper: get the top of a process's kernel stack */
 static inline uint32_t proc_kstack_top(struct proc *p)

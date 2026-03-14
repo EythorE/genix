@@ -23,6 +23,8 @@ void proc_init(void)
     curproc->ppid = 0;
     curproc->cwd = 1;  /* root directory */
     curproc->pgrp = 0;
+    curproc->mem_slot = -1;  /* kernel shell has no slot */
+    curproc->data_a5 = 0;
     curproc->kstack[0] = KSTACK_CANARY;
     nproc = 1;
 
@@ -282,7 +284,8 @@ static struct pipe *ofile_pipe(struct ofile *of)
  *   [callee-saved]     d2-d7, a2-a6 (all zero)
  *   ← ksp points here
  */
-void proc_setup_kstack(struct proc *p, uint32_t entry, uint32_t user_sp)
+void proc_setup_kstack(struct proc *p, uint32_t entry, uint32_t user_sp,
+                       uint32_t user_a5)
 {
     /* Build the initial kstack frame using byte-level pointer math.
      * The exception frame has a 2-byte SR followed by a 4-byte PC,
@@ -304,9 +307,15 @@ void proc_setup_kstack(struct proc *p, uint32_t entry, uint32_t user_sp)
     bp -= 2;
     *(uint16_t *)bp = 0x0000;       /* SR: user mode, interrupts on */
 
-    /* User registers: 15 × 4 = 60 bytes (all zero) */
+    /* User registers: 15 × 4 = 60 bytes (d0-d7, a0-a6, all zero) */
     bp -= 60;
     memset(bp, 0, 60);
+
+    /* Set a5 in user register frame for -msep-data.
+     * Register layout in frame: d0-d7 (32 bytes), a0-a6 (28 bytes).
+     * a5 is at offset 32 + 5*4 = 52 bytes from start of register block. */
+    if (user_a5)
+        *(uint32_t *)(bp + 52) = user_a5;
 
     /* Saved USP */
     bp -= 4;
@@ -361,6 +370,12 @@ void do_exit(int code)
                 }
             }
         }
+    }
+
+    /* Free the memory slot */
+    if (curproc->mem_slot >= 0) {
+        slot_free(curproc->mem_slot);
+        curproc->mem_slot = -1;
     }
 
     curproc->exitcode = code;
@@ -542,6 +557,12 @@ int do_spawn(const char *path, const char **argv)
 
     struct proc *child = &proctab[cpid];
 
+    /* Allocate a memory slot for the child */
+    int slot = slot_alloc();
+    if (slot < 0) {
+        return -ENOMEM;
+    }
+
     /* Initialize child from parent */
     child->state = P_FREE;  /* not yet ready */
     child->pid = cpid;
@@ -549,9 +570,11 @@ int do_spawn(const char *path, const char **argv)
     child->exitcode = 0;
     child->cwd = curproc->cwd;
     child->pgrp = cpid;  /* own process group by default */
-    child->mem_base = 0;
-    child->mem_size = 0;
+    child->mem_base = slot_base(slot);
+    child->mem_size = slot_size();
     child->brk = 0;
+    child->data_a5 = 0;
+    child->mem_slot = slot;
     child->sig_pending = 0;
     for (int i = 0; i < NSIG; i++)
         child->sig_handler[i] = SIG_DFL;
@@ -568,7 +591,7 @@ int do_spawn(const char *path, const char **argv)
     struct proc *parent = curproc;
     curproc = child;
 
-    /* Load binary into user memory.
+    /* Load binary into the child's slot.
      * Try XIP first if ROM address is available. */
     uint32_t entry, user_sp;
     int rc = -ENOEXEC;
@@ -579,12 +602,13 @@ int do_spawn(const char *path, const char **argv)
             fs_iput(xip);
             if (rom_addr)
                 rc = load_binary_xip(path, argv,
-                                     rom_addr + GENIX_HDR_SIZE, USER_BASE,
+                                     rom_addr + GENIX_HDR_SIZE,
+                                     child->mem_base,
                                      &entry, &user_sp);
         }
     }
     if (rc < 0)
-        rc = load_binary(path, argv, USER_BASE, &entry, &user_sp);
+        rc = load_binary(path, argv, child->mem_base, &entry, &user_sp);
 
     /* Restore curproc to parent */
     curproc = parent;
@@ -597,13 +621,17 @@ int do_spawn(const char *path, const char **argv)
                 child->fd[i] = NULL;
             }
         }
+        slot_free(slot);
+        child->mem_slot = -1;
         child->state = P_FREE;
         nproc--;
         return rc;
     }
 
-    /* Build the child's kstack so swtch() can resume it */
-    proc_setup_kstack(child, entry, user_sp);
+    /* Build the child's kstack so swtch() can resume it.
+     * Pass data_a5 so the initial register frame has a5 set
+     * for -msep-data GOT access. */
+    proc_setup_kstack(child, entry, user_sp, child->data_a5);
 
     /* Child is ready to run — scheduler will pick it up */
     child->state = P_READY;
