@@ -79,6 +79,41 @@ internal type field:
 - `make kernel` — cross-compilation succeeds
 - `make megadrive` — Mega Drive build succeeds
 
+### Outcome
+
+**Implemented:** 2026-03-14. 17 files changed, +504/-43 lines.
+
+All planned items completed as specified. `make test-all` passes.
+
+**New headers created (7):** setjmp.h, sys/types.h, sys/wait.h,
+sys/stat.h, limits.h, paths.h, time.h.
+
+**New source files (3):** setjmp_68000.S (setjmp/longjmp saving
+d2-d7/a2-a6/SP, ported from FUZIX), signal.c (sigaction wrapper,
+sigprocmask stub, raise), unistd_stubs.c (16 POSIX stub functions).
+
+**Updated headers (3):** signal.h (NSIG, sigset_t, struct sigaction,
+SA_RESTART, sigset macros), fcntl.h (F_DUPFD/F_GETFD/F_SETFD/F_GETFL/
+F_SETFL, FD_CLOEXEC), unistd.h (UID/GID stubs, process groups, alarm,
+sleep, sysconf, access, STDIN/STDOUT/STDERR_FILENO).
+
+**Kernel change:** fs_stat() now writes a 32-byte POSIX-compatible
+struct stat (was 12-byte kstat). Converts FT_FILE→S_IFREG|0755,
+FT_DIR→S_IFDIR|0755, FT_DEV→S_IFCHR|0666. Device files populate
+st_rdev with (major<<8|minor). All time fields set to mtime (no
+atime/ctime tracking in minifs).
+
+**Updated consumers:** apps/ls.c now uses `<sys/stat.h>` and S_IS*
+macros instead of duplicating a local struct stat. tests/test_fs.c
+updated for posix_stat struct.
+
+**Deviations from plan:** None. The plan was straightforward and all
+items were implemented exactly as specified.
+
+**No new pitfalls discovered.** The implementation was clean — the
+existing toolchain and build system handled all new files without
+surprises.
+
 ---
 
 ## Phase B: Kernel Enhancements

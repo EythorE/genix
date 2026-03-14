@@ -24,6 +24,7 @@ history and [HISTORY.md](HISTORY.md) for the full project timeline.
 | Phase 4 | Polish (interrupt keyboard, multi-TTY, /dev/null) | **Complete** |
 | Phase 5 | ROM Execute-in-Place — run text from ROM, only copy .data to RAM | **Complete** |
 | Phase 6 | Concurrent multitasking — `-msep-data`, fixed RAM slots, shared ROM text | **Complete** |
+| Phase A | Libc prerequisites — POSIX headers, setjmp/longjmp, signal wrappers, stat conversion | **Complete** |
 | — | Port dash shell (POSIX scripting, job control, history) | Planned |
 | Phase 7 | SD card — load programs at runtime (Open EverDrive SPI + Mega EverDrive Pro FIFO) | Planned |
 | Phase 8 | EverDrive Pro PSRAM — banked 512 KB per process, enables large programs on MD | Planned |
@@ -185,7 +186,7 @@ genix/
 - **Custom filesystem (minifs)** — classic Unix inode layout
 - **Syscalls via TRAP #0** — number in `d0`, args in `d1-d4`, return in `d0` (negative = -errno)
 - **Preemptive scheduling** — timer-driven context switch, 16 process slots
-- **Custom libc** — 15 modules including regex, tuned for 68000 constraints
+- **Custom libc** — 18 modules including regex and POSIX stubs, tuned for 68000 constraints
 
 ## Documentation
 

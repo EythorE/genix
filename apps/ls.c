@@ -12,25 +12,7 @@
 #include <dirent.h>
 #include <unistd.h>
 #include <getopt.h>
-
-/* Minimal stat structure — must match kernel's kstat */
-struct stat {
-    uint16_t st_ino;
-    uint8_t  st_type;
-    uint8_t  st_nlink;
-    uint32_t st_size;
-    uint32_t st_mtime;
-    uint8_t  st_dev_major;
-    uint8_t  st_dev_minor;
-    uint16_t st_pad;
-};
-
-extern int stat(const char *path, void *buf);
-
-/* File types from kernel */
-#define FT_FILE 1
-#define FT_DIR  2
-#define FT_DEV  3
+#include <sys/stat.h>
 
 static int opt_long = 0;
 
@@ -71,9 +53,9 @@ static void ls_dir(const char *path)
             }
 
             char type = '?';
-            if (st.st_type == FT_FILE) type = '-';
-            else if (st.st_type == FT_DIR) type = 'd';
-            else if (st.st_type == FT_DEV) type = 'c';
+            if (S_ISREG(st.st_mode))  type = '-';
+            else if (S_ISDIR(st.st_mode))  type = 'd';
+            else if (S_ISCHR(st.st_mode))  type = 'c';
 
             printf("%c %d\t%s\n", type, (int)st.st_size, ent->d_name);
         } else {

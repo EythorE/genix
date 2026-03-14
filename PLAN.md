@@ -10,7 +10,10 @@ Drive hardware. ROM XIP is working on Mega Drive (text executes from
 ROM, only .data copied to RAM). Phase 6 (`-msep-data` + slot allocator)
 is complete: multiple processes can reside in memory simultaneously
 with shared ROM text and per-process data slots. Pipelines execute
-concurrently. The next milestone is porting dash as a userspace shell.
+concurrently. Phase A (libc prerequisites) is complete — POSIX headers,
+setjmp/longjmp, and stub functions are in place. The next step is
+Phase B (kernel enhancements: fcntl F_DUPFD, waitpid WNOHANG), then
+the dash shell port.
 
 ---
 
@@ -452,9 +455,11 @@ Phase 5 (ROM XIP) .............. done
     |
 Phase 6 (-msep-data + slots) .. done
     |
-Libc + kernel prereqs ......... next
+Libc prereqs (Phase A) ....... done
     |
-dash Shell Port
+Kernel prereqs (Phase B) ..... next
+    |
+dash Shell Port (Phase C)
     |
 Phase 7 (SD Card) ............. independent, can happen anytime
     |
@@ -463,6 +468,7 @@ Phase 8 (EverDrive Pro PSRAM) . depends on Phase 6 + 7
 Phase 9 (Performance) ......... independent, can happen anytime
 ```
 
-Libc + kernel prereqs for dash are the next step. Phase 6 is complete,
-unlocking concurrent processes sharing ROM text and true concurrent
-pipelines. Phase 7 (SD card) is independent.
+Libc prerequisites (Phase A) are complete — POSIX headers, setjmp/longjmp,
+signal wrappers, POSIX stubs, and POSIX-compatible struct stat. Kernel
+prerequisites (Phase B: fcntl F_DUPFD, waitpid WNOHANG) are next, then
+dash port. Phase 7 (SD card) is independent.

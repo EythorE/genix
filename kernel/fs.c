@@ -632,23 +632,52 @@ int fs_getdents(struct inode *ip, void *buf, uint32_t off, uint32_t n)
     return fs_read(ip, buf, off, n);
 }
 
-/* Simple stat — fills a flat struct */
-struct kstat {
-    uint16_t inum;
-    uint8_t  type;
-    uint8_t  nlink;
-    uint32_t size;
-    uint32_t mtime;
+/*
+ * POSIX-compatible stat structure.
+ * Must match libc/include/sys/stat.h layout exactly.
+ */
+struct posix_stat {
+    uint16_t st_dev;
+    uint16_t st_ino;
+    uint16_t st_mode;
+    uint16_t st_nlink;
+    uint16_t st_uid;
+    uint16_t st_gid;
+    uint16_t st_rdev;
+    uint16_t st_pad;
+    uint32_t st_size;
+    uint32_t st_atime;
+    uint32_t st_mtime;
+    uint32_t st_ctime;
 };
+
+/* Convert internal file type to POSIX st_mode */
+static uint16_t type_to_mode(uint8_t type)
+{
+    switch (type) {
+    case FT_FILE: return 0100755;  /* S_IFREG | rwxr-xr-x */
+    case FT_DIR:  return 0040755;  /* S_IFDIR | rwxr-xr-x */
+    case FT_DEV:  return 0020666;  /* S_IFCHR | rw-rw-rw- */
+    default:      return 0;
+    }
+}
 
 int fs_stat(struct inode *ip, void *buf)
 {
     if (!ip) return -ENOENT;
-    struct kstat *st = (struct kstat *)buf;
-    st->inum = ip->inum;
-    st->type = ip->type;
-    st->nlink = ip->nlink;
-    st->size = ip->size;
-    st->mtime = ip->mtime;
+    struct posix_stat *st = (struct posix_stat *)buf;
+    st->st_dev   = 0;
+    st->st_ino   = ip->inum;
+    st->st_mode  = type_to_mode(ip->type);
+    st->st_nlink = ip->nlink;
+    st->st_uid   = 0;
+    st->st_gid   = 0;
+    st->st_rdev  = (ip->type == FT_DEV)
+                   ? (ip->dev_major << 8) | ip->dev_minor : 0;
+    st->st_pad   = 0;
+    st->st_size  = ip->size;
+    st->st_atime = ip->mtime;
+    st->st_mtime = ip->mtime;
+    st->st_ctime = ip->mtime;
     return 0;
 }
