@@ -237,3 +237,72 @@ unsigned int strspn(const char *s, const char *accept)
     }
     return p - s;
 }
+
+char *strpbrk(const char *s, const char *accept)
+{
+    while (*s) {
+        const char *a = accept;
+        while (*a) {
+            if (*s == *a)
+                return (char *)s;
+            a++;
+        }
+        s++;
+    }
+    return (void *)0;
+}
+
+char *stpncpy(char *dest, const char *src, unsigned int n)
+{
+    while (n && *src) {
+        *dest++ = *src++;
+        n--;
+    }
+    char *end = dest;
+    while (n--)
+        *dest++ = '\0';
+    return end;
+}
+
+static char strsignal_buf[24];
+
+char *strsignal(int sig)
+{
+    static const char *const names[] = {
+        [0] = "Signal 0",
+        [1] = "Hangup",
+        [2] = "Interrupt",
+        [3] = "Quit",
+        [4] = "Illegal instruction",
+        [5] = "Trace trap",
+        [6] = "Aborted",
+        [7] = "Bus error",
+        [8] = "Floating point exception",
+        [9] = "Killed",
+        [10] = "User signal 1",
+        [11] = "Segmentation fault",
+        [12] = "User signal 2",
+        [13] = "Broken pipe",
+        [14] = "Alarm clock",
+        [15] = "Terminated",
+        [17] = "Child exited",
+        [18] = "Continued",
+        [19] = "Stopped (signal)",
+        [20] = "Stopped",
+    };
+    if (sig >= 0 && sig <= 20 && names[sig])
+        return (char *)names[sig];
+    /* Format "Signal %d" into static buffer */
+    char *p = strsignal_buf;
+    const char *prefix = "Signal ";
+    while (*prefix)
+        *p++ = *prefix++;
+    /* Simple integer to string */
+    if (sig < 0) { *p++ = '-'; sig = -sig; }
+    char digits[10];
+    int n = 0;
+    do { digits[n++] = '0' + sig % 10; sig /= 10; } while (sig);
+    while (n--) *p++ = digits[n];
+    *p = '\0';
+    return strsignal_buf;
+}

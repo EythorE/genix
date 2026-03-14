@@ -21,4 +21,9 @@ typedef int dev_t;
 typedef unsigned int ino_t;
 typedef unsigned int nlink_t;
 
+#ifndef _TIME_T_DEFINED
+#define _TIME_T_DEFINED
+typedef long time_t;
+#endif
+
 #endif

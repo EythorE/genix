@@ -26,5 +26,8 @@ int          strcasecmp(const char *s1, const char *s2);
 int          strncasecmp(const char *s1, const char *s2, unsigned int n);
 unsigned int strcspn(const char *s, const char *reject);
 unsigned int strspn(const char *s, const char *accept);
+char        *strpbrk(const char *s, const char *accept);
+char        *stpncpy(char *dest, const char *src, unsigned int n);
+char        *strsignal(int sig);
 
 #endif

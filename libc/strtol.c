@@ -99,3 +99,72 @@ long strtol(const char *nptr, char **endptr, int base)
 
     return result;
 }
+
+unsigned long long strtoull(const char *nptr, char **endptr, int base)
+{
+    const char *s = nptr;
+    unsigned long long result = 0;
+    int any = 0;
+
+    while (isspace_local(*s))
+        s++;
+
+    if (*s == '+')
+        s++;
+
+    if (base == 0) {
+        if (*s == '0') {
+            s++;
+            if (*s == 'x' || *s == 'X') {
+                base = 16;
+                s++;
+            } else {
+                base = 8;
+            }
+        } else {
+            base = 10;
+        }
+    } else if (base == 16) {
+        if (s[0] == '0' && (s[1] == 'x' || s[1] == 'X'))
+            s += 2;
+    }
+
+    while (*s) {
+        int d = digit_val(*s);
+        if (d < 0 || d >= base)
+            break;
+        result = result * (unsigned long long)base + (unsigned long long)d;
+        any = 1;
+        s++;
+    }
+
+    if (endptr)
+        *endptr = (char *)(any ? s : nptr);
+    return result;
+}
+
+long long strtoll(const char *nptr, char **endptr, int base)
+{
+    const char *s = nptr;
+    int neg = 0;
+    long long result;
+
+    while (isspace_local(*s))
+        s++;
+
+    if (*s == '-') {
+        neg = 1;
+        s++;
+    } else if (*s == '+') {
+        s++;
+    }
+
+    result = (long long)strtoull(s, endptr, base);
+    if (neg)
+        result = -result;
+
+    if (endptr && *endptr == s)
+        *endptr = (char *)nptr;
+
+    return result;
+}

@@ -302,3 +302,27 @@ int rand(void)
     _rand_seed = _rand_seed * 1103515245 + 12345;
     return (_rand_seed >> 16) & 0x7FFF;
 }
+
+void abort(void)
+{
+    _exit(134); /* 128 + SIGABRT(6) */
+}
+
+/* Minimal strtod — just integer part, no fraction/exponent.
+ * Enough for dash's printf builtin. */
+double strtod(const char *nptr, char **endptr)
+{
+    long val = 0;
+    const char *s = nptr;
+    int neg = 0;
+
+    while (*s == ' ' || *s == '\t') s++;
+    if (*s == '-') { neg = 1; s++; }
+    else if (*s == '+') s++;
+
+    while (*s >= '0' && *s <= '9')
+        val = val * 10 + (*s++ - '0');
+
+    if (endptr) *endptr = (char *)s;
+    return neg ? -(double)val : (double)val;
+}
