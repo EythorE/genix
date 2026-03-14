@@ -394,7 +394,7 @@ void apply_relocations_xip(uint8_t *text_mem, uint32_t text_base,
                             const uint32_t *relocs, uint32_t nrelocs);
 int  do_exec(const char *path, const char **argv);
 void do_exit(int code);
-int  do_waitpid(int pid, int *status);
+int  do_waitpid(int pid, int *status, int options);
 int  do_vfork(void);
 int  do_spawn(const char *path, const char **argv);
 int  do_spawn_fd(const char *path, const char **argv,
