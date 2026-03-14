@@ -16,8 +16,8 @@ struct genix_header {
     uint32_t load_size;   /* text+data bytes to load */
     uint32_t bss_size;    /* bytes to zero after load */
     uint32_t entry;       /* entry point offset (0-based) */
-    uint32_t stack_size;  /* stack hint (0 = default 4KB) */
-    uint32_t flags;       /* reserved, 0 */
+    uint32_t stack_size;  /* bits 0-15: stack hint (0=4KB), bits 16-31: GOT offset+1 */
+    uint32_t flags;       /* GENIX_FLAG_XIP etc. */
     uint32_t text_size;   /* text segment size (for split reloc) */
     uint32_t reloc_count; /* number of uint32_t relocation entries */
 };
@@ -88,10 +88,12 @@ relocatable binary:
    - `R_68K_16` (type 2): **error** — 16-bit absolute not supported
    - `R_68K_PC*` (types 4-6): **skipped** — PC-relative, self-fixing
    - `R_68K_GOT*`: **skipped** — GOT-relative, link-time resolved
-5. Sorts relocation offsets (cache-friendly for runtime patching)
-6. Deduplicates overlapping entries
-7. Computes `text_size` from `.text` + `.rodata` section sizes
-8. Writes: `[32B header][text+data][reloc table]`
+5. Generates synthetic relocations for `.got` entries (see below)
+6. Sorts relocation offsets (cache-friendly for runtime patching)
+7. Deduplicates overlapping entries
+8. Computes `text_size` from `.text` + `.rodata` section sizes
+9. Computes `got_offset` from `.got` section VMA relative to data start
+10. Writes: `[32B header][text+data][reloc table]`
 
 The `bss_size` is computed as `total_memsz - total_filesz`.
 
@@ -133,6 +135,38 @@ and other non-loaded relocation sections.
 **text_size computation:** Scans section headers for `SHT_PROGBITS`
 sections with `SHF_EXECINSTR` flag. The maximum end address of these
 sections becomes `text_size`, enabling the split text/data relocator.
+
+### GOT Entry Relocations (`-msep-data`)
+
+When apps are compiled with `-msep-data`, the linker creates a GOT
+(Global Offset Table) containing absolute addresses of functions and
+data. However, `--emit-relocs` does NOT emit R_68K_32 relocations for
+these linker-generated GOT entries.
+
+mkbin compensates by scanning the `.got` section in the flat binary.
+Every non-zero 4-byte-aligned entry in `.got` gets a synthetic
+relocation added to the relocation table. These synthetic relocs are
+merged with the ELF-extracted relocs, sorted, and deduplicated.
+
+### GOT Offset Encoding (`stack_size` Field)
+
+The `stack_size` header field is split:
+- **Bits 0-15:** Stack size hint (0 = default 4 KB)
+- **Bits 16-31:** GOT offset from data section start, encoded as
+  (offset + 1)
+
+Encoding: 0 = no GOT (binary not compiled with `-msep-data`).
+N = GOT at byte offset (N-1) from the start of the data section.
+
+The kernel uses macros to decode:
+```c
+#define HDR_STACK_SIZE(hdr)  ((hdr)->stack_size & 0xFFFF)
+#define HDR_HAS_GOT(hdr)    (((hdr)->stack_size >> 16) != 0)
+#define HDR_GOT_OFFSET(hdr)  (((hdr)->stack_size >> 16) - 1)
+```
+
+The offset+1 encoding avoids ambiguity: GOT at offset 0 (common when
+`.data` is empty) encodes as 1, distinguishing it from "no GOT" (0).
 
 ### Runtime Bounds Checking
 
@@ -220,12 +254,16 @@ This avoids the complexity of a full context switch for single-tasking.
 
 ## Status
 
-- **Phase 6: Dynamic load address** — **Done.** `load_binary()` accepts
-  a `load_addr` parameter. Callers pass `USER_BASE` for single-tasking;
-  multitasking can pass different addresses per process.
-- **Phase 7: Split XIP relocator** — **Partially done.**
+- **Phase 5: ROM XIP** — **Done.** `load_binary_xip()` executes text
+  from ROM, copies only data+BSS to RAM. `romfix` resolves text-segment
+  relocations at build time.
+- **Phase 6: `-msep-data` + slot allocator** — **Done.** All apps
+  compile with `-msep-data`. Slot allocator divides user RAM into
+  fixed-size slots. `exec()` allocates a slot per process, sets a5 to
+  GOT base. `romfix` defers data-segment relocations for runtime.
+  mkbin generates synthetic GOT entry relocations. Concurrent pipelines.
+- **Phase 8: EverDrive Pro PSRAM** — **Future.**
   `apply_relocations_xip()` is implemented and tested (11 host tests).
-  The corresponding loader (`load_binary_xip`) is not yet written.
   Hardware integration (SRAM bank detection, per-process bank tracking,
   context switch bank register writes) deferred until EverDrive Pro
   becomes the active target. See

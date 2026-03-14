@@ -24,10 +24,11 @@ it carefully and do not improvise. Do NOT install distro packages
 
 ## Project Stage & Current Focus
 
-Phases 1-5 complete. Phase 5 (ROM XIP) uses romfix Strategy A — text
-runs from ROM, only .data copied to RAM. Phase 6 (`-msep-data` + slot
-allocator) is the next milestone: concurrent multitasking with shared
-ROM text. See PLAN.md for the full dependency graph.
+Phases 1-6 complete. Phase 6 (`-msep-data` + slot allocator) enables
+concurrent multitasking with shared ROM text and per-process data
+slots. The next milestone is porting dash as a userspace shell
+(requires libc + kernel prereqs). See PLAN.md for the full dependency
+graph.
 
 Design choices that are LOAD-BEARING (changing these is expensive):
 - Binary format and relocation scheme (affects all 34 apps + libc + mkbin)
@@ -242,6 +243,11 @@ These are lessons learned from debugging sessions (documented in full in
   layouts, and VDP vs UART output. Always verify both `make run` and
   `make megadrive`. See `docs/automated-testing.md` for the investigation
   procedure.
+- **`--emit-relocs` misses GOT entries**: The linker's `--emit-relocs`
+  does NOT emit relocations for linker-generated GOT entries (used by
+  `-msep-data`). mkbin generates synthetic relocs by scanning `.got`.
+  If adding new linker-generated sections, verify they have relocation
+  coverage.
 
 ## Auto-Memory Rules
 
