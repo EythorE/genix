@@ -112,18 +112,21 @@ kernel VDP driver with userspace libgfx library via ioctls.
 
 ---
 
-## XIP Relocator (Future)
+## ROM XIP (Phase 5) — Complete
 
-**Status:** Core engine done, hardware integration pending
+**Status:** Implemented via romfix (Strategy A)
 
-`apply_relocations_xip()` handles loading text and data at separate
-memory addresses (text in banked SRAM, data in main RAM). The
-corresponding loader `load_binary_xip()` is not yet implemented.
+`romfix` post-processes the Mega Drive ROM at build time, resolving
+text references to absolute ROM addresses and data references to
+USER_BASE. The kernel's `load_binary_xip()` detects XIP-flagged
+binaries and executes text directly from ROM — only .data is copied
+to RAM.
 
-**Why separate functions:**
-1. Different memory layout (two base pointers vs one)
-2. Different loading sequence (two fs_read calls vs one)
-3. Hot path stays fast (zero overhead when unused)
+The split XIP engine (`apply_relocations_xip()` and `load_binary_xip()`
+with separate text/data base pointers) also exists in the kernel for
+future EverDrive Pro bank-swapping (Phase 8). See
+[relocation-implementation-plan.md](relocation-implementation-plan.md)
+Phase 7.
 
 Remaining work for full EverDrive Pro bank-swapping:
 - Detect Pro mode at boot
@@ -159,7 +162,7 @@ review. Always review after merge.
 
 1. **Single user memory space** — all user programs load at USER_BASE;
    two processes can't coexist in memory. Pipelines execute sequentially.
-   Requires ROM XIP or memory partitioning to fix (see PLAN.md).
+   Fix: Phase 6 (`-msep-data` + slot allocator) — see PLAN.md.
 
 2. **Sequential pipelines** — the 512-byte pipe buffer limits output.
    Real concurrent pipelines need multiple processes in memory.
@@ -171,7 +174,8 @@ review. Always review after merge.
    proc struct fields. Consider a canary word for debug builds.
 
 5. **Levee too large for Mega Drive** — 44 KB binary vs ~28 KB user
-   space. ROM XIP would allow text in ROM, only data in RAM.
+   space. ROM XIP helps (text in ROM, only data in RAM), but levee's
+   data+bss still exceeds a single slot. Phase 8 (PSRAM) fully solves this.
 
 6. **No SA_RESTART** — signal delivery interrupts blocking syscalls.
    User programs must retry on -EINTR.
@@ -184,11 +188,11 @@ review. Always review after merge.
 
 ## Open Questions
 
-1. **brk() vs mmap()?** In single-tasking, brk() works fine. In
-   multitasking with memory partitioning, it's problematic if another
-   process is after ours. Plan: brk() with careful load ordering,
-   revisit when memory partitioning is implemented.
+1. **brk() vs mmap()?** In single-tasking, brk() works fine. With
+   `-msep-data` fixed slots (Phase 6), brk() is bounded by slot size.
+   Revisit if dynamic slot sizing is ever needed.
 
-2. **Shell: Fuzix sh or custom?** Currently using a minimal built-in
-   shell. A real shell running from ROM (see PLAN.md Phase 6) could
-   be much more capable.
+2. ~~**Shell: Fuzix sh or custom?**~~ Resolved: dash (Debian Almquist
+   Shell). See [docs/shell-research.md](shell-research.md) for the full
+   analysis of 8 candidates. [docs/shell-plan.md](shell-plan.md) for
+   the implementation plan.

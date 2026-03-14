@@ -707,3 +707,40 @@ replacement.
 If implementation reveals that the design in `docs/relocatable-binaries.md`
 needs changes, update both documents together with clear commit messages
 explaining what changed and why.
+
+---
+
+## Outcome
+
+**Date:** 2026-03-14
+
+### Phases 1-6: Completed as planned
+
+Relocatable binaries are fully working. All 34 apps are linked at
+address 0 with `--emit-relocs`, mkbin extracts R_68K_32 relocations,
+and the kernel relocates at exec() time. One binary runs on both
+workbench (USER_BASE=0x040000) and Mega Drive (USER_BASE=0xFF9000).
+
+### Phase 7 (Split XIP): Partially implemented via romfix
+
+The plan's Phase 7 described `load_binary_xip()` for loading text and
+data at separate addresses. What was actually implemented for Phase 5
+ROM XIP was **Strategy A (romfix)** instead:
+
+- `tools/romfix.c` post-processes the Mega Drive ROM at build time
+- Resolves text references → absolute ROM addresses
+- Resolves data references → USER_BASE addresses
+- Sets `GENIX_FLAG_XIP` flag; kernel's `load_binary_xip()` detects it
+  and executes text directly from ROM
+
+The `apply_relocations_xip()` engine (split text/data relocator) and
+`load_binary_xip()` loader exist in the kernel and are tested (11 host
+tests). They will be used for EverDrive Pro PSRAM bank-swapping
+(PLAN.md Phase 8) where text lives in banked PSRAM and data in main RAM.
+
+### Next: `-msep-data` for concurrent multitasking
+
+Phase 6 in PLAN.md now uses GCC's `-msep-data` flag instead of runtime
+data relocation. This makes all data access go through register a5,
+enabling per-process data slots without patching data references.
+See PLAN.md for details.
