@@ -58,6 +58,8 @@ tests/test_fs
 tests/test_buf
 tests/test_kprintf
 tests/test_pipe
+tests/test_reloc
+tests/test_dash
 test-md-screenshot*.png
 test-md-imshow*.png
 _levee_source/
