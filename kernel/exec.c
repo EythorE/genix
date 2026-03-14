@@ -570,9 +570,24 @@ int do_exec(const char *path, const char **argv)
 
 run:
 
-    /* Transfer control to the user program.
-     * exec_enter saves kernel context, switches to user mode, and jumps
-     * to the entry point. Returns here when _exit() calls exec_leave(). */
+    /* Vfork child doing exec: become an independent schedulable process
+     * instead of running synchronously.  Set up kstack for first context
+     * switch via proc_first_run, mark P_READY, and wake the parent. */
+    if (curproc->ppid < MAXPROC) {
+        struct proc *parent = &proctab[curproc->ppid];
+        if (parent->state == P_VFORK) {
+            proc_setup_kstack(curproc, entry, user_sp, curproc->data_a5);
+            curproc->state = P_READY;
+
+            uint8_t child_pid = curproc->pid;
+            parent->state = P_RUNNING;
+            curproc = parent;
+            vfork_restore(parent->vfork_ctx, child_pid);
+            /* NOT REACHED — longjmp to parent's do_vfork() */
+        }
+    }
+
+    /* Synchronous exec (builtin shell, autotest — no vfork parent) */
     exec_active = 1;
     exec_user_a5 = curproc->data_a5;
     int exitcode = exec_enter(entry, user_sp, proc_kstack_top(curproc));

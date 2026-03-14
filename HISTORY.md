@@ -1171,6 +1171,44 @@ decodes with `(field >> 16) - 1`.
 use a separate flag or offset-by-one encoding. Document the encoding
 prominently since multiple tools (mkbin, romfix, kernel) must agree.
 
+### Synchronous exec blocked vfork+execve (dash hang)
+
+**Date:** March 2026
+**Symptom:** Dash shell hung immediately after being spawned as the
+default shell. No output, no prompt.
+
+**Root cause:** `do_exec()` was purely synchronous — it loaded a binary,
+called `exec_enter()` which blocked until `_exit()` called `exec_leave()`,
+then returned the exit code. When a vfork child called `execve()`:
+
+1. `do_exec` ran the program synchronously, waited for it to finish
+2. `execve()` returned the exit code to the child (POSIX says execve
+   never returns on success)
+3. Dash interpreted any return from `execve()` as failure
+4. No concurrent execution — parent was frozen in `P_VFORK` the entire time
+
+**Fix:** Added vfork-aware async path in `do_exec()`. After loading the
+binary (at the `run:` label), the kernel checks if the current process
+has a parent in `P_VFORK` state. If so, instead of calling `exec_enter`:
+
+1. `proc_setup_kstack()` builds a kstack frame for the child's first
+   context switch (via `swtch` → `proc_first_run`)
+2. Child is marked `P_READY` for the scheduler
+3. Parent is woken via `vfork_restore()` (longjmp back to `do_vfork`)
+
+The synchronous `exec_enter` path remains for autotest and the builtin
+shell (process 0) which have no vfork parent.
+
+**Secondary fix:** `do_vfork()` now sets `child->mem_slot = -1` after
+`*child = *parent`. The struct copy was duplicating the parent's slot
+index, meaning a child calling `_exit()` without exec would free the
+parent's memory slot via `slot_free()`.
+
+**Lesson:** POSIX `execve()` semantics (never returns on success) are
+load-bearing for shell implementations. A synchronous exec that returns
+an exit code violates this contract. On no-MMU systems, vfork+exec must
+convert to async process creation at the exec boundary.
+
 ---
 
 ## 5. The Relocation Story

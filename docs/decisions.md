@@ -158,6 +158,28 @@ review. Always review after merge.
 
 ---
 
+## Async Exec for Vfork Children
+
+**Status:** Implemented (March 2026)
+
+When a vfork child calls `execve()`, the kernel detects the parent in
+`P_VFORK` state and converts the synchronous `do_exec` into an async
+process setup. The child gets its own memory slot and kstack frame (via
+`proc_setup_kstack`), is marked `P_READY`, and the parent is woken via
+`vfork_restore`. This enables concurrent parent+child execution needed
+for shell command execution and pipelines.
+
+**Why not always async?** The synchronous `exec_enter` path is still used
+by autotest and the builtin shell (process 0), which have no vfork parent.
+The vfork detection only triggers when the parent is in `P_VFORK` state.
+
+**Bug fix included:** `do_vfork` now sets `child->mem_slot = -1` after
+copying parent state. Previously `*child = *parent` copied the parent's
+slot index, so a child calling `_exit()` without exec would free the
+parent's memory slot.
+
+---
+
 ## Known Limitations
 
 1. **Single user memory space** — all user programs load at USER_BASE;
