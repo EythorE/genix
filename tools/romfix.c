@@ -170,12 +170,16 @@ static int process_binary(const char *name, struct disk_inode *di)
     uint32_t load_size   = get32(hdr_ptr + 4);
     uint32_t bss_size    = get32(hdr_ptr + 8);
     uint32_t entry       = get32(hdr_ptr + 12);
+    uint32_t stack_field = get32(hdr_ptr + 16);
     uint32_t flags       = get32(hdr_ptr + 20);
     uint32_t text_size   = get32(hdr_ptr + 24);
     uint32_t reloc_count = get32(hdr_ptr + 28);
 
     (void)bss_size;
     (void)entry;
+
+    /* Detect -msep-data binaries by GOT offset in upper 16 bits of stack_size */
+    uint32_t got_offset = stack_field >> 16;
 
     /* Already XIP-resolved? */
     if (flags & GENIX_FLAG_XIP) {
@@ -221,6 +225,7 @@ static int process_binary(const char *name, struct disk_inode *di)
 
     int patched = 0;
     int skipped = 0;
+    int deferred = 0;
 
     for (uint32_t i = 0; i < reloc_count; i++) {
         uint32_t off = get32(reloc_ptr + i * 4);
@@ -231,14 +236,17 @@ static int process_binary(const char *name, struct disk_inode *di)
             continue;
         }
 
-        /* Locate the word to patch in the ROM image.
-         * If offset < text_size, it's in the text segment;
-         * otherwise it's in the data segment. */
-        uint8_t *ptr;
-        if (off < text_size)
-            ptr = file_data_ptr(rom_base, GENIX_HDR_SIZE + off);
-        else
-            ptr = file_data_ptr(rom_base, GENIX_HDR_SIZE + off);
+        /* For -msep-data binaries (got_offset > 0), skip data-segment
+         * relocations. These are GOT entries that need runtime patching
+         * with the actual slot base address, which varies per process.
+         * Only resolve text-segment relocations (in ROM) at build time. */
+        if (got_offset > 0 && off >= text_size) {
+            deferred++;
+            continue;
+        }
+
+        /* Locate the word to patch in the ROM image */
+        uint8_t *ptr = file_data_ptr(rom_base, GENIX_HDR_SIZE + off);
 
         if (!ptr) {
             skipped++;
@@ -265,6 +273,8 @@ static int process_binary(const char *name, struct disk_inode *di)
            "%d relocs patched",
            name, text_size, text_base,
            load_size - text_size, data_base, patched);
+    if (deferred > 0)
+        printf(", %d deferred (runtime)", deferred);
     if (skipped > 0)
         printf(", %d skipped", skipped);
     printf("\n");

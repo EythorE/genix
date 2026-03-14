@@ -3,7 +3,9 @@ CC = $(CROSS)gcc
 AS = $(CROSS)as
 AR = $(CROSS)ar
 
-CFLAGS = -m68000 -nostdlib -nostartfiles -ffreestanding \
+CFLAGS = -m68000 -msep-data -nostdlib -nostartfiles -ffreestanding \
+         -Wall -Wextra -O2 -Iinclude
+ASFLAGS = -m68000 -nostdlib -nostartfiles -ffreestanding \
          -Wall -Wextra -O2 -Iinclude
 
 # divmod.o provides __udivsi3/__umodsi3/__divsi3/__modsi3 with pure
@@ -20,7 +22,7 @@ $(TARGET): $(OBJS)
 	$(AR) rcs $@ $^
 
 %.o: %.S
-	$(CC) $(CFLAGS) -c -o $@ $<
+	$(CC) $(ASFLAGS) -c -o $@ $<
 
 %.o: %.c
 	$(CC) $(CFLAGS) -c -o $@ $<

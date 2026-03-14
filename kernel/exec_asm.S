@@ -19,7 +19,8 @@
  *
  * Saves callee-saved registers and kernel SP on the main supervisor stack.
  * Switches SSP to kstack_top (the process's kernel stack).
- * Sets USP to user_sp. Enters user mode via RTE.
+ * Sets USP to user_sp. Sets a5 from exec_user_a5 for -msep-data.
+ * Enters user mode via RTE.
  *
  * Returns when exec_leave() is called (from do_exit via TRAP #0).
  * Return value in d0 = exit code.
@@ -50,6 +51,11 @@ exec_enter:
     /* Switch SSP to the process's kernel stack top */
     move.l  %d1, %sp
 
+    /* Set a5 for -msep-data GOT base.
+     * exec_user_a5 is set by do_exec() before calling exec_enter().
+     * Non-msep-data programs have exec_user_a5 = 0 (harmless). */
+    move.l  exec_user_a5, %a5
+
     /* Build RTE frame on the kernel stack to enter user mode.
      * 68000 exception frame: SP+0 = SR (16-bit), SP+2 = PC (32-bit).
      * SR = 0x0000: S=0 (user mode), IPL=0 (all interrupts enabled). */
@@ -57,7 +63,8 @@ exec_enter:
     move.w  #0x0000, -(%sp)     /* push SR (user mode, interrupts on) */
 
     /* Enter user mode! RTE pops SR (clears S bit) and PC.
-     * After this: A7 = USP (user stack), SSP = kstack top. */
+     * After this: A7 = USP (user stack), SSP = kstack top.
+     * a5 = GOT base for -msep-data processes. */
     rte
 
 /*

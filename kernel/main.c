@@ -97,6 +97,7 @@ void kmain(void)
     fs_init();
     dev_create_nodes();
     proc_init();
+    slot_init();
 
     kputs("All subsystems initialized.\n");
 
@@ -954,16 +955,9 @@ static void shell_exec_cmd(char *cmdline)
 
     /* Pipeline: cmd1 | cmd2 | ... | cmdN
      *
-     * On a no-MMU system with a single USER_BASE, we can't run two user
-     * processes concurrently (they'd overwrite each other's memory).
-     * Instead, run each command sequentially:
-     *   1. Run cmd1 with stdout → pipe. cmd1 runs to completion.
-     *   2. Run cmd2 with stdin ← pipe, stdout → next pipe. Runs to completion.
-     *   etc.
-     *
-     * Limitation: each command's output must fit in the pipe buffer (512 bytes).
-     * If a command blocks on a full pipe, it deadlocks (no reader running).
-     * This is a known trade-off for single-memory-space systems. */
+     * With -msep-data and the slot allocator (Phase 6), each process gets
+     * its own RAM slot. Processes can run concurrently: when one blocks on
+     * a pipe, the scheduler switches to another. True concurrent pipelines! */
 
     /* Find pipe boundaries */
     char *segments[8];  /* max 8 commands in pipeline */
@@ -1015,8 +1009,12 @@ static void shell_exec_cmd(char *cmdline)
         }
     }
 
-    /* Run pipeline commands sequentially, connected by pipes */
+    /* Spawn all pipeline commands concurrently, connected by pipes.
+     * Each process gets its own memory slot. The scheduler switches
+     * between them as they block on pipe I/O. */
     int prev_read_fd = in_fd;
+    int pids[8];
+    int spawned = 0;
     int i;
 
     for (i = 0; i < nseg; i++) {
@@ -1073,17 +1071,20 @@ static void shell_exec_cmd(char *cmdline)
             break;
         }
 
-        /* Wait for this command to finish before loading the next.
-         * Required because all processes share USER_BASE (no MMU). */
-        int status;
-        do_waitpid(pid, &status);
+        pids[spawned++] = pid;
 
         /* The read end of this pipe becomes input for the next command */
         prev_read_fd = pipe_fds[0];
     }
 
+    /* Wait for all pipeline processes to complete */
+    for (i = 0; i < spawned; i++) {
+        int status;
+        do_waitpid(pids[i], &status);
+    }
+
     /* Close remaining FDs */
-    if (prev_read_fd >= 0)
+    if (prev_read_fd >= 0 && prev_read_fd != in_fd)
         syscall_dispatch(SYS_CLOSE, prev_read_fd, 0, 0, 0);
     if (out_fd >= 0)
         syscall_dispatch(SYS_CLOSE, out_fd, 0, 0, 0);

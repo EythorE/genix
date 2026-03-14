@@ -7,9 +7,10 @@ Current state: Genix is a working preemptive multitasking OS with 34
 user programs, relocatable binaries, pipes, signals, job control, and
 a TTY subsystem. It runs on both the workbench emulator and real Mega
 Drive hardware. ROM XIP is working on Mega Drive (text executes from
-ROM, only .data copied to RAM). The main limitation is that all user
-programs load at a single USER_BASE address, so only one can occupy
-RAM at a time. Pipelines execute sequentially.
+ROM, only .data copied to RAM). Phase 6 (`-msep-data` + slot allocator)
+is complete: multiple processes can reside in memory simultaneously
+with shared ROM text and per-process data slots. Pipelines execute
+concurrently. The next milestone is porting dash as a userspace shell.
 
 ---
 
@@ -63,7 +64,7 @@ use RAM data at a time. Addressed in Phase 6 with `-msep-data`.
 
 ---
 
-## Phase 6: Concurrent Multitasking with `-msep-data` — Next
+## Phase 6: Concurrent Multitasking with `-msep-data` — Complete
 
 **Goal:** Multiple processes in memory simultaneously, sharing ROM
 text. True concurrent pipelines.
@@ -142,6 +143,46 @@ This replaces the current sequential pipeline execution.
 ~100-150 lines of kernel C (slot allocator, a5 setup, exec changes,
 pipeline changes). Build system change is adding `-msep-data` to
 the app and libc CFLAGS.
+
+### Outcome
+
+**Implemented:** 2026-03-14. 11 files changed, +378/-81 lines.
+
+All implementation steps completed as planned. The slot allocator,
+`-msep-data` compilation, GOT-aware relocation, romfix data-reloc
+deferral, and concurrent pipeline execution all work on both platforms.
+
+**Deviations from plan:**
+
+1. **mkbin synthetic GOT relocations:** `--emit-relocs` does not emit
+   relocations for linker-generated GOT entries. mkbin was extended to
+   scan the `.got` section and add synthetic R_68K_32 relocations for
+   each non-zero entry. This was not anticipated in the plan.
+
+2. **GOT offset encoding:** The naive `got_offset=0` encoding was
+   ambiguous (0 meant both "no GOT" and "GOT at data start"). Changed
+   to offset+1 encoding with `HDR_HAS_GOT`/`HDR_GOT_OFFSET` macros.
+
+3. **Text alignment:** `.text` sections could end at odd sizes, causing
+   the data section (and GOT) to start at odd addresses. Added
+   `ALIGN(4)` at end of `.text` in the linker script.
+
+**Gotchas:**
+
+- The `-msep-data` flag must NOT be passed to assembly files (crt0.S,
+  syscalls.S, divmod.S). Required separate `ASFLAGS` in Makefiles.
+- romfix must keep the relocation table intact (don't zero reloc_count)
+  for `-msep-data` binaries, since the kernel needs it at runtime.
+- `exec_user_a5` global is set by `do_exec()` before `exec_enter()`.
+  For spawned processes, a5 is baked into the kstack register frame.
+
+**Measured results:**
+
+- Workbench: 8 slots × 88 KB, all 31 autotest pass
+- Mega Drive: 2 slots × ~13.75 KB, builds and runs (600 frames)
+- Binary size overhead: ~2-7% (GOT + extra relocs)
+- hello: 616 bytes text+data, 3 relocs (was 1 without GOT relocs)
+- levee: 46336 bytes text+data, 2560 relocs (was 2533)
 
 ---
 
@@ -370,9 +411,9 @@ Not prioritized, but would improve the system:
 ```
 Phase 5 (ROM XIP) .............. done
     |
-Phase 6 (-msep-data + slots) .. next
+Phase 6 (-msep-data + slots) .. done
     |
-Libc + kernel prereqs
+Libc + kernel prereqs ......... next
     |
 dash Shell Port
     |
@@ -383,6 +424,6 @@ Phase 8 (EverDrive Pro PSRAM) . depends on Phase 6 + 7
 Phase 9 (Performance) ......... independent, can happen anytime
 ```
 
-Phase 6 is the critical next step. It unlocks concurrent processes
-sharing ROM text, true concurrent pipelines, and enables dash as a
-normal userspace app. Phase 7 (SD card) is independent.
+Libc + kernel prereqs for dash are the next step. Phase 6 is complete,
+unlocking concurrent processes sharing ROM text and true concurrent
+pipelines. Phase 7 (SD card) is independent.
