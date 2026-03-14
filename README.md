@@ -23,8 +23,8 @@ history and [HISTORY.md](HISTORY.md) for the full project timeline.
 | Phase 3 | Mega Drive port (PAL drivers from Fuzix) | **Complete** |
 | Phase 4 | Polish (interrupt keyboard, multi-TTY, /dev/null) | **Complete** |
 | Phase 5 | ROM Execute-in-Place — run text from ROM, only copy .data to RAM | **Complete** |
-| — | Port dash shell (POSIX scripting, job control, history) | Next |
-| Phase 6 | Concurrent multitasking — `-msep-data`, fixed RAM slots, shared ROM text | Planned |
+| Phase 6 | Concurrent multitasking — `-msep-data`, fixed RAM slots, shared ROM text | Next |
+| — | Port dash shell (POSIX scripting, job control, history) | Planned |
 | Phase 7 | SD card — load programs at runtime (Open EverDrive SPI + Mega EverDrive Pro FIFO) | Planned |
 | Phase 8 | EverDrive Pro PSRAM — banked 512 KB per process, enables large programs on MD | Planned |
 | Phase 9 | Performance — assembly memcpy/memset, DIVU.W fast path, VDP DMA scroll | Anytime |

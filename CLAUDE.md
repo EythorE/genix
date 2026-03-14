@@ -12,10 +12,10 @@ hardware. Design decisions should always consider the Mega Drive's constraints:
 
 ## Project Stage & Current Focus
 
-Phases 1-4 complete. Phase 5 (ROM XIP) is the next major milestone.
-
-Phases 5-8 are architecturally coupled — Phase 5 decisions constrain
-Phases 6-8. See PLAN.md for the full dependency graph.
+Phases 1-5 complete. Phase 5 (ROM XIP) uses romfix Strategy A — text
+runs from ROM, only .data copied to RAM. Phase 6 (`-msep-data` + slot
+allocator) is the next milestone: concurrent multitasking with shared
+ROM text. See PLAN.md for the full dependency graph.
 
 Design choices that are LOAD-BEARING (changing these is expensive):
 - Binary format and relocation scheme (affects all 34 apps + libc + mkbin)
@@ -46,6 +46,10 @@ Design choices that ARE flexible right now:
   Always verify RAM impact before choosing an approach.
 - When unsure whether a design choice is load-bearing or flexible,
   ASK. Do not guess.
+- Nothing is shipped — there are no external users or compatibility
+  obligations. If a design choice is hurting us, investigate whether
+  changing it affects the roadmap or existing features, and propose
+  the fix. Do not preserve bad decisions out of inertia.
 
 ## Key Design Decisions
 

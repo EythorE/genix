@@ -6,108 +6,101 @@ see [HISTORY.md](HISTORY.md).
 Current state: Genix is a working preemptive multitasking OS with 34
 user programs, relocatable binaries, pipes, signals, job control, and
 a TTY subsystem. It runs on both the workbench emulator and real Mega
-Drive hardware. The main limitation is that all user programs load at
-a single USER_BASE address, so only one can occupy RAM at a time.
-Pipelines execute sequentially.
+Drive hardware. ROM XIP is working on Mega Drive (text executes from
+ROM, only .data copied to RAM). The main limitation is that all user
+programs load at a single USER_BASE address, so only one can occupy
+RAM at a time. Pipelines execute sequentially.
 
 ---
 
-## Phase 5: ROM Execute-in-Place (XIP)
+## Phase 5: ROM Execute-in-Place (XIP) — Complete
 
 **Goal:** Run program text directly from ROM. Only copy .data to RAM.
 Reclaims ~70% of user memory currently wasted on code copies.
 
-**Strategy:** Kernel-Linked Overlays (Strategy B from
-[docs/relocatable-binaries.md](docs/relocatable-binaries.md)).
+**Strategy:** Build-time resolved XIP via `romfix` (Strategy A from
+[docs/relocatable-binaries.md](docs/relocatable-binaries.md)). See
+the [Strategy Resolution](docs/relocatable-binaries.md#strategy-resolution-march-2026)
+appendix for rationale.
 
 ### How It Works
 
-1. Compile each app+libc to a fully-linked relocatable object
-   (`ld -r -o app_hello.o hello.o libc.a`)
-2. The kernel linker script places all app `.text` and `.rodata` into
-   ROM alongside the kernel:
-
-```ld
-.app_text : {
-    _app_hello_text = .;
-    apps/hello.o(.text .text.* .rodata .rodata.*)
-    _app_hello_text_end = .;
-    /* ... more apps ... */
-} > rom
-
-OVERLAY USER_BASE : AT(_app_data_load) {
-    .hello_data {
-        _app_hello_data_load = LOADADDR(.hello_data);
-        apps/hello.o(.data .data.*)
-        _app_hello_bss_start = .;
-        apps/hello.o(.bss .bss.* COMMON)
-        _app_hello_end = .;
-    }
-    /* ... more apps ... */
-} > ram
-```
-
-3. The linker resolves all cross-references at link time: text-to-text
-   gets ROM addresses, text-to-data gets USER_BASE addresses. No
-   runtime relocation needed.
-4. exec() becomes trivial:
+1. Apps are compiled as relocatable binaries (linked at address 0)
+2. `mkfs` places binaries in the ROM filesystem as normal
+3. After the kernel+romdisk link, `romfix` post-processes the ROM:
+   - Text references → absolute ROM addresses
+   - Data references → USER_BASE addresses
+   - Sets `GENIX_FLAG_XIP` flag
+4. At exec() time, `load_binary_xip()` detects XIP binaries:
 
 ```c
-memcpy(USER_BASE, app->data_rom_addr, app->data_size);
-memset(USER_BASE + app->data_size, 0, app->bss_size);
+/* Only copy .data to RAM — text stays in ROM */
+memcpy(USER_BASE, rom_data_addr, data_size);
+memset(USER_BASE + data_size, 0, bss_size);
 setup_stack(USER_TOP, path, argv);
-jmp(app->entry);  /* entry is a ROM address */
+jmp(rom_text_entry);  /* entry is a ROM address */
 ```
 
 ### Impact
 
-A typical program with 4 KB text and 2 KB data currently uses 6 KB of
-RAM. With XIP, only 2 KB goes to RAM. This roughly triples the
+A typical program with 4 KB text and 2 KB data previously used 6 KB
+of RAM. With XIP, only 2 KB goes to RAM. This roughly triples the
 effective user memory budget on the Mega Drive (~27.5 KB available).
 
-### Files to Modify
+### Files Implemented
 
-| File | Change |
-|------|--------|
-| `pal/megadrive/megadrive.ld` | Add `.app_text` and OVERLAY sections |
-| `apps/Makefile` | Build apps as relocatable objects (`ld -r`) |
-| `kernel/exec.c` | Look up ROM metadata, memcpy .data, zero BSS, JMP |
-| `kernel/kernel.h` | ROM app table structure |
-| `kernel/main.c` | Register ROM app table at boot |
+| File | Role |
+|------|------|
+| `tools/romfix.c` | Post-processes ROM to resolve XIP addresses in-place |
+| `kernel/exec.c` | `load_binary_xip()` detects XIP flag, executes from ROM |
+| `pal/pal.h` | `pal_rom_file_addr()` interface for ROM file lookup |
+| `pal/megadrive/platform.c` | ROM file address lookup implementation |
 
-### Estimated Size
+### Limitation
 
-~60 lines of kernel C, ~50 lines of linker script, ~30 lines of
-Makefile changes. Zero additional RAM cost beyond a small ROM app
-table (~8 bytes per app, ~272 bytes for 34 apps).
-
-### Build Flow Change
-
-```
-Before: app.c → app.o → app.elf → mkbin → genix binary → mkfs → romdisk
-After:  app.c → app.o → ld -r with libc → app_linked.o → kernel link
-```
-
-### Limitations
-
-- Adding or removing apps requires relinking the kernel ROM
-- Can't load programs from SD card (they aren't in ROM)
-- Still single USER_BASE for .data — one process at a time
-
-### Testing
-
-- All 34 apps must pass `make test-md-auto` from ROM
-- Compare exec() speed (memcpy data vs full binary load)
-- Verify levee still works on workbench (too large for MD ROM)
+Data address is fixed at build time (USER_BASE). Only one process can
+use RAM data at a time. Addressed in Phase 6 with `-msep-data`.
 
 ---
 
-## Phase 6: Concurrent Multitasking with Shared ROM Text
+## Phase 6: Concurrent Multitasking with `-msep-data` — Next
 
 **Goal:** Multiple processes in memory simultaneously, sharing ROM
 text. True concurrent pipelines.
 
 **Depends on:** Phase 5 (ROM XIP).
+
+**Mechanism:** GCC's `-msep-data` flag — all data access goes through
+register a5 as base pointer. The kernel sets a5 to the process's data
+slot on context switch. ROM text works for all processes unchanged.
+See [docs/relocatable-binaries.md](docs/relocatable-binaries.md)
+Strategy C2 analysis (lines 674-685).
+
+### Why `-msep-data`
+
+ROM text contains absolute text-to-data references that can only
+point to one address. With multiple processes having data at different
+RAM slots, these references break. `-msep-data` (the uClinux XIP
+mode) solves this by making all data accesses indirect through a5:
+
+```asm
+; Without -msep-data (absolute — breaks with multiple data slots):
+move.l  #my_global, a0        ; hardcoded USER_BASE in ROM text
+
+; With -msep-data (a5-relative — works for any slot):
+move.l  (offset,a5), a0       ; a5 set per-process on context switch
+```
+
+Cost: ~2 extra cycles per data access (one indirection). One register
+(a5) is reserved. 5-10% code size overhead. Verified working with
+m68k-elf-gcc 14.2.0.
+
+### Impact on romfix
+
+With `-msep-data`, text-to-data references are a5-relative (no
+absolute address to patch). romfix simplifies to only patching
+text-to-text and data-to-text references (function pointers, jump
+tables). Fewer relocation entries overall.
 
 ### Memory Partitioning
 
@@ -116,26 +109,23 @@ stack. Divide user RAM into fixed-size slots:
 
 ```
 Main RAM (27.5 KB user space):
-  Slot 0:  0xFF9000 - 0xFFABFF  (7 KB)
-  Slot 1:  0xFFAC00 - 0xFFC7FF  (7 KB)
-  Slot 2:  0xFFC800 - 0xFFE3FF  (7 KB)
-  Slot 3:  0xFFE400 - 0xFFFDFF  (6.5 KB — last slot before stack)
+  Slot 0:  0xFF9000 - 0xFFC5FF  (14 KB)
+  Slot 1:  0xFFC600 - 0xFFFDFF  (14 KB)
 ```
 
-Each process gets one slot for its .data + .bss. All processes share
-the same ROM text. This enables 3-4 concurrent processes on the Mega
-Drive with no SRAM.
+Start with 2 large slots. Can split into 3-4 smaller slots later
+if needed. Slot sizing is a runtime knob, not a structural decision.
 
 ### Implementation
 
-- Add `mem_slot` field to `struct proc`
-- Bitmap allocator for slots (~20 lines)
-- exec() allocates a slot, copies .data to slot base, zeros BSS
-- Relocatable .data: since each slot has a different base address,
-  data-to-data references need runtime relocation. Use the existing
-  relocation engine (`apply_relocations()`) for the .data segment
-  only, with text references resolved at link time
-- Stack per process within the slot (or at slot top, growing down)
+1. Recompile all apps + libc with `-msep-data`
+2. Update `apps/crt0.S` — kernel passes data base in a5 before
+   jumping to user code; crt0 preserves it
+3. romfix update — skip text-to-data reference patching (a5-relative)
+4. Kernel slot allocator (~20 lines bitmap in mem.c)
+5. exec() allocates slot, copies .data to slot base, sets a5
+6. Context switch saves/restores a5 per process (~5 lines asm)
+7. `struct proc` gets `mem_slot` field for slot tracking
 
 ### True Concurrent Pipelines
 
@@ -147,18 +137,78 @@ concurrently:
 
 This replaces the current sequential pipeline execution.
 
-### Shell as ROM Program
-
-The built-in kernel shell could be replaced with a real shell running
-from ROM. With text in ROM, the shell uses only ~1-2 KB of RAM for
-its data segment, freeing user memory for actual commands. A ROM shell
-can be much more capable (glob expansion, environment variables,
-background jobs) without the RAM penalty.
-
 ### Estimated Size
 
-~100-150 lines of kernel C (slot allocator, exec changes, pipeline
-changes). The relocation engine already exists.
+~100-150 lines of kernel C (slot allocator, a5 setup, exec changes,
+pipeline changes). Build system change is adding `-msep-data` to
+the app and libc CFLAGS.
+
+---
+
+## Port dash Shell
+
+**Goal:** Replace the built-in kernel shell with dash (Debian Almquist
+Shell), a real POSIX shell with scripting, job control, and command
+history.
+
+**Depends on:** Phase 6 (`-msep-data` — dash is a normal app in its
+own slot, no special memory treatment needed).
+
+**Reference:** [docs/shell-research.md](docs/shell-research.md) — full
+analysis of 8 shell candidates. [docs/shell-plan.md](docs/shell-plan.md)
+— phased implementation plan.
+
+### Why dash
+
+dash is the smallest real POSIX shell (~13K SLOC, BSD licensed). With
+XIP, its ~100 KB .text lives in ROM for free. Its .data+.bss is modest
+(~6 KB). Full POSIX scripting (if/then/else, for, case, functions) and
+job control are built in.
+
+### Prerequisites (libc + kernel)
+
+Before dash can be ported, Genix needs several general-purpose
+improvements documented in [docs/shell-plan.md](docs/shell-plan.md):
+
+- **Libc:** setjmp/longjmp, sigaction, POSIX headers (sys/types.h,
+  sys/wait.h, sys/stat.h, limits.h, paths.h, time.h)
+- **Kernel:** fcntl F_DUPFD, waitpid WNOHANG, POSIX-compatible stat
+
+These are independently valuable regardless of the shell choice.
+
+### RAM Budget
+
+```
+Available per slot (Mega Drive):  ~14 KB
+Dash .data + .bss:                ~6 KB
+Heap (parse trees, vars):         ~4 KB
+Stack:                            ~2 KB
+Total:                           ~12 KB  (fits in 14 KB slot)
+```
+
+### Configurable Shell Selection
+
+Genix will support multiple hardware and emulator targets with different
+RAM constraints. Dash (~12 KB data+heap+stack) fits in a 14 KB slot but
+leaves only one slot for child programs. On memory-constrained targets,
+this may not leave room for larger apps like levee.
+
+The build system should make shell selection a per-target configuration:
+
+- **Full shell (dash):** POSIX scripting, job control. For targets with
+  enough RAM (PSRAM, large slots, or workbench).
+- **Minimal shell (builtin or apps/sh):** The existing kernel shell
+  extracted to userspace. Smaller data footprint, fewer features.
+
+This is a build-time `SHELL=dash` / `SHELL=sh` knob in the Makefile,
+not a runtime choice. Each target profile (workbench, Mega Drive bare,
+Mega Drive + EverDrive Pro) selects its shell based on available memory.
+
+**Research needed:** Measure dash's actual .data+.bss after porting to
+determine exact slot pressure. If dash fits comfortably in 14 KB with
+room for child apps, the minimal shell may only be needed for bare
+Mega Drive without PSRAM. Defer this research until dash is compiled
+and we have real numbers.
 
 ---
 
@@ -250,10 +300,12 @@ storage, with the FPGA switching banks on context switch.
    - Write `0xA130Fx` with current process's bank before RTE
    - Only needed when switching between processes using different banks
 
-5. **Split relocator becomes critical**
+5. **Split relocator for PSRAM text**
    - `apply_relocations_xip()` handles text at PSRAM bank address,
      data at main RAM address
    - Already implemented and tested (11 host tests)
+   - See [docs/relocation-implementation-plan.md](docs/relocation-implementation-plan.md)
+     Phase 7 for the full split XIP design
 
 ### Impact
 
@@ -306,9 +358,6 @@ each optimization.
 
 Not prioritized, but would improve the system:
 
-- **Glob expansion** in shell (`*`, `?`, `[...]`)
-- **Environment variable substitution** (`$HOME`, `$PATH`)
-- **Background jobs** (`&`, `jobs`, `fg`, `bg`)
 - **Larger programs**: ed (line editor), diff, sort, sed, awk
 - **Development tools**: ar, make, small C compiler (from FUZIX)
 - **kstack overflow guard**: canary word for debug builds
@@ -319,16 +368,21 @@ Not prioritized, but would improve the system:
 ## Phase Dependencies
 
 ```
-Phase 5 (ROM XIP)
-    ↓
-Phase 6 (Concurrent Multitasking)  ←  Phase 7 (SD Card)
-    ↓                                      ↓
-Phase 8 (EverDrive Pro PSRAM)        (runtime relocation)
-    ↓
-Phase 9 (Performance) — independent, can happen anytime
+Phase 5 (ROM XIP) .............. done
+    |
+Phase 6 (-msep-data + slots) .. next
+    |
+Libc + kernel prereqs
+    |
+dash Shell Port
+    |
+Phase 7 (SD Card) ............. independent, can happen anytime
+    |
+Phase 8 (EverDrive Pro PSRAM) . depends on Phase 6 + 7
+    |
+Phase 9 (Performance) ......... independent, can happen anytime
 ```
 
-Phase 5 is the critical next step. It unlocks Phase 6 (concurrent
-processes sharing ROM text) and dramatically improves the Mega Drive
-user experience by tripling available RAM. Phase 7 (SD card) is
-independent and can proceed in parallel.
+Phase 6 is the critical next step. It unlocks concurrent processes
+sharing ROM text, true concurrent pipelines, and enables dash as a
+normal userspace app. Phase 7 (SD card) is independent.
