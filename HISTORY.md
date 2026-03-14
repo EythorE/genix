@@ -790,6 +790,62 @@ sees itself as its own child. Not a bug in practice (process 0 never
 calls waitpid without real children), but the test had to use a
 non-zero PID process to test the "no children" path.
 
+### Phase C: dash Shell Port (2026-03-14)
+
+Ported dash 0.5.12 (Debian Almquist Shell) as a Genix userspace application.
+With Phase 6 (`-msep-data`) complete, dash runs as a normal process in its
+own RAM slot with text executing from ROM via XIP.
+
+**Binary size:** text=91,236 data=4,500 bss=2,296. Data+bss = 6,796 bytes
+(49% of 14 KB Mega Drive slot). Fits comfortably with room for stack and heap.
+
+**Source:** 32 dash source files + 3 bltin files + genix_stubs.c = 36 files
+compiled. Downloaded from kernel.org, autotools-generated files produced on
+host, then cross-compiled with m68k-elf-gcc + `-msep-data`.
+
+**Configuration:** JOBS=0 (no job control), SMALL=1 (reduced features),
+no line editing, no glob/fnmatch (Genix libc doesn't have them).
+
+**New libc infrastructure added for dash:**
+- 7 new headers: inttypes.h, pwd.h, sys/ioctl.h, sys/param.h,
+  sys/resource.h, sys/time.h, sys/times.h
+- 15+ new functions: strtoll, strtoull, strtod (integer-only), abort,
+  vsnprintf (full implementation with va_list), strpbrk, stpncpy,
+  strsignal (with signal name table), isblank, isgraph, ispunct, isxdigit
+- Updated headers: errno.h (+ERANGE, ELOOP, ENAMETOOLONG, EWOULDBLOCK),
+  fcntl.h (+O_NONBLOCK, O_NOCTTY), signal.h (+sig_atomic_t, SIGTTIN,
+  SIGTTOU, NSIG=23), ctype.h, string.h, stdlib.h, stdio.h (+BUFSIZ,
+  vsnprintf), sys/stat.h (+S_ISUID, S_ISGID, S_ISVTX, S_IFLNK, S_ISLNK),
+  sys/types.h (+time_t guard)
+
+**Genix compatibility layer (genix_compat.h):**
+- `fork()` → `vfork()` (no MMU)
+- `wait3()` → `waitpid(-1, ...)`
+- `strtoimax/strtoumax` → `strtoll/strtoull`
+- `sigsuspend` stub (returns -1)
+- `lstat` → `stat` (no symlinks)
+- `setpgrp(a,b)` → `setpgid(a,b)`
+- `umask` stub (returns 022)
+- `alloca` → `__builtin_alloca`
+
+**Integration:** kernel/main.c spawns `/bin/dash` with respawn loop,
+falls back to `builtin_shell()` if dash not found. dash added to
+CORE_BINS (included in both workbench and Mega Drive disk images).
+
+**All tests pass:** host (63/63), test-emu (31/31), full test-all ladder
+including BlastEm headless and autotest.
+
+**Major build issues encountered and fixed (in order):**
+1. intmax_t/uintmax_t type conflict (GCC long long vs libc long)
+2. Missing stub headers (sys/param.h, sys/resource.h, etc.) — `#include <...>` requires physical files
+3. Garbled mkbuiltins output — needed proper autotools generation
+4. strchrnul/mempcpy/stpcpy — unset HAVE_ flags so dash's system.c provides them
+5. Multiple type redefinition conflicts (struct timeval, mode_t, dirent64)
+6. Missing libc functions (strtoll, vsnprintf, strtod, abort, strpbrk, etc.)
+7. sys_siglist undefined — provided strsignal with signal name table instead
+8. bgcmd/fgcmd/getgroups undefined — added stubs in genix_stubs.c
+9. Duplicate fstat definition between genix_stubs.c and libc syscalls.o
+
 ---
 
 ## 4. Bugs and Lessons Learned
@@ -1330,21 +1386,23 @@ _Final status snapshot (March 2026)._
 | Host test assertions | 5,123+ |
 | Host test files | 14 |
 | Autotest cases | 31+ |
-| User programs | 34 |
-| Libc modules | 16 |
+| User programs | 35 (including dash) |
+| Libc modules | 18+ |
 | Syscalls implemented | 32 |
 | Platforms | 2 (workbench + Mega Drive) |
 
 ### Known Limitations
 
-1. **Single user memory space** — all user programs load at USER_BASE;
-   two processes can't coexist in memory. Pipelines execute sequentially.
+1. ~~**Single user memory space**~~ — resolved by Phase 6 (`-msep-data`
+   + slot allocator). Processes now have independent RAM slots.
 
-2. **Sequential pipelines** — the 512-byte pipe buffer limits pipelines.
-   Real concurrent pipelines require ROM XIP or memory partitioning.
+2. ~~**Sequential pipelines**~~ — resolved by Phase 6. Concurrent
+   pipelines work with multiple processes in memory simultaneously.
 
-3. **Shell features** — no glob expansion, no environment variable
-   substitution, no background jobs.
+3. ~~**Shell features**~~ — resolved by Phase C (dash port). dash provides
+   POSIX scripting (if/then/else, for, case, functions), variable
+   expansion, command substitution, and pipelines. No glob expansion yet
+   (Genix libc lacks fnmatch/glob).
 
 4. **kstack overflow has no guard** — the 512-byte kstack grows into
    proc struct fields. Consider adding a canary word for debug builds.

@@ -26,7 +26,7 @@ history and [HISTORY.md](HISTORY.md) for the full project timeline.
 | Phase 6 | Concurrent multitasking — `-msep-data`, fixed RAM slots, shared ROM text | **Complete** |
 | Phase A | Libc prerequisites — POSIX headers, setjmp/longjmp, signal wrappers, stat conversion | **Complete** |
 | Phase B | Kernel enhancements — fcntl F_DUPFD, waitpid WNOHANG | **Complete** |
-| — | Port dash shell (POSIX scripting, job control, history) | Planned |
+| Phase C | Port dash shell — POSIX scripting, variable expansion, command substitution | **Complete** |
 | Phase 7 | SD card — load programs at runtime (Open EverDrive SPI + Mega EverDrive Pro FIFO) | Planned |
 | Phase 8 | EverDrive Pro PSRAM — banked 512 KB per process, enables large programs on MD | Planned |
 | Phase 9 | Performance — assembly memcpy/memset, DIVU.W fast path, VDP DMA scroll | Anytime |
@@ -34,10 +34,12 @@ history and [HISTORY.md](HISTORY.md) for the full project timeline.
 See [PLAN.md](PLAN.md) for detailed implementation plans.
 
 **What works today:** kernel boots on both workbench and Mega Drive, minifs
-filesystem with indirect blocks, exec() loads user programs (34 apps in
-/bin including grep, levee, od, expr, and standard Unix utilities),
-built-in shell with pipes (`|`), I/O redirection (`>`, `>>`, `<`),
-PATH search, cd builtin, process table (16 slots) with preemptive
+filesystem with indirect blocks, exec() loads user programs (35 apps in
+/bin including dash shell, grep, levee, od, expr, and standard Unix
+utilities), dash POSIX shell with pipes (`|`), I/O redirection (`>`,
+`>>`, `<`), variable expansion, command substitution, scripting
+(if/then/else, for, case, functions), process table (16 slots) with
+preemptive
 scheduling, per-process kernel stacks, blocking pipes (512-byte circular
 buffer), user signal handlers (SIGTSTP/SIGCONT, Ctrl+C/Ctrl+Z), TTY line
 discipline with cooked/raw modes, termios ioctls, interrupt-driven Saturn
