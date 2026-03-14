@@ -44,6 +44,7 @@ apps/od
 apps/env
 apps/expr
 apps/levee/levee
+apps/dash/dash
 tests/test_string
 tests/test_mem
 tests/test_exec
