@@ -176,6 +176,45 @@ deferral, and concurrent pipeline execution all work on both platforms.
 - `exec_user_a5` global is set by `do_exec()` before `exec_enter()`.
   For spawned processes, a5 is baked into the kstack register frame.
 
+**Known weak spots** (not bugs today, but places to look if issues arise):
+
+1. **`slot_base()` returns 0 on invalid slot index** (`mem.c`). Address 0
+   is the 68000 reset vector area — a write there would corrupt vectors.
+   Callers currently check `slot_alloc()` before calling `slot_base()`, so
+   this can't happen in practice. If a future code path passes an unchecked
+   slot index, this could become a silent corruption bug. Consider changing
+   the sentinel to `(uint32_t)-1` or adding a `panic()`.
+
+2. **No duplicate reloc guard in mkbin GOT scanning** (`mkbin.c`). mkbin
+   adds synthetic R_68K_32 relocs for each non-zero GOT entry. If a future
+   GCC/binutils version starts emitting GOT relocs via `--emit-relocs`,
+   the same offset would appear twice in the reloc table. The kernel
+   relocator would apply the relocation twice, corrupting the value. A
+   dedup check (or sorted-merge) would prevent this.
+
+3. **`exec_user_a5` is a global** (`exec.c`). It's set by `do_exec()`
+   and consumed by `exec_enter()` in assembly. This is safe because
+   `do_exec()` is synchronous (no preemption between set and use), and
+   spawned processes use the kstack register frame path instead. But if
+   exec ever becomes reentrant or interruptible between the assignment
+   and `exec_enter()`, this would be a race. The spawned-process path
+   (`proc_setup_kstack` baking a5 into the kstack frame) is the robust
+   pattern.
+
+4. **GOT offset packed into `stack_size` upper 16 bits** (`kernel.h`).
+   This limits both stack size hint and GOT offset to 64 KB each. Fine
+   for current binaries (largest data section is ~6 KB), but would need
+   rethinking if binaries grow past 64 KB data. The binary format header
+   has no spare fields, so growing this would require a header version
+   bump.
+
+5. **`do_exec` allocates slot before file lookup** (`exec.c`). The slot
+   is held during `fs_namei()` + binary loading. If the file doesn't
+   exist, the slot is freed on the error path, but during that window
+   another process could fail to get a slot. Not a real issue with 2
+   slots and single-threaded exec, but worth knowing if slot count
+   becomes tight.
+
 **Measured results:**
 
 - Workbench: 8 slots × 88 KB, all 31 autotest pass
