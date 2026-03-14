@@ -61,16 +61,22 @@ static struct ofile *ofile_alloc(void)
     return NULL;
 }
 
-/* Allocate a file descriptor in current process */
-static int fd_alloc(struct ofile *of)
+/* Allocate a file descriptor in current process, starting from minfd */
+static int fd_alloc_from(struct ofile *of, int minfd)
 {
-    for (int i = 0; i < MAXFD; i++) {
+    for (int i = minfd; i < MAXFD; i++) {
         if (curproc->fd[i] == NULL) {
             curproc->fd[i] = of;
             return i;
         }
     }
     return -EMFILE;
+}
+
+/* Allocate a file descriptor in current process (lowest available) */
+static int fd_alloc(struct ofile *of)
+{
+    return fd_alloc_from(of, 0);
 }
 
 /* ======== Pipe implementation ======== */
@@ -419,12 +425,14 @@ void do_exit(int code)
  *
  * pid = -1: wait for any child
  * pid > 0:  wait for specific child
+ * options:  WNOHANG (1) = return 0 instead of blocking
  *
  * Returns child PID on success, -ECHILD if no children.
- * Blocks (sleeps) if the child hasn't exited yet. The child's
- * do_exit() wakes us by setting P_SLEEPING → P_READY.
+ * With WNOHANG: returns 0 if children exist but none have exited.
+ * Blocks (sleeps) if the child hasn't exited yet (unless WNOHANG).
+ * The child's do_exit() wakes us by setting P_SLEEPING → P_READY.
  */
-int do_waitpid(int pid, int *status)
+int do_waitpid(int pid, int *status, int options)
 {
     for (;;) {
         int has_child = 0;
@@ -455,7 +463,11 @@ int do_waitpid(int pid, int *status)
         if (!has_child)
             return -ECHILD;
 
-        /* Child exists but hasn't exited yet — sleep until woken.
+        /* Child exists but hasn't exited yet */
+        if (options & 1) /* WNOHANG */
+            return 0;
+
+        /* Sleep until woken.
          * do_exit() sets our state to P_READY when child exits. */
         curproc->state = P_SLEEPING;
         schedule();
@@ -1238,7 +1250,7 @@ int32_t syscall_dispatch(uint32_t num, uint32_t a1, uint32_t a2,
     case SYS_EXEC:
         return do_exec((const char *)a1, (const char **)a2);
     case SYS_WAITPID:
-        return do_waitpid(a1, (int *)a2);
+        return do_waitpid(a1, (int *)a2, a3);
     case SYS_VFORK:
         return do_vfork();
     case SYS_DUP:
@@ -1329,9 +1341,31 @@ int32_t syscall_dispatch(uint32_t num, uint32_t a1, uint32_t a2,
             target->state = P_READY;
         return 0;
     }
-    case SYS_FCNTL:
-        /* Stub: return 0 for F_GETFL, etc. */
-        return 0;
+    case SYS_FCNTL: {
+        if (a1 >= MAXFD || !curproc->fd[a1]) return -EBADF;
+        struct ofile *fcntl_of = curproc->fd[a1];
+        int fcntl_cmd = (int)a2;
+        switch (fcntl_cmd) {
+        case 0: { /* F_DUPFD: dup to lowest fd >= a3 */
+            if (a3 >= MAXFD) return -EINVAL;
+            fcntl_of->refcount++;
+            int fcntl_fd = fd_alloc_from(fcntl_of, a3);
+            if (fcntl_fd < 0)
+                fcntl_of->refcount--;
+            return fcntl_fd;
+        }
+        case 1: /* F_GETFD: no cloexec support yet */
+            return 0;
+        case 2: /* F_SETFD: accept but ignore */
+            return 0;
+        case 3: /* F_GETFL: return open flags */
+            return fcntl_of->flags & 0x0FFF; /* mask out internal pipe bits */
+        case 4: /* F_SETFL: stub */
+            return 0;
+        default:
+            return -EINVAL;
+        }
+    }
     case SYS_GETDENTS: {
         if (a1 >= MAXFD || !curproc->fd[a1]) return -EBADF;
         if (!curproc->fd[a1]->inode) return -EBADF;

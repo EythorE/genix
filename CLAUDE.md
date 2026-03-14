@@ -24,11 +24,12 @@ it carefully and do not improvise. Do NOT install distro packages
 
 ## Project Stage & Current Focus
 
-Phases 1-6 and Phase A (libc prerequisites) complete. Phase 6
-(`-msep-data` + slot allocator) enables concurrent multitasking with
-shared ROM text and per-process data slots. Phase A added POSIX
-headers, setjmp/longjmp, signal wrappers, and POSIX-compatible
-struct stat. Next: Phase B (kernel enhancements), then dash port.
+Phases 1-6, Phase A (libc prerequisites), and Phase B (kernel
+enhancements) complete. Phase 6 (`-msep-data` + slot allocator)
+enables concurrent multitasking with shared ROM text and per-process
+data slots. Phase A added POSIX headers, setjmp/longjmp, signal
+wrappers, and POSIX-compatible struct stat. Phase B added fcntl
+F_DUPFD and waitpid WNOHANG. Next: Phase C (dash port).
 See PLAN.md for the full dependency graph.
 
 Design choices that are LOAD-BEARING (changing these is expensive):

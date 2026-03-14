@@ -25,6 +25,7 @@ history and [HISTORY.md](HISTORY.md) for the full project timeline.
 | Phase 5 | ROM Execute-in-Place — run text from ROM, only copy .data to RAM | **Complete** |
 | Phase 6 | Concurrent multitasking — `-msep-data`, fixed RAM slots, shared ROM text | **Complete** |
 | Phase A | Libc prerequisites — POSIX headers, setjmp/longjmp, signal wrappers, stat conversion | **Complete** |
+| Phase B | Kernel enhancements — fcntl F_DUPFD, waitpid WNOHANG | **Complete** |
 | — | Port dash shell (POSIX scripting, job control, history) | Planned |
 | Phase 7 | SD card — load programs at runtime (Open EverDrive SPI + Mega EverDrive Pro FIFO) | Planned |
 | Phase 8 | EverDrive Pro PSRAM — banked 512 KB per process, enables large programs on MD | Planned |

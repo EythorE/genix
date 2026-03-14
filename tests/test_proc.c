@@ -490,6 +490,235 @@ static void test_kstack_canary_detects_overflow(void)
     ASSERT(kstack[0] != KSTACK_CANARY);
 }
 
+/* ======== fcntl F_DUPFD tests (re-implemented for host) ======== */
+
+/* Open flags */
+#define O_RDONLY    0x0000
+#define O_WRONLY    0x0001
+#define O_RDWR      0x0002
+#define O_APPEND    0x0400
+#define EMFILE      24
+#define EINVAL      22
+
+/* ofile for fd table tests */
+struct ofile_test {
+    void    *inode;
+    uint32_t offset;
+    uint16_t flags;
+    uint8_t  refcount;
+};
+
+#define TEST_MAXFD 16
+static struct ofile_test *test_fdtab[TEST_MAXFD];
+
+static int fd_alloc_from_test(struct ofile_test *of, int minfd)
+{
+    for (int i = minfd; i < TEST_MAXFD; i++) {
+        if (test_fdtab[i] == NULL) {
+            test_fdtab[i] = of;
+            return i;
+        }
+    }
+    return -EMFILE;
+}
+
+static void test_fcntl_dupfd_basic(void)
+{
+    /* Set up fd table: fd 0,1,2 occupied, rest free */
+    struct ofile_test of0 = { NULL, 0, O_RDONLY, 1 };
+    struct ofile_test of1 = { NULL, 0, O_WRONLY, 1 };
+    struct ofile_test of2 = { NULL, 0, O_WRONLY, 1 };
+    memset(test_fdtab, 0, sizeof(test_fdtab));
+    test_fdtab[0] = &of0;
+    test_fdtab[1] = &of1;
+    test_fdtab[2] = &of2;
+
+    /* F_DUPFD with arg=0: should get fd 3 (lowest free) */
+    of0.refcount = 1;
+    of0.refcount++;
+    int fd = fd_alloc_from_test(&of0, 0);
+    ASSERT_EQ(fd, 3);
+    ASSERT_EQ(of0.refcount, 2);
+
+    /* F_DUPFD with arg=5: should get fd 5 */
+    of1.refcount++;
+    fd = fd_alloc_from_test(&of1, 5);
+    ASSERT_EQ(fd, 5);
+    ASSERT_EQ(of1.refcount, 2);
+}
+
+static void test_fcntl_dupfd_skip_occupied(void)
+{
+    /* fd 0-4 occupied, F_DUPFD from 2 should get 5 */
+    struct ofile_test ofs[5];
+    memset(test_fdtab, 0, sizeof(test_fdtab));
+    for (int i = 0; i < 5; i++) {
+        ofs[i].refcount = 1;
+        ofs[i].flags = O_RDONLY;
+        test_fdtab[i] = &ofs[i];
+    }
+
+    ofs[0].refcount++;
+    int fd = fd_alloc_from_test(&ofs[0], 2);
+    ASSERT_EQ(fd, 5);
+}
+
+static void test_fcntl_dupfd_full(void)
+{
+    /* All fds occupied: should fail with -EMFILE */
+    struct ofile_test ofs[TEST_MAXFD];
+    for (int i = 0; i < TEST_MAXFD; i++) {
+        ofs[i].refcount = 1;
+        ofs[i].flags = O_RDONLY;
+        test_fdtab[i] = &ofs[i];
+    }
+
+    int fd = fd_alloc_from_test(&ofs[0], 0);
+    ASSERT_EQ(fd, -EMFILE);
+}
+
+static void test_fcntl_getfl(void)
+{
+    /* F_GETFL should return the open flags (masked) */
+    struct ofile_test of = { NULL, 0, O_WRONLY | O_APPEND, 1 };
+    uint16_t flags = of.flags & 0x0FFF;
+    ASSERT_EQ(flags, O_WRONLY | O_APPEND);
+}
+
+/* ======== waitpid WNOHANG tests (re-implemented for host) ======== */
+
+#define WNOHANG 1
+
+/*
+ * Re-implement do_waitpid logic for host testing.
+ * No blocking (schedule) — just tests the scan + WNOHANG path.
+ */
+static int do_waitpid_test(int pid, int *status, int options)
+{
+    int has_child = 0;
+    for (int i = 0; i < MAXPROC; i++) {
+        if (proctab[i].state == P_FREE)
+            continue;
+        if (proctab[i].ppid != curproc->pid)
+            continue;
+
+        has_child = 1;
+
+        if (pid > 0 && proctab[i].pid != (uint8_t)pid)
+            continue;
+
+        if (proctab[i].state == P_ZOMBIE) {
+            int cpid = proctab[i].pid;
+            int code = proctab[i].exitcode;
+            if (status)
+                *status = (code & 0xFF) << 8;
+            proctab[i].state = P_FREE;
+            nproc--;
+            return cpid;
+        }
+    }
+
+    if (!has_child)
+        return -ECHILD;
+
+    if (options & WNOHANG)
+        return 0;
+
+    /* Would block — return -1 for test purposes (real kernel sleeps) */
+    return -1;
+}
+
+static void test_waitpid_wnohang_no_zombie(void)
+{
+    proc_init_test();
+
+    /* Child exists but is running (not zombie) */
+    proctab[1].state = P_RUNNING;
+    proctab[1].pid = 1;
+    proctab[1].ppid = 0;
+    nproc = 2;
+
+    int status = -1;
+    int r = do_waitpid_test(-1, &status, WNOHANG);
+    ASSERT_EQ(r, 0);  /* WNOHANG: child exists but not exited → return 0 */
+}
+
+static void test_waitpid_wnohang_with_zombie(void)
+{
+    proc_init_test();
+
+    /* Child is a zombie — should reap it even with WNOHANG */
+    proctab[1].state = P_ZOMBIE;
+    proctab[1].pid = 1;
+    proctab[1].ppid = 0;
+    proctab[1].exitcode = 7;
+    nproc = 2;
+
+    int status = -1;
+    int r = do_waitpid_test(-1, &status, WNOHANG);
+    ASSERT_EQ(r, 1);  /* reaped child PID 1 */
+    ASSERT_EQ((status >> 8) & 0xFF, 7);
+    ASSERT_EQ(nproc, 1);
+}
+
+static void test_waitpid_wnohang_no_children(void)
+{
+    proc_init_test();
+    /* Process 0 has ppid=0, so it matches itself as "child".
+     * Use a non-zero process as parent to test the no-children case. */
+    proctab[1].state = P_RUNNING;
+    proctab[1].pid = 1;
+    proctab[1].ppid = 0;
+    curproc = &proctab[1];
+    nproc = 2;
+
+    int status = -1;
+    int r = do_waitpid_test(-1, &status, WNOHANG);
+    ASSERT_EQ(r, -ECHILD);
+}
+
+static void test_waitpid_blocking_reaps_zombie(void)
+{
+    proc_init_test();
+
+    /* Zombie child — blocking waitpid should reap it immediately */
+    proctab[1].state = P_ZOMBIE;
+    proctab[1].pid = 1;
+    proctab[1].ppid = 0;
+    proctab[1].exitcode = 99;
+    nproc = 2;
+
+    int status = -1;
+    int r = do_waitpid_test(-1, &status, 0);
+    ASSERT_EQ(r, 1);
+    ASSERT_EQ((status >> 8) & 0xFF, 99);
+}
+
+static void test_waitpid_specific_pid(void)
+{
+    proc_init_test();
+
+    /* Two children: PID 1 running, PID 2 zombie */
+    proctab[1].state = P_RUNNING;
+    proctab[1].pid = 1;
+    proctab[1].ppid = 0;
+    proctab[2].state = P_ZOMBIE;
+    proctab[2].pid = 2;
+    proctab[2].ppid = 0;
+    proctab[2].exitcode = 5;
+    nproc = 3;
+
+    /* Wait for PID 1 with WNOHANG — should return 0 (not exited) */
+    int status = -1;
+    int r = do_waitpid_test(1, &status, WNOHANG);
+    ASSERT_EQ(r, 0);
+
+    /* Wait for PID 2 — should reap */
+    r = do_waitpid_test(2, &status, WNOHANG);
+    ASSERT_EQ(r, 2);
+    ASSERT_EQ((status >> 8) & 0xFF, 5);
+}
+
 /* ======== Main ======== */
 
 int main(void)
@@ -523,6 +752,19 @@ int main(void)
     /* Kstack canary tests */
     RUN_TEST(test_kstack_canary_init);
     RUN_TEST(test_kstack_canary_detects_overflow);
+
+    /* fcntl F_DUPFD tests */
+    RUN_TEST(test_fcntl_dupfd_basic);
+    RUN_TEST(test_fcntl_dupfd_skip_occupied);
+    RUN_TEST(test_fcntl_dupfd_full);
+    RUN_TEST(test_fcntl_getfl);
+
+    /* waitpid WNOHANG tests */
+    RUN_TEST(test_waitpid_wnohang_no_zombie);
+    RUN_TEST(test_waitpid_wnohang_with_zombie);
+    RUN_TEST(test_waitpid_wnohang_no_children);
+    RUN_TEST(test_waitpid_blocking_reaps_zombie);
+    RUN_TEST(test_waitpid_specific_pid);
 
     TEST_REPORT();
 }
