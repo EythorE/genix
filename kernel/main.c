@@ -198,7 +198,7 @@ static void autotest(void)
         int pid = do_spawn("/bin/true", NULL);
         if (pid > 0) {
             int status = -1;
-            int wpid = do_waitpid(pid, &status);
+            int wpid = do_waitpid(pid, &status, 0);
             /* POSIX: exit status in bits 15-8 */
             int exitcode = (status >> 8) & 0xFF;
             if (wpid == pid && exitcode == 0) {
@@ -220,7 +220,7 @@ static void autotest(void)
         int pid = do_spawn("/bin/false", NULL);
         if (pid > 0) {
             int status = -1;
-            int wpid = do_waitpid(pid, &status);
+            int wpid = do_waitpid(pid, &status, 0);
             int exitcode = (status >> 8) & 0xFF;
             if (wpid == pid && exitcode == 1) {
                 kputs("PASS\n");
@@ -271,7 +271,7 @@ static void autotest(void)
         int pid = do_spawn("/bin/ls", argv);
         if (pid > 0) {
             int status = -1;
-            int wpid = do_waitpid(pid, &status);
+            int wpid = do_waitpid(pid, &status, 0);
             int exitcode = (status >> 8) & 0xFF;
             if (wpid == pid && exitcode == 0) {
                 kputs("PASS\n");
@@ -410,7 +410,7 @@ static void autotest(void)
             int ok = 1;
             if (echo_pid > 0) {
                 int status;
-                do_waitpid(echo_pid, &status);
+                do_waitpid(echo_pid, &status, 0);
             } else { ok = 0; }
 
             /* Step 2: Run cat with stdin ← pipe read end */
@@ -422,7 +422,7 @@ static void autotest(void)
 
             if (cat_pid > 0) {
                 int status;
-                do_waitpid(cat_pid, &status);
+                do_waitpid(cat_pid, &status, 0);
             } else { ok = 0; }
 
             if (ok) {
@@ -453,7 +453,7 @@ static void autotest(void)
 
             if (pid > 0) {
                 int status;
-                do_waitpid(pid, &status);
+                do_waitpid(pid, &status, 0);
 
                 /* Read back the file to verify */
                 struct inode *ip = fs_namei("/tmp_redir");
@@ -581,7 +581,7 @@ static void autotest(void)
             child->sig_pending |= (1u << SIGKILL);
             child->state = P_READY;
             int status;
-            do_waitpid(cpid, &status);
+            do_waitpid(cpid, &status, 0);
         } else {
             kputs("FAIL (spawn failed)\n");
             fail++;
@@ -675,7 +675,7 @@ static void autotest(void)
         int pid = do_spawn("/bin/true", NULL);
         if (pid > 0) {
             int status = -1;
-            do_waitpid(pid, &status);
+            do_waitpid(pid, &status, 0);
             /* Check our own canary survived */
             if (curproc->kstack[0] == KSTACK_CANARY) {
                 kputs("PASS\n");
@@ -735,7 +735,7 @@ static void autotest(void)
             int ok = 1;
             if (seq_pid > 0) {
                 int status;
-                do_waitpid(seq_pid, &status);
+                do_waitpid(seq_pid, &status, 0);
             } else { ok = 0; }
 
             /* Run wc with stdin ← pipe */
@@ -746,7 +746,7 @@ static void autotest(void)
 
             if (wc_pid > 0) {
                 int status;
-                do_waitpid(wc_pid, &status);
+                do_waitpid(wc_pid, &status, 0);
             } else { ok = 0; }
 
             if (ok) {
@@ -783,7 +783,7 @@ static void imshow_test(void)
     int pid = do_spawn("/bin/imshow", argv);
     if (pid > 0) {
         int status = -1;
-        do_waitpid(pid, &status);
+        do_waitpid(pid, &status, 0);
         int exitcode = (status >> 8) & 0xFF;
         kprintf("imshow exited with code %d\n", exitcode);
         if (exitcode == 0)
@@ -938,7 +938,7 @@ static void shell_exec_cmd(char *cmdline)
                               in_fd, out_fd, -1);
         if (pid > 0) {
             int status;
-            do_waitpid(pid, &status);
+            do_waitpid(pid, &status, 0);
             int exitcode = (status >> 8) & 0xFF;
             if (exitcode != 0)
                 kprintf("exit %d\n", exitcode);
@@ -1080,7 +1080,7 @@ static void shell_exec_cmd(char *cmdline)
     /* Wait for all pipeline processes to complete */
     for (i = 0; i < spawned; i++) {
         int status;
-        do_waitpid(pids[i], &status);
+        do_waitpid(pids[i], &status, 0);
     }
 
     /* Close remaining FDs */
