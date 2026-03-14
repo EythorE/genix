@@ -528,6 +528,7 @@ int do_vfork(void)
     child->ppid = parent->pid;
     child->state = P_RUNNING;
     child->exitcode = 0;
+    child->mem_slot = -1;  /* child doesn't own a slot until exec allocates one */
 
     /* Increment refcounts on open file descriptors */
     for (int i = 0; i < MAXFD; i++) {

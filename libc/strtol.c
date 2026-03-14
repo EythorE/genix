@@ -103,8 +103,12 @@ long strtol(const char *nptr, char **endptr, int base)
 unsigned long long strtoull(const char *nptr, char **endptr, int base)
 {
     const char *s = nptr;
-    unsigned long long result = 0;
     int any = 0;
+
+    /* Use 32-bit accumulation to avoid __muldi3 (libgcc's version
+     * contains 68020 MULU.L instructions that crash on the 68000).
+     * Track high and low 32-bit halves manually. */
+    unsigned long lo = 0, hi = 0;
 
     while (isspace_local(*s))
         s++;
@@ -133,14 +137,29 @@ unsigned long long strtoull(const char *nptr, char **endptr, int base)
         int d = digit_val(*s);
         if (d < 0 || d >= base)
             break;
-        result = result * (unsigned long long)base + (unsigned long long)d;
+        /* Multiply hi:lo by base using 32-bit ops only.
+         * base is at most 36, so lo * base fits in 64 bits
+         * computed as two 32×32→32 products. */
+        hi = hi * (unsigned long)base;
+        {
+            /* Split lo * base into high and low parts without
+             * 64-bit multiply.  lo_hi * base may carry into hi. */
+            unsigned long lo_lo = (lo & 0xFFFF) * (unsigned long)base;
+            unsigned long lo_hi = (lo >> 16) * (unsigned long)base;
+            unsigned long mid = lo_hi + (lo_lo >> 16);
+            lo = (lo_lo & 0xFFFF) | (mid << 16);
+            hi += mid >> 16;
+        }
+        lo += (unsigned long)d;
+        if (lo < (unsigned long)d)
+            hi++;
         any = 1;
         s++;
     }
 
     if (endptr)
         *endptr = (char *)(any ? s : nptr);
-    return result;
+    return ((unsigned long long)hi << 32) | lo;
 }
 
 long long strtoll(const char *nptr, char **endptr, int base)
