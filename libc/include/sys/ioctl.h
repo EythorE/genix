@@ -1,0 +1,7 @@
+/* Genix sys/ioctl.h — minimal stub */
+#ifndef _SYS_IOCTL_H
+#define _SYS_IOCTL_H
+
+int ioctl(int fd, unsigned long request, ...);
+
+#endif

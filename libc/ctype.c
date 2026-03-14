@@ -43,6 +43,26 @@ int iscntrl(int c)
     return (c >= 0 && c < ' ') || c == 127;
 }
 
+int isblank(int c)
+{
+    return c == ' ' || c == '\t';
+}
+
+int isgraph(int c)
+{
+    return c > ' ' && c <= '~';
+}
+
+int ispunct(int c)
+{
+    return isgraph(c) && !isalnum(c);
+}
+
+int isxdigit(int c)
+{
+    return isdigit(c) || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+}
+
 int toupper(int c)
 {
     if (c >= 'a' && c <= 'z')

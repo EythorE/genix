@@ -19,6 +19,16 @@
 #define S_ISBLK(m)  (((m) & S_IFMT) == S_IFBLK)
 #define S_ISFIFO(m) (((m) & S_IFMT) == S_IFIFO)
 
+/* Set-ID and sticky bits (not enforced on Genix, but defined for POSIX) */
+#define S_ISUID  0004000
+#define S_ISGID  0002000
+#define S_ISVTX  0001000
+
+/* Symlink test (always false on Genix) */
+#define S_IFLNK  0120000
+#define S_ISLNK(m) (((m) & S_IFMT) == S_IFLNK)
+#define S_ISSOCK(m) 0
+
 /* Permission bits */
 #define S_IRWXU  0000700
 #define S_IRUSR  0000400

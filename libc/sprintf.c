@@ -130,6 +130,189 @@ int sprintf(char *buf, const char *fmt, ...)
     return do_vsnprintf(buf, 0x7FFFFFFF, fmt, args);
 }
 
+/* ======== vsnprintf — va_list version ======== */
+
+#include <stdarg.h>
+
+int vsnprintf(char *buf, unsigned int size, const char *fmt, va_list ap)
+{
+    int pos = 0;
+    int limit = (int)size;
+    const char *p = fmt;
+
+    while (*p) {
+        if (*p != '%') {
+            pos = emit_char(buf, pos, limit, *p++);
+            continue;
+        }
+        p++;  /* skip '%' */
+
+        /* Flags and width (minimal support) */
+        int pad_zero = 0;
+        int left_align = 0;
+        int width = 0;
+        int precision = -1;
+
+        if (*p == '-') { left_align = 1; p++; }
+        if (*p == '0') { pad_zero = 1; p++; }
+        while (*p >= '0' && *p <= '9')
+            width = width * 10 + (*p++ - '0');
+        if (*p == '.') {
+            p++;
+            precision = 0;
+            if (*p == '*') {
+                precision = va_arg(ap, int);
+                p++;
+            } else {
+                while (*p >= '0' && *p <= '9')
+                    precision = precision * 10 + (*p++ - '0');
+            }
+        }
+        if (*p == '*') {
+            width = va_arg(ap, int);
+            p++;
+        }
+
+        /* Length modifier */
+        int is_long = 0;
+        int is_longlong = 0;
+        if (*p == 'l') {
+            is_long = 1;
+            p++;
+            if (*p == 'l') { is_longlong = 1; p++; }
+        }
+        if (*p == 'j') { is_longlong = 1; p++; }
+        if (*p == 'z') { is_long = 1; p++; }
+
+        switch (*p) {
+        case 's': {
+            const char *s = va_arg(ap, const char *);
+            if (!s) s = "(null)";
+            int slen = 0;
+            const char *t = s;
+            while (*t++) slen++;
+            if (precision >= 0 && slen > precision)
+                slen = precision;
+            int pad = width > slen ? width - slen : 0;
+            if (!left_align)
+                while (pad-- > 0) pos = emit_char(buf, pos, limit, ' ');
+            for (int i = 0; i < slen; i++)
+                pos = emit_char(buf, pos, limit, s[i]);
+            if (left_align)
+                while (pad-- > 0) pos = emit_char(buf, pos, limit, ' ');
+            break;
+        }
+        case 'd': case 'i': {
+            long long val;
+            if (is_longlong) val = va_arg(ap, long long);
+            else val = va_arg(ap, int);
+            int neg = 0;
+            if (val < 0) { neg = 1; val = -val; }
+            char tmp[22];
+            int len = 0;
+            if (val == 0) tmp[len++] = '0';
+            else while (val > 0) {
+                tmp[len++] = '0' + (int)(val % 10);
+                val /= 10;
+            }
+            int total = len + neg;
+            int pad = width > total ? width - total : 0;
+            if (!left_align && !pad_zero)
+                while (pad-- > 0) pos = emit_char(buf, pos, limit, ' ');
+            if (neg) pos = emit_char(buf, pos, limit, '-');
+            if (!left_align && pad_zero)
+                while (pad-- > 0) pos = emit_char(buf, pos, limit, '0');
+            for (int i = len - 1; i >= 0; i--)
+                pos = emit_char(buf, pos, limit, tmp[i]);
+            if (left_align)
+                while (pad-- > 0) pos = emit_char(buf, pos, limit, ' ');
+            break;
+        }
+        case 'u': {
+            unsigned long long val;
+            if (is_longlong) val = va_arg(ap, unsigned long long);
+            else val = va_arg(ap, unsigned int);
+            char tmp[22];
+            int len = 0;
+            if (val == 0) tmp[len++] = '0';
+            else while (val > 0) {
+                tmp[len++] = '0' + (int)(val % 10);
+                val /= 10;
+            }
+            int pad = width > len ? width - len : 0;
+            if (!left_align && !pad_zero)
+                while (pad-- > 0) pos = emit_char(buf, pos, limit, ' ');
+            if (!left_align && pad_zero)
+                while (pad-- > 0) pos = emit_char(buf, pos, limit, '0');
+            for (int i = len - 1; i >= 0; i--)
+                pos = emit_char(buf, pos, limit, tmp[i]);
+            if (left_align)
+                while (pad-- > 0) pos = emit_char(buf, pos, limit, ' ');
+            break;
+        }
+        case 'o': {
+            unsigned long long val;
+            if (is_longlong) val = va_arg(ap, unsigned long long);
+            else val = va_arg(ap, unsigned int);
+            char tmp[22];
+            int len = 0;
+            if (val == 0) tmp[len++] = '0';
+            else while (val > 0) {
+                tmp[len++] = '0' + (int)(val & 7);
+                val >>= 3;
+            }
+            for (int i = len - 1; i >= 0; i--)
+                pos = emit_char(buf, pos, limit, tmp[i]);
+            break;
+        }
+        case 'x': case 'X': {
+            unsigned long long val;
+            if (is_longlong) val = va_arg(ap, unsigned long long);
+            else val = va_arg(ap, unsigned int);
+            char tmp[16];
+            int len = 0;
+            const char *hex = (*p == 'X') ? "0123456789ABCDEF" : "0123456789abcdef";
+            if (val == 0) tmp[len++] = '0';
+            else while (val > 0) {
+                tmp[len++] = hex[val & 0xF];
+                val >>= 4;
+            }
+            int pad = width > len ? width - len : 0;
+            if (!left_align)
+                while (pad-- > 0) pos = emit_char(buf, pos, limit, pad_zero ? '0' : ' ');
+            for (int i = len - 1; i >= 0; i--)
+                pos = emit_char(buf, pos, limit, tmp[i]);
+            if (left_align)
+                while (pad-- > 0) pos = emit_char(buf, pos, limit, ' ');
+            break;
+        }
+        case 'c': {
+            char c = (char)va_arg(ap, int);
+            pos = emit_char(buf, pos, limit, c);
+            break;
+        }
+        case 'p': {
+            unsigned long val = (unsigned long)va_arg(ap, void *);
+            pos = emit_str(buf, pos, limit, "0x");
+            pos = emit_uint(buf, pos, limit, val, 16);
+            break;
+        }
+        case '%':
+            pos = emit_char(buf, pos, limit, '%');
+            break;
+        default:
+            pos = emit_char(buf, pos, limit, '%');
+            pos = emit_char(buf, pos, limit, *p);
+            break;
+        }
+        p++;
+    }
+
+    if (limit > 0)
+        buf[pos < limit ? pos : limit - 1] = '\0';
+    return pos;
+}
+
 /* ======== sscanf — formatted input parsing ======== */
 
 static int is_space(int c)
