@@ -160,7 +160,11 @@ Design choices that ARE flexible right now:
 - After completing each phase, add an implementation report to the
   relevant `docs/*-plan.md` covering: what was built, deviations
   from the plan, gotchas, and measured results (binary sizes, RAM
-  usage, cycle counts where relevant).
+  usage, cycle counts where relevant). Also update HISTORY.md,
+  PLAN.md, CLAUDE.md (pitfalls), and README.md as needed.
+  **This documentation pass is mandatory, not optional** — do it
+  as the final step of every multi-file implementation before
+  committing.
 - CLAUDE.md must stay brief. Don't duplicate content from docs/.
   Link instead.
 
