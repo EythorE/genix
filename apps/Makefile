@@ -5,7 +5,9 @@ LD = $(CROSS)ld
 OBJCOPY = $(CROSS)objcopy
 LIBGCC = $(shell $(CC) -m68000 -print-libgcc-file-name)
 
-CFLAGS = -m68000 -nostdlib -nostartfiles -ffreestanding \
+CFLAGS = -m68000 -msep-data -nostdlib -nostartfiles -ffreestanding \
+         -I../libc/include -Wall -Wextra -O2
+ASFLAGS = -m68000 -nostdlib -nostartfiles -ffreestanding \
          -I../libc/include -Wall -Wextra -O2
 
 CRT0 = crt0.o
@@ -24,9 +26,9 @@ PROGRAMS = hello echo cat wc head true false \
 
 all: $(PROGRAMS)
 
-# Build crt0
+# Build crt0 (assembly — no -msep-data, it doesn't touch a5)
 crt0.o: crt0.S
-	$(CC) $(CFLAGS) -c -o $@ $<
+	$(CC) $(ASFLAGS) -c -o $@ $<
 
 # Build libc
 $(LIBC):

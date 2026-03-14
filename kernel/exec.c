@@ -21,6 +21,7 @@
 /* Global state for single-tasking exec (exec_enter/exec_leave) */
 int exec_exit_code;
 int exec_active = 0;
+uint32_t exec_user_a5;  /* a5 for -msep-data, set before exec_enter */
 
 /*
  * Validate a Genix binary header.
@@ -42,11 +43,12 @@ int exec_validate_header(const struct genix_header *hdr)
     if (hdr->text_size > hdr->load_size)
         return -ENOEXEC;
 
-    /* Check that the binary fits in user memory.
+    /* Check that the binary fits in a memory slot.
      * Need: load_size + bss_size + stack.
      * The relocation table is loaded into BSS temporarily, so BSS
      * must be large enough for the reloc table (or we pad if needed). */
-    uint32_t stack = hdr->stack_size ? hdr->stack_size : USER_STACK_DEFAULT;
+    uint32_t stack = HDR_STACK_SIZE(hdr);
+    if (stack == 0) stack = USER_STACK_DEFAULT;
     uint32_t reloc_bytes = hdr->reloc_count * 4;
 
     /* BSS must be at least as large as the relocation table,
@@ -56,7 +58,7 @@ int exec_validate_header(const struct genix_header *hdr)
         effective_bss = reloc_bytes;
 
     uint32_t total = hdr->load_size + effective_bss + stack;
-    if (total > USER_SIZE)
+    if (total > slot_size())
         return -ENOMEM;
 
     return 0;
@@ -89,11 +91,12 @@ int exec_validate_header_xip(const struct genix_header *hdr)
     if (!(hdr->flags & GENIX_FLAG_XIP))
         return -ENOEXEC;
 
-    /* Only data+BSS+stack must fit in user RAM (text is in ROM) */
+    /* Only data+BSS+stack must fit in a memory slot (text is in ROM) */
     uint32_t data_size = hdr->load_size - hdr->text_size;
-    uint32_t stack = hdr->stack_size ? hdr->stack_size : USER_STACK_DEFAULT;
+    uint32_t stack = HDR_STACK_SIZE(hdr);
+    if (stack == 0) stack = USER_STACK_DEFAULT;
     uint32_t total = data_size + hdr->bss_size + stack;
-    if (total > USER_SIZE)
+    if (total > slot_size())
         return -ENOMEM;
 
     return 0;
@@ -359,17 +362,23 @@ int load_binary(const char *path, const char **argv, uint32_t load_addr,
     if (zero_size > 0)
         memset((void *)(load_addr + hdr.load_size), 0, zero_size);
 
-    /* Set up user stack at top of user region.
-     * stack_top = load_addr + USER_SIZE places the stack at the same
-     * position relative to the loaded binary regardless of load_addr. */
-    uint32_t stack_top = load_addr + USER_SIZE;
+    /* Set up user stack at top of slot */
+    uint32_t stack_top = load_addr + slot_size();
     uint32_t user_sp = exec_setup_stack(stack_top, path, argv);
 
     /* Update process info */
     if (curproc) {
         curproc->mem_base = load_addr;
-        curproc->mem_size = USER_SIZE;
+        curproc->mem_size = slot_size();
         curproc->brk = load_addr + hdr.load_size + hdr.bss_size;
+
+        /* Compute a5 for -msep-data: data region base + got_offset.
+         * In the contiguous layout, data starts at load_addr + text_size.
+         * got_offset is relative to the start of the data section. */
+        if (HDR_HAS_GOT(&hdr))
+            curproc->data_a5 = load_addr + hdr.text_size + HDR_GOT_OFFSET(&hdr);
+        else
+            curproc->data_a5 = 0;
     }
 
     /* Entry is a 0-based offset; add load address */
@@ -442,21 +451,60 @@ int load_binary_xip(const char *path, const char **argv,
         }
     }
 
+    /* For -msep-data binaries, apply data-segment relocations at runtime.
+     * romfix resolved text-segment relocs but deferred data relocs because
+     * the slot base varies per process. Read the reloc table from ROM and
+     * patch only data-segment entries (offset >= text_size). */
+    if (HDR_HAS_GOT(&hdr) && hdr.reloc_count > 0) {
+        uint32_t reloc_file_off = GENIX_HDR_SIZE + hdr.load_size;
+        uint32_t reloc_bytes = hdr.reloc_count * 4;
+
+        /* Read reloc table from the file (it's still in ROM after header+load) */
+        /* Use BSS area temporarily to hold reloc table */
+        uint8_t *reloc_buf = (uint8_t *)(data_addr + data_size);
+        n = fs_read(ip, reloc_buf, reloc_file_off, reloc_bytes);
+        if (n == (int)reloc_bytes) {
+            const uint32_t *relocs = (const uint32_t *)reloc_buf;
+            for (uint32_t i = 0; i < hdr.reloc_count; i++) {
+                uint32_t off = relocs[i];
+                /* Only apply data-segment relocations */
+                if (off < hdr.text_size)
+                    continue;
+                if ((off & 1) || off + 4 > hdr.load_size)
+                    continue;
+                /* Patch in the data region */
+                uint32_t *ptr = (uint32_t *)((uint8_t *)data_addr +
+                                             (off - hdr.text_size));
+                uint32_t val = *ptr;
+                if (val < hdr.text_size)
+                    *ptr = val + text_addr;       /* data ref to text → ROM */
+                else
+                    *ptr = (val - hdr.text_size) + data_addr; /* data ref to data → slot */
+            }
+        }
+    }
+
     fs_iput(ip);
 
-    /* Zero BSS after data */
+    /* Zero BSS after data (also clears the reloc table we loaded there) */
     if (hdr.bss_size > 0)
         memset((void *)(data_addr + data_size), 0, hdr.bss_size);
 
-    /* Set up user stack at top of user region */
-    uint32_t stack_top = data_addr + USER_SIZE;
+    /* Set up user stack at top of slot */
+    uint32_t stack_top = data_addr + slot_size();
     uint32_t user_sp = exec_setup_stack(stack_top, path, argv);
 
     /* Update process info */
     if (curproc) {
         curproc->mem_base = data_addr;
-        curproc->mem_size = USER_SIZE;
+        curproc->mem_size = slot_size();
         curproc->brk = data_addr + data_size + hdr.bss_size;
+
+        /* Compute a5 for -msep-data: data_addr + got_offset */
+        if (HDR_HAS_GOT(&hdr))
+            curproc->data_a5 = data_addr + HDR_GOT_OFFSET(&hdr);
+        else
+            curproc->data_a5 = 0;
     }
 
     /* Entry: text_addr + entry offset (romfix already resolved all
@@ -486,6 +534,16 @@ int do_exec(const char *path, const char **argv)
     uint32_t entry, user_sp;
     int err;
 
+    /* Allocate a temporary slot for this synchronous exec */
+    int slot = slot_alloc();
+    if (slot < 0)
+        return -ENOMEM;
+
+    uint32_t data_addr = slot_base(slot);
+    curproc->mem_slot = slot;
+    curproc->mem_base = data_addr;
+    curproc->mem_size = slot_size();
+
     /* Try XIP first: if the file is in memory-mapped ROM and has the
      * XIP flag, execute text directly from ROM (saves precious RAM). */
     struct inode *ip = fs_namei(path);
@@ -494,7 +552,7 @@ int do_exec(const char *path, const char **argv)
         fs_iput(ip);
         if (rom_addr) {
             err = load_binary_xip(path, argv,
-                                  rom_addr + GENIX_HDR_SIZE, USER_BASE,
+                                  rom_addr + GENIX_HDR_SIZE, data_addr,
                                   &entry, &user_sp);
             if (err == 0)
                 goto run;
@@ -503,9 +561,12 @@ int do_exec(const char *path, const char **argv)
         }
     }
 
-    err = load_binary(path, argv, USER_BASE, &entry, &user_sp);
-    if (err < 0)
+    err = load_binary(path, argv, data_addr, &entry, &user_sp);
+    if (err < 0) {
+        slot_free(slot);
+        curproc->mem_slot = -1;
         return err;
+    }
 
 run:
 
@@ -513,8 +574,13 @@ run:
      * exec_enter saves kernel context, switches to user mode, and jumps
      * to the entry point. Returns here when _exit() calls exec_leave(). */
     exec_active = 1;
+    exec_user_a5 = curproc->data_a5;
     int exitcode = exec_enter(entry, user_sp, proc_kstack_top(curproc));
     exec_active = 0;
+
+    /* Free the temporary slot */
+    slot_free(slot);
+    curproc->mem_slot = -1;
 
     kprintf("[exec] Program exited with code %d\n", exitcode);
     return exitcode;
