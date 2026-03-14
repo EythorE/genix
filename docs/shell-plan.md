@@ -110,9 +110,35 @@ updated for posix_stat struct.
 **Deviations from plan:** None. The plan was straightforward and all
 items were implemented exactly as specified.
 
-**No new pitfalls discovered.** The implementation was clean — the
-existing toolchain and build system handled all new files without
-surprises.
+**Bug fixed post-review:** `access()` in `unistd_stubs.c` used
+`char buf[32]` with a forward-declared `stat()` returning into a void
+pointer. Two problems: (a) `char buf[32]` can land at an odd stack
+address on 68000, causing an address error fault when `fs_stat()`
+writes `uint32_t` fields; (b) the magic size `32` was fragile — if
+`struct stat` ever grows, the buffer silently overflows. Fixed by
+`#include <sys/stat.h>` and using `struct stat st` (compiler-aligned).
+
+**Known weak spots** (not bugs today, but places to look if issues arise):
+
+1. **`sigaction()` read-old-handler race** (`signal.c`). To read the
+   current handler, `sigaction()` calls `signal(sig, SIG_DFL)` then
+   restores the old handler. Between those two calls, a signal could
+   be delivered and would hit `SIG_DFL` (potentially killing the
+   process). Safe today because signal delivery is rare and brief,
+   but a proper `SYS_SIGACTION` kernel syscall would eliminate this.
+
+2. **Kernel `struct posix_stat` / libc `struct stat` are defined
+   independently** (`kernel/fs.c` vs `libc/include/sys/stat.h`).
+   Layouts must match exactly but there's no shared header or
+   compile-time assertion. If either changes independently,
+   `fs_stat()` silently produces garbage. A comment cross-references
+   the other definition, but a `_Static_assert` on `sizeof` would
+   be more robust.
+
+3. **`test_fs.c` uses `struct posix_stat`** (kernel's internal name)
+   rather than `struct stat` from `sys/stat.h`. Host tests compile
+   against kernel headers, so this works, but it means the test
+   doesn't verify that the libc header layout matches the kernel.
 
 ---
 
