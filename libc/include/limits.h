@@ -1,0 +1,37 @@
+/* Genix limits.h — implementation-defined constants */
+#ifndef _LIMITS_H
+#define _LIMITS_H
+
+/* char */
+#define CHAR_BIT    8
+#define SCHAR_MIN   (-128)
+#define SCHAR_MAX   127
+#define UCHAR_MAX   255
+#define CHAR_MIN    SCHAR_MIN
+#define CHAR_MAX    SCHAR_MAX
+
+/* short (16-bit) */
+#define SHRT_MIN    (-32768)
+#define SHRT_MAX    32767
+#define USHRT_MAX   65535
+
+/* int (32-bit on m68k-elf) */
+#define INT_MIN     (-2147483647 - 1)
+#define INT_MAX     2147483647
+#define UINT_MAX    4294967295U
+
+/* long (32-bit on m68k-elf) */
+#define LONG_MIN    (-2147483647L - 1)
+#define LONG_MAX    2147483647L
+#define ULONG_MAX   4294967295UL
+
+/* Genix filesystem limits */
+#define PATH_MAX    256
+#define NAME_MAX    30
+#define PIPE_BUF    512
+
+/* POSIX minimum values */
+#define _POSIX_ARG_MAX   4096
+#define _POSIX_PATH_MAX  256
+
+#endif
