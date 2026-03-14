@@ -174,6 +174,7 @@ Technical details live in docs/, not here. Key references:
 - PLAN.md — forward roadmap (Phases 5-9)
 - HISTORY.md — full project timeline (for human reference)
 - docs/decisions.md — active design decisions
+- docs/shell-plan.md — phased plan: libc prereqs → kernel zones → userspace shell → dash port
 
 Read the relevant docs/ file when working on a subsystem.
 Do not duplicate their content into this file.
