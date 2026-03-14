@@ -10,6 +10,18 @@ accelerate development — every feature must ultimately run on real Mega Drive
 hardware. Design decisions should always consider the Mega Drive's constraints:
 64 KB main RAM, 7.67 MHz CPU, no MMU, optional cartridge SRAM.
 
+## Environment Setup
+
+```bash
+./scripts/fetch-toolchain.sh
+export PATH=~/buildtools-m68k-elf/bin:~/blastem:$PATH
+export CROSS=m68k-elf-
+```
+
+If `fetch-toolchain.sh` fails, see `docs/toolchain.md` — but follow
+it carefully and do not improvise. Do NOT install distro packages
+(`gcc-m68k-linux-gnu`) unless `docs/toolchain.md` explicitly says to.
+
 ## Project Stage & Current Focus
 
 Phases 1-5 complete. Phase 5 (ROM XIP) uses romfix Strategy A — text
