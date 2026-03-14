@@ -1133,6 +1133,10 @@ void sys_sigreturn(uint32_t *frame)
  * then scan parent's directory for the entry pointing to current inode.
  * Repeat until we reach root (inode 1 or ".." points to self).
  */
+/* Static buffer for getcwd path components — avoids 256 bytes on
+ * the 512-byte kstack.  Safe because the kernel is non-preemptive. */
+static char getcwd_names[8][NAME_MAX + 2];
+
 static int sys_getcwd(char *buf, uint32_t size)
 {
     if (!buf || size < 2)
@@ -1147,9 +1151,7 @@ static int sys_getcwd(char *buf, uint32_t size)
         return (int32_t)(uint32_t)buf;
     }
 
-    /* Build path components in reverse.
-     * Use a stack of names (limited depth to avoid deep recursion). */
-    char names[8][NAME_MAX + 2];  /* max depth 8 */
+    /* Build path components in reverse. */
     int depth = 0;
 
     uint16_t child_inum = cur;
@@ -1190,8 +1192,8 @@ static int sys_getcwd(char *buf, uint32_t size)
             if (de.inode == child_inum &&
                 strcmp(de.name, ".") != 0 &&
                 strcmp(de.name, "..") != 0) {
-                strncpy(names[depth], de.name, NAME_MAX);
-                names[depth][NAME_MAX] = '\0';
+                strncpy(getcwd_names[depth], de.name, NAME_MAX);
+                getcwd_names[depth][NAME_MAX] = '\0';
                 depth++;
                 break;
             }
@@ -1212,10 +1214,10 @@ static int sys_getcwd(char *buf, uint32_t size)
         if (pos + 1 >= size)
             return -ERANGE;
         buf[pos++] = '/';
-        uint32_t nlen = strlen(names[i]);
+        uint32_t nlen = strlen(getcwd_names[i]);
         if (pos + nlen >= size)
             return -ERANGE;
-        memcpy(buf + pos, names[i], nlen);
+        memcpy(buf + pos, getcwd_names[i], nlen);
         pos += nlen;
     }
     buf[pos] = '\0';
