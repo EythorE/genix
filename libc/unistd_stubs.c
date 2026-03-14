@@ -7,6 +7,7 @@
  */
 #include <unistd.h>
 #include <errno.h>
+#include <sys/stat.h>
 
 /* UID/GID — always root (0) */
 int getuid(void)  { return 0; }
@@ -53,9 +54,7 @@ long sysconf(int name)
 /* access — single-user, all files are accessible */
 int access(const char *path, int mode)
 {
-    /* Use stat to check if file exists */
-    extern int stat(const char *path, void *buf);
-    char buf[32];  /* enough for struct stat */
+    struct stat st;
     (void)mode;
-    return stat(path, buf) < 0 ? -1 : 0;
+    return stat(path, &st) < 0 ? -1 : 0;
 }
