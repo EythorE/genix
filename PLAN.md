@@ -3,16 +3,18 @@
 What remains to be built. For project history and completed phases,
 see [HISTORY.md](HISTORY.md).
 
-Current state: Genix is a working preemptive multitasking OS with 34
-user programs, relocatable binaries, pipes, signals, job control, and
-a TTY subsystem. It runs on both the workbench emulator and real Mega
-Drive hardware. ROM XIP is working on Mega Drive (text executes from
-ROM, only .data copied to RAM). Phase 6 (`-msep-data` + slot allocator)
-is complete: multiple processes can reside in memory simultaneously
-with shared ROM text and per-process data slots. Pipelines execute
-concurrently. Phase A (libc prerequisites) and Phase B (kernel
-enhancements: fcntl F_DUPFD, waitpid WNOHANG) are complete. The next
-step is the dash shell port (Phase C).
+Current state: Genix is a working preemptive multitasking OS with 35
+user programs (including dash shell), relocatable binaries, pipes,
+signals, job control, and a TTY subsystem. It runs on both the
+workbench emulator and real Mega Drive hardware. ROM XIP is working on
+Mega Drive (text executes from ROM, only .data copied to RAM). Phase 6
+(`-msep-data` + slot allocator) is complete: multiple processes can
+reside in memory simultaneously with shared ROM text and per-process
+data slots. Pipelines execute concurrently. Phase A (libc prerequisites),
+Phase B (kernel enhancements: fcntl F_DUPFD, waitpid WNOHANG), and
+Phase C (dash shell port) are complete. The kernel spawns dash as the
+default interactive shell, falling back to the builtin shell if not
+found. The next step is Phase 7 (SD card filesystem).
 
 ---
 
@@ -227,70 +229,46 @@ deferral, and concurrent pipeline execution all work on both platforms.
 
 ---
 
-## Port dash Shell
+## Port dash Shell — Complete
 
 **Goal:** Replace the built-in kernel shell with dash (Debian Almquist
-Shell), a real POSIX shell with scripting, job control, and command
-history.
+Shell), a real POSIX shell with scripting.
 
 **Depends on:** Phase 6 (`-msep-data` — dash is a normal app in its
 own slot, no special memory treatment needed).
 
 **Reference:** [docs/shell-research.md](docs/shell-research.md) — full
 analysis of 8 shell candidates. [docs/shell-plan.md](docs/shell-plan.md)
-— phased implementation plan.
+— phased implementation plan with outcome report.
 
-### Why dash
+### Outcome
 
-dash is the smallest real POSIX shell (~13K SLOC, BSD licensed). With
-XIP, its ~100 KB .text lives in ROM for free. Its .data+.bss is modest
-(~6 KB). Full POSIX scripting (if/then/else, for, case, functions) and
-job control are built in.
+**Implemented:** 2026-03-14. dash 0.5.12 ported as a normal userspace
+application. Configured with JOBS=0, SMALL=1, no line editing.
 
-### Prerequisites (libc + kernel)
+**Binary size:** text=91,236 data=4,500 bss=2,296. Data+bss = 6,796
+bytes (49% of 14 KB Mega Drive slot). Fits comfortably — the ~6 KB
+estimate was accurate.
 
-Before dash can be ported, Genix needs several general-purpose
-improvements documented in [docs/shell-plan.md](docs/shell-plan.md):
-
-- **Libc:** setjmp/longjmp, sigaction, POSIX headers (sys/types.h,
-  sys/wait.h, sys/stat.h, limits.h, paths.h, time.h)
-- **Kernel:** fcntl F_DUPFD, waitpid WNOHANG, POSIX-compatible stat
-
-These are independently valuable regardless of the shell choice.
-
-### RAM Budget
-
+**RAM budget (measured):**
 ```
 Available per slot (Mega Drive):  ~14 KB
-Dash .data + .bss:                ~6 KB
-Heap (parse trees, vars):         ~4 KB
-Stack:                            ~2 KB
-Total:                           ~12 KB  (fits in 14 KB slot)
+Dash .data + .bss:                6,796 bytes (49%)
+Remaining for heap + stack:       ~7 KB
 ```
 
-### Configurable Shell Selection
+**Libc additions:** 7 new headers, 15+ new functions (strtoll, strtoull,
+vsnprintf, strtod, abort, strpbrk, stpncpy, strsignal, isblank, isgraph,
+ispunct, isxdigit, etc.). The libc grew significantly to support dash.
 
-Genix will support multiple hardware and emulator targets with different
-RAM constraints. Dash (~12 KB data+heap+stack) fits in a 14 KB slot but
-leaves only one slot for child programs. On memory-constrained targets,
-this may not leave room for larger apps like levee.
+**Integration:** kernel/main.c spawns `/bin/dash` with respawn loop,
+falls back to `builtin_shell()` if not found. dash is in CORE_BINS
+(included in both workbench and Mega Drive images).
 
-The build system should make shell selection a per-target configuration:
-
-- **Full shell (dash):** POSIX scripting, job control. For targets with
-  enough RAM (PSRAM, large slots, or workbench).
-- **Minimal shell (builtin or apps/sh):** The existing kernel shell
-  extracted to userspace. Smaller data footprint, fewer features.
-
-This is a build-time `SHELL=dash` / `SHELL=sh` knob in the Makefile,
-not a runtime choice. Each target profile (workbench, Mega Drive bare,
-Mega Drive + EverDrive Pro) selects its shell based on available memory.
-
-**Research needed:** Measure dash's actual .data+.bss after porting to
-determine exact slot pressure. If dash fits comfortably in 14 KB with
-room for child apps, the minimal shell may only be needed for bare
-Mega Drive without PSRAM. Defer this research until dash is compiled
-and we have real numbers.
+**Shell selection:** Since dash data+bss is only 6.8 KB (49% of slot),
+the configurable shell selection mechanism is not needed for Mega Drive.
+Dash fits comfortably alongside child processes. A build-time knob
+could be added later if a more constrained target emerges.
 
 ---
 
@@ -458,15 +436,15 @@ Libc prereqs (Phase A) ....... done
     |
 Kernel prereqs (Phase B) ..... done
     |
-dash Shell Port (Phase C) .... next
+dash Shell Port (Phase C) .... done
     |
-Phase 7 (SD Card) ............. independent, can happen anytime
+Phase 7 (SD Card) ............. next (independent)
     |
 Phase 8 (EverDrive Pro PSRAM) . depends on Phase 6 + 7
     |
 Phase 9 (Performance) ......... independent, can happen anytime
 ```
 
-Phases A and B (libc prerequisites + kernel enhancements) are complete.
-The next step is the dash shell port (Phase C). Phase 7 (SD card) is
-independent.
+All prerequisites and the dash shell port are complete. Phase 7 (SD
+card) is the next major feature. Phase 9 (performance) can happen
+anytime.

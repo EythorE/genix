@@ -24,16 +24,13 @@ it carefully and do not improvise. Do NOT install distro packages
 
 ## Project Stage & Current Focus
 
-Phases 1-6, Phase A (libc prerequisites), and Phase B (kernel
-enhancements) complete. Phase 6 (`-msep-data` + slot allocator)
-enables concurrent multitasking with shared ROM text and per-process
-data slots. Phase A added POSIX headers, setjmp/longjmp, signal
-wrappers, and POSIX-compatible struct stat. Phase B added fcntl
-F_DUPFD and waitpid WNOHANG. Next: Phase C (dash port).
+Phases 1-6, Phase A (libc prerequisites), Phase B (kernel
+enhancements), and Phase C (dash shell port) complete. The kernel
+spawns dash as the default interactive shell. Next: Phase 7 (SD card).
 See PLAN.md for the full dependency graph.
 
 Design choices that are LOAD-BEARING (changing these is expensive):
-- Binary format and relocation scheme (affects all 34 apps + libc + mkbin)
+- Binary format and relocation scheme (affects all 35 apps + libc + mkbin)
 - Memory layout (USER_BASE, kernel/user RAM split, process slot sizes)
 - ROM vs RAM text placement strategy (Phase 5 core question)
 - Syscall numbers and calling convention (ABI stability across libc)
