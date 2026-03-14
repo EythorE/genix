@@ -753,6 +753,43 @@ program (prerequisite for dash shell port). 17 files changed,
    tests/test_fs.c updated to use posix_stat struct and verify
    st_mode = 0040755 for directories.
 
+### Phase B: Kernel Enhancements (March 2026)
+
+**Date:** 2026-03-14
+
+General-purpose kernel improvements needed by any userspace shell.
+4 files changed, +301/-25 lines. fs_stat was already done in Phase A
+so only two items remained.
+
+**What was built:**
+
+1. **fcntl F_DUPFD:** Replaced the SYS_FCNTL stub (returned 0) with
+   a real implementation. F_DUPFD finds the lowest free fd >= arg, dups
+   the source ofile, and increments refcount (with rollback on failure).
+   F_GETFD/F_SETFD return/accept 0 (no cloexec yet). F_GETFL returns
+   open flags masked to exclude internal pipe bits (0x0FFF mask).
+   F_SETFL is a stub returning 0. Added fd_alloc_from(of, minfd)
+   helper for the "lowest fd >= arg" semantics.
+
+2. **waitpid WNOHANG:** Changed do_waitpid(pid, status) to
+   do_waitpid(pid, status, options). After the "no exited child found"
+   scan, checks (options & WNOHANG) and returns 0 instead of blocking.
+   Updated syscall dispatch to pass a3 as options. Updated all 13
+   callers in kernel/main.c to pass 0 for options. The libc waitpid
+   stub already passed d3 (options) — no libc changes needed.
+
+3. **Host tests (9 new):** fcntl: F_DUPFD basic dup, skip occupied
+   fds, table-full error, F_GETFL flag readback. waitpid: WNOHANG
+   with running child (returns 0), WNOHANG with zombie (reaps it),
+   no children (-ECHILD), blocking reap, specific PID targeting.
+
+**Deviations from plan:** None. Both items were straightforward.
+
+**Gotcha:** Process 0 has ppid=0, so do_waitpid called by process 0
+sees itself as its own child. Not a bug in practice (process 0 never
+calls waitpid without real children), but the test had to use a
+non-zero PID process to test the "no children" path.
+
 ---
 
 ## 4. Bugs and Lessons Learned
