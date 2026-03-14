@@ -695,6 +695,64 @@ to point at each process's data slot.
 - All 63 host tests pass, 31/31 workbench autotest pass, Mega Drive
   builds and runs (600 frames, no crash).
 
+### Phase A: Libc Prerequisites (March 2026)
+
+**Date:** 2026-03-14
+
+Added POSIX headers and functions needed by any future userspace
+program (prerequisite for dash shell port). 17 files changed,
++504/-43 lines.
+
+**What was built:**
+
+1. **New headers (7):** setjmp.h (jmp_buf, setjmp/longjmp, sigjmp_buf
+   aliases, BSD _setjmp/_longjmp aliases), sys/types.h (pid_t, uid_t,
+   gid_t, off_t, mode_t, size_t, ssize_t), sys/wait.h (WIFEXITED/
+   WEXITSTATUS/WIFSIGNALED/WTERMSIG/WIFSTOPPED macros, WNOHANG,
+   WUNTRACED), sys/stat.h (32-byte struct stat, S_ISREG/S_ISDIR/
+   S_ISCHR macros, permission bit constants), limits.h (CHAR_BIT,
+   INT_MIN/MAX, LONG_MIN/MAX, PATH_MAX, NAME_MAX), paths.h
+   (_PATH_BSHELL, _PATH_DEVNULL, _PATH_TTY), time.h (time_t, clock_t,
+   struct timeval/timespec).
+
+2. **setjmp_68000.S:** setjmp saves d2-d7/a2-a6 (11 callee-saved
+   registers, 44 bytes) plus SP at offset 44 (total jmp_buf = 48
+   bytes). longjmp restores registers + SP, enforces val != 0.
+   Ported from FUZIX Library/libs/setjmp_68000.S.
+
+3. **signal.c:** sigaction() implemented as a wrapper around the
+   kernel's signal() syscall (read old handler, set new handler).
+   sigprocmask() is a stub (returns 0, Genix doesn't support signal
+   masks yet). raise() calls kill(getpid(), sig).
+
+4. **unistd_stubs.c:** 16 POSIX stub functions. UID/GID functions
+   (getuid/geteuid/getgid/getegid/setuid/setgid/seteuid/setegid)
+   all return 0 (single-user system). Process group stubs (getpgrp
+   returns getpid(), setpgid no-op, getppid returns 1, tcsetpgrp/
+   tcgetpgrp). Timer stubs (alarm, sleep). sysconf returns 60 for
+   _SC_CLK_TCK (Mega Drive NTSC VBlank rate). access() uses stat()
+   to check file existence.
+
+5. **Header updates:** signal.h expanded with NSIG (21), sigset_t
+   (unsigned long), sigset macros (sigemptyset/sigfillset/sigaddset/
+   sigdelset/sigismember), struct sigaction, SA_RESTART/SA_NOCLDSTOP/
+   SA_RESETHAND, SIG_BLOCK/SIG_UNBLOCK/SIG_SETMASK, and missing
+   signal numbers (SIGILL/SIGTRAP/SIGABRT/SIGBUS/SIGFPE/SIGUSR1/
+   SIGSEGV/SIGUSR2/SIGALRM). fcntl.h expanded with F_DUPFD/F_GETFD/
+   F_SETFD/F_GETFL/F_SETFL and FD_CLOEXEC. unistd.h expanded with
+   STDIN/STDOUT/STDERR_FILENO and all new function declarations.
+
+6. **Kernel fs_stat() POSIX conversion:** Replaced 12-byte kstat
+   struct with 32-byte posix_stat struct. type_to_mode() converts
+   FT_FILE→S_IFREG|0755, FT_DIR→S_IFDIR|0755, FT_DEV→S_IFCHR|0666.
+   Device files populate st_rdev with (major<<8|minor). All time
+   fields set to mtime (minifs doesn't track atime/ctime separately).
+
+7. **Consumer updates:** apps/ls.c now includes sys/stat.h and uses
+   S_ISREG/S_ISDIR/S_ISCHR macros instead of local FT_* constants.
+   tests/test_fs.c updated to use posix_stat struct and verify
+   st_mode = 0040755 for directories.
+
 ---
 
 ## 4. Bugs and Lessons Learned
