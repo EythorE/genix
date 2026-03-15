@@ -56,22 +56,32 @@ impactful optimization for fitting programs on the Mega Drive.
 | Property | Value |
 |----------|-------|
 | Source | Already in `apps/levee/` (15 .c files) |
-| Text (ROM) | ~44 KB (free — XIP) |
-| Data+BSS | Needs measurement — likely ~4-8 KB |
-| Status | **KNOWN BROKEN** — kernel panic at PC=0x30000 |
+| Text (ROM) | 47,420 bytes (free — XIP) |
+| .data | 2,620 bytes |
+| .bss | 10,268 bytes |
+| **data+bss** | **12,888 bytes (12.6 KB)** |
+| Slack in 14 KB slot | **~1.1 KB for heap + stack** |
+| Status | **Boots OK** (crash fix merged), but very tight on RAM |
 
-Already ported to Genix and listed in /bin. The 44 KB binary is
-overwhelmingly text (free via XIP). The Makefile needs updating to
-use `-msep-data` (currently uses old build flags). The crash is likely
-a relocation or jump table corruption issue.
+Levee boots and starts on the workbench emulator (boot test passes).
+The `-msep-data` Makefile fix has been merged and the kernel panic is
+resolved.
 
-**Next steps:** Update Makefile to `-msep-data`, fix crash, measure
-actual data+bss. If data+bss is comparable to dash (~6.8 KB), levee
-works on Mega Drive with no PSRAM.
+**The problem is bss.** At 10 KB, levee's bss consumes most of the
+14 KB slot, leaving only ~1.1 KB for heap + stack. That's too tight
+for real editing — the file buffer, undo state, and stack need more
+room.
 
-**Note:** Multiple docs and Makefile comments claim levee is "too
-large for MD." This assessment predates XIP and `-msep-data` and
-is based on total binary size, which is irrelevant with XIP.
+**Options to make levee usable on Mega Drive:**
+1. **Shrink bss** — audit globals in levee for oversized static
+   buffers. The `SIZE=2048` build flag controls the edit buffer but
+   bss is 10 KB, suggesting other large static arrays. Converting
+   some to malloc'd or reducing sizes could reclaim several KB.
+2. **Phase 8 (PSRAM)** — with 512 KB per process, levee runs easily.
+3. **Workbench** — 117 KB slots, levee works fine right now.
+
+For comparison, dash has only 6.8 KB data+bss. If levee's bss could
+be halved (~5 KB), it would leave ~7 KB for heap+stack — usable.
 
 ---
 
