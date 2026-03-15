@@ -320,6 +320,42 @@ easily. One engine, 14 games in ROM.
 
 ---
 
+### Hunt the Wumpus — Classic Cave Game
+
+| Property | Value |
+|----------|-------|
+| Source | FUZIX `Applications/V7/games/wump.c` |
+| Size | ~200-300 lines C |
+| Text (ROM) | ~3-4 KB |
+| Data+BSS | <1 KB |
+| Needs fork() | No |
+| Missing libc | None |
+| Approach | **Port from FUZIX** (trivial) |
+| Value | ★★★☆☆ |
+| Cool factor | ★★★★☆ |
+
+**Why:** One of the earliest computer games (1973). Navigate a
+dodecahedral cave system, shoot arrows at the Wumpus, avoid pits and
+bats. Tiny, fun, historically significant.
+
+---
+
+### V7 Mini-Games Collection
+
+| Game | Source | Size | Description |
+|------|--------|------|-------------|
+| hangman | `V7/games/hangman.c` | ~200 lines | Word guessing (needs word list) |
+| fish | `V7/games/fish.c` | ~200 lines | Go Fish card game |
+| arithmetic | `V7/games/arithmetic.c` | ~150 lines | Math practice drills |
+| ttt | `MWC/cmd/ttt.c` | ~150 lines | Tic-tac-toe with AI |
+| moo | `MWC/cmd/moo.c` | ~100 lines | Mastermind number variant |
+| cowsay | `games/cowsay.c` | ~100 lines | ASCII cow says your text |
+
+All are trivial ports: stdio only, no fork, no terminal control, <1 KB
+data each. Could port the entire collection in one session.
+
+---
+
 ### fortune — Random Quotes
 
 | Property | Value |
@@ -630,6 +666,36 @@ specifically might be better than porting fforth's 2,400 lines.
 
 ---
 
+### ue — Micro Screen Editor
+
+| Property | Value |
+|----------|-------|
+| Source | FUZIX `Applications/ue/` (ue.c + term.c) |
+| Size | ~800-1,000 lines C (2 files) |
+| Text (ROM) | ~5-7 KB estimated |
+| Data+BSS | ~2-4 KB |
+| RAM needs | File buffer in heap |
+| Needs fork() | No |
+| Missing libc | Terminal raw mode (already have termios) |
+| Approach | **Port from FUZIX** |
+| Value | ★★★★★ |
+| Cool factor | ★★★★★ |
+
+**Why:** A tiny screen editor that "uses no libraries except clib."
+FUZIX already has a platform-specific terminal backend for it. This
+is the sweet spot between ed (line-mode only) and levee (too large):
+a real full-screen editor that might actually fit in 14 KB on the
+Mega Drive. Has a 68000 Makefile in FUZIX already.
+
+**Risk:** Data+BSS ~2-4 KB is manageable. The file buffer is heap-
+allocated, so editing capacity depends on remaining slot space
+(~8-10 KB for text). Enough for scripts and config files.
+
+**Rewrite?** No. It's already minimal and designed for small systems.
+May need terminal output adapted to VDP/ANSI sequences.
+
+---
+
 ### Levee — vi-like Editor
 
 | Property | Value |
@@ -692,6 +758,46 @@ work. Later versions need more. **May require Phase 8 (PSRAM).**
 **Rewrite?** No — Z-machine is a complex VM. Porting fweep is the
 right approach. The Scott Adams engine (above) is the memory-safe
 alternative.
+
+---
+
+### clear — Clear Screen
+
+| Property | Value |
+|----------|-------|
+| Source | Rewrite |
+| Size | ~5-10 lines |
+| Approach | **Rewrite** |
+| Value | ★★★☆☆ |
+
+One escape sequence: `\033[2J\033[H`. Trivial but useful.
+
+---
+
+### banner — Large Text
+
+| Property | Value |
+|----------|-------|
+| Source | FUZIX `Applications/util/banner.c` |
+| Size | ~100-200 lines + font data |
+| Approach | **Port from FUZIX** |
+| Value | ★★☆☆☆ |
+| Cool factor | ★★★☆☆ |
+
+Prints text in large block letters. Fun visual utility.
+
+---
+
+### factor — Prime Factorization
+
+| Property | Value |
+|----------|-------|
+| Source | FUZIX `Applications/util/factor.c` |
+| Size | ~50-100 lines |
+| Approach | **Port from FUZIX** |
+| Value | ★★☆☆☆ |
+
+Pure computation. `factor 42` → `2 3 7`. Tiny, educational.
 
 ---
 
@@ -876,7 +982,7 @@ PSRAM.
 
 ### Wave 1: Filesystem Essentials (no new libc needed)
 ```
-cp, mv, rm, mkdir, touch, kill, which, uname
+cp, mv, rm, mkdir, touch, kill, which, uname, clear
 ```
 All are rewrites, ~20-100 lines each. Could be done in a single session.
 
@@ -897,27 +1003,46 @@ test  (rewrite, ~200 lines)  [lower priority — dash has built-in]
 ```
 Needs: nothing new if regex already works.
 
-### Wave 4: Games
+### Wave 4: Games — Quick Wins
 ```
-hamurabi   (port, trivial)
-dopewars   (port, easy)
-fortune    (port + create fortune.dat)
-startrek   (port, may need display width tweaks)
-2048       (rewrite for VDP)
-scott_adams (port shared engine + game data)
+hamurabi    (port, trivial)
+dopewars    (port, easy)
+fortune     (port + create fortune.dat)
+wump        (port, trivial — Hunt the Wumpus)
+cowsay      (port, trivial)
+ttt         (port, trivial — tic-tac-toe)
+moo         (port, trivial — Mastermind numbers)
+hangman     (port, needs word list)
+fish        (port, trivial — Go Fish)
+arithmetic  (port, trivial — math drills)
 ```
 Needs: nothing new. Games only use stdio + stdlib.
 
-### Wave 5: Advanced (some need Phase 8)
+### Wave 5: Games — Flagship
 ```
-diff       (port or rewrite)
-BASIC      (port FUZIX BASIC)
-Game of Life (rewrite for VDP)
-Mandelbrot (rewrite with fixed-point)
-Invaders   (rewrite for VDP sprites)
+startrek    (port, may need display width tweaks)
+2048        (rewrite for VDP)
+scott_adams (port shared engine + 14 game data files)
 ```
 
-### Wave 6: Phase 8 Dependent
+### Wave 6: Screen Editor + Advanced Tools
+```
+ue         (port from FUZIX — tiny screen editor, huge value)
+diff       (port or rewrite)
+BASIC      (port FUZIX BASIC)
+fforth     (port from FUZIX — Forth interpreter)
+banner     (port, fun)
+factor     (port, tiny)
+```
+
+### Wave 7: VDP Showcase Apps
+```
+Game of Life (rewrite for VDP tiles)
+Mandelbrot   (rewrite with fixed-point)
+Invaders     (rewrite for VDP sprites)
+```
+
+### Wave 8: Phase 8 Dependent (needs PSRAM)
 ```
 levee/vile (screen editor — needs PSRAM)
 fweep      (Z-machine — needs PSRAM for story files)
@@ -947,6 +1072,7 @@ many programs need time decomposition.
 | App | Approach | Reason |
 |-----|----------|--------|
 | ed | Port FUZIX | Battle-tested, correct, right size |
+| ue | Port FUZIX | Tiny screen editor, already has 68000 Makefile |
 | sort | Rewrite | FUZIX version too RAM-hungry, simple qsort version is 90% |
 | diff | Either | V7 version works but archaic; rewrite is cleaner |
 | find | Rewrite | Full POSIX find is overkill; 200-line version is enough |
@@ -956,12 +1082,15 @@ many programs need time decomposition.
 | startrek | Port FUZIX | Already optimized for 32 KB target |
 | hamurabi | Port FUZIX | Trivial, no changes needed |
 | dopewars | Port FUZIX | Easy, maybe change getuid→getpid |
+| wump/ttt/moo/etc | Port FUZIX | Trivial V7 games, stdio-only |
 | 2048 | Rewrite | Trivial, target VDP display |
 | invaders | Rewrite | Use VDP sprites instead of curses |
 | BASIC | Port FUZIX | Tokenized interpreter already memory-optimized |
+| fforth | Port FUZIX | ANS Forth, single file, great for small systems |
 | mandelbrot | Rewrite | Fixed-point 68000-specific, ~100 lines |
 | life | Rewrite | VDP-specific, ~100 lines |
 | fortune | Port FUZIX | Trivial + curate fortune database |
+| cowsay | Port FUZIX | Trivial, fun |
 | cp/mv/rm/etc | Rewrite | Trivial utilities, <100 lines each |
 
 ---
