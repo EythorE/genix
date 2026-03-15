@@ -1613,14 +1613,64 @@ Reused Fuzix drivers as planned.
 3. Smaller p_tab structure
 4. doexec register clearing (nice to have)
 
+### Tier 1 Apps — Wave 1 + Wave 2 + find/xargs (March 2026)
+
+Ported 13 new user programs in a single session, bringing the total
+from 34 to 47 apps. All are rewrites (no FUZIX code ported), all
+data+bss < 1 KB each. All pass the full testing ladder (host tests,
+workbench emulator 31/31, BlastEm MD autotest).
+
+**Wave 1 — Filesystem Essentials (9 apps):**
+
+| App | Lines | data+bss | Notes |
+|-----|-------|----------|-------|
+| cp | 50 | 376 B | read/write copy loop, 256-byte buffer |
+| mv | 22 | 372 B | rename() syscall wrapper |
+| rm | 80 | 504 B | supports -r recursive, walks directories |
+| mkdir | 20 | 372 B | mkdir() syscall wrapper |
+| touch | 25 | 368 B | O_WRONLY\|O_CREAT (no utimes yet) |
+| kill | 60 | 620 B | named signals (HUP, INT, KILL, etc.) |
+| which | 55 | 460 B | PATH search with access(X_OK) |
+| uname | 15 | 376 B | "Genix" / -a for full info |
+| clear | 5 | 284 B | \033[2J\033[H ANSI escape |
+
+**Wave 2 — Core Text Tools (2 apps):**
+
+| App | Lines | data+bss | Notes |
+|-----|-------|----------|-------|
+| more | 115 | 452+180 B | raw mode pager, space/enter/q |
+| sort | 120 | 496+308 B | qsort-based, -r reverse, -n numeric |
+
+**Wave 5 partial — Scripting Tools (2 apps):**
+
+| App | Lines | data+bss | Notes |
+|-----|-------|----------|-------|
+| find | 130 | 500+308 B | -name glob, -type f/d, recursive walk |
+| xargs | 98 | 460+300 B | vfork()+exec(), 64-arg limit |
+
+**Implementation notes:**
+- `kill.c` uses a `const` signal name table — stays in ROM via XIP.
+- `more.c` opens `/dev/tty` for raw key input, falls back to stderr fd.
+- `sort.c` reads all input into malloc'd buffer; limited by heap (~10 KB
+  on MD). Sufficient for typical use cases.
+- `find.c` includes a simple glob matcher (supports `*` and `?`).
+- `xargs.c` uses `volatile` qualifier on `cmd` to silence the vfork
+  clobber warning from GCC.
+- All apps use libc headers (stdio.h, stdlib.h, etc.) — no raw syscall
+  declarations needed.
+- Updated both `apps/Makefile` (PROGRAMS list) and top-level `Makefile`
+  (CORE_BINS) to include all 13 new apps in the disk image.
+- Added all 13 binary names to `.gitignore`.
+
 ### Remaining Optional Work
 
 | Item | Effort | Priority |
 |------|--------|----------|
+| ed (line editor) | Medium | Medium — only editor if levee too large |
 | Glob expansion in shell | Medium | Low |
 | SRAM persistent filesystem | Medium | Low |
-| Real shell (sh) | Medium | Low |
-| Larger utilities (ed, diff, sort, sed) | High | Low |
+| Games (hamurabi, startrek, etc.) | Low-Medium | Fun |
+| sed, awk, diff | High | Low |
 
 ---
 
@@ -1634,7 +1684,7 @@ _Final status snapshot (March 2026)._
 | Host test assertions | 5,123+ |
 | Host test files | 14 |
 | Autotest cases | 31+ |
-| User programs | 35 (including dash) |
+| User programs | 47 (including dash, levee, 13 tier-1 utilities) |
 | Libc modules | 18+ |
 | Syscalls implemented | 32 |
 | Platforms | 2 (workbench + Mega Drive) |

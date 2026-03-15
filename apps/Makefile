@@ -19,7 +19,9 @@ MKBIN = ../tools/mkbin
 PROGRAMS = hello echo cat wc head true false \
            tail tee yes basename dirname rev nl cmp cut tr uniq imshow ls sleep \
            strings fold expand unexpand paste comm seq tac \
-           grep od env expr
+           grep od env expr \
+           cp mv rm mkdir touch kill which uname clear \
+           more sort find xargs
 
 # Cancel make's built-in rule that compiles .c directly to executable
 %: %.c

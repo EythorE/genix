@@ -34,9 +34,9 @@ history and [HISTORY.md](HISTORY.md) for the full project timeline.
 See [PLAN.md](PLAN.md) for detailed implementation plans.
 
 **What works today:** kernel boots on both workbench and Mega Drive, minifs
-filesystem with indirect blocks, exec() loads user programs (35 apps in
-/bin including dash shell, grep, levee, od, expr, and standard Unix
-utilities), dash POSIX shell with pipes (`|`), I/O redirection (`>`,
+filesystem with indirect blocks, exec() loads user programs (47 apps in
+/bin including dash shell, grep, levee, cp, mv, rm, sort, find, and
+standard Unix utilities), dash POSIX shell with pipes (`|`), I/O redirection (`>`,
 `>>`, `<`), variable expansion, command substitution, scripting
 (if/then/else, for, case, functions), process table (16 slots) with
 preemptive
@@ -84,7 +84,7 @@ then boots Genix in your terminal. You'll see the dash `#` prompt.
 
 ```
 # echo hello world       # Run a command
-# ls /bin                 # List available programs (35 including dash)
+# ls /bin                 # List available programs (47 including dash)
 # echo hello | cat        # Pipes work
 # cat /etc/motd > /tmp/x  # I/O redirection
 # wc < /tmp/x             # Input redirection
@@ -174,7 +174,7 @@ genix/
 │   ├── workbench/  # Emulated SBC
 │   └── megadrive/  # Sega Mega Drive
 ├── libc/         # Minimal C library + syscall stubs (for user programs)
-├── apps/         # Userspace programs (35 including dash)
+├── apps/         # Userspace programs (47 including dash)
 ├── tools/        # Host tools (mkfs, mkbin)
 ├── tests/        # Host unit tests (13 test files, 4924+ assertions)
 └── docs/         # Technical documentation
@@ -216,4 +216,5 @@ See [docs/](docs/) for detailed technical documentation:
 | [Shell Research](docs/shell-research.md) | Shell candidates for Genix (RAM budget, features, porting effort) |
 | [Shell Plan](docs/shell-plan.md) | Phased implementation plan for userspace shell + dash port |
 | [EverDrive SD Card](docs/everdrive-sd-card.md) | SD card access on Open EverDrive and Pro cartridges |
+| [Apps to Port](docs/apps_to_port.md) | App porting roadmap, tier definitions, RAM analysis |
 | [Optimization Plan](OPTIMIZATION_PLAN.md) | 68000 performance gaps vs FUZIX |

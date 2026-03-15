@@ -26,12 +26,14 @@ export CROSS=m68k-elf-
 ## Project Stage & Current Focus
 
 Phases 1-6, Phase A (libc prerequisites), Phase B (kernel
-enhancements), and Phase C (dash shell port) complete. The kernel
-spawns dash as the default interactive shell. Next: Phase 7 (SD card).
-See PLAN.md for the full dependency graph.
+enhancements), Phase C (dash shell port), and Tier 1 apps (Waves 1-2
+plus find/xargs) complete. The kernel spawns dash as the default
+interactive shell. 47 user programs in /bin. Next: Phase 7 (SD card).
+See PLAN.md for the full dependency graph and docs/apps_to_port.md
+for the app porting roadmap.
 
 Design choices that are LOAD-BEARING (changing these is expensive):
-- Binary format and relocation scheme (affects all 35 apps + libc + mkbin)
+- Binary format and relocation scheme (affects all 47 apps + libc + mkbin)
 - Memory layout (USER_BASE, kernel/user RAM split, process slot sizes)
 - ROM vs RAM text placement strategy (Phase 5 core question)
 - Syscall numbers and calling convention (ABI stability across libc)
@@ -124,8 +126,10 @@ Design choices that ARE flexible right now:
 
 1. Create `apps/foo.c` with a standard `int main(int argc, char **argv)`
 2. Add `foo` to the `PROGRAMS` list in `apps/Makefile`
-3. The build system links with crt0 + libc and produces a Genix binary
-4. `make run` automatically includes it in the disk image at `/bin/foo`
+3. Add `apps/foo` to `CORE_BINS` in the top-level `Makefile`
+4. Add `apps/foo` to `.gitignore` (the compiled binary)
+5. The build system links with crt0 + libc and produces a Genix binary
+6. `make run` automatically includes it in the disk image at `/bin/foo`
 
 ### Design flexibility
 
@@ -209,6 +213,7 @@ Technical details live in docs/, not here. Key references:
 - HISTORY.md — full project timeline (for human reference)
 - docs/decisions.md — active design decisions
 - docs/shell-plan.md — phased plan: libc prereqs → kernel zones → userspace shell → dash port
+- docs/apps_to_port.md — app porting roadmap, tier definitions, RAM analysis
 
 Read the relevant docs/ file when working on a subsystem.
 Do not duplicate their content into this file.
