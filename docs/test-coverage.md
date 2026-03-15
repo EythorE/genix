@@ -55,7 +55,7 @@ For the testing ladder and procedures, see
 |------|---------|---------------|
 | `check-opcodes.sh` | `make test-opcodes` | Scan .elf files for 68020 MULU.L/DIVU.L/EXTB.L/RTD |
 | `test-dash.sh` | `make test-dash` | 13 tests: boot, echo, exit status, ls, pipes, redirection, variables, error absence |
-| `test-levee.sh` | `make test-levee` | Smoke test (KNOWN BROKEN — kernel panic at PC=0x30000) |
+| `test-levee.sh` | `make test-levee` | Smoke test: levee starts, displays editor, accepts :q! |
 
 ---
 
@@ -90,7 +90,7 @@ These documented issues have test coverage:
 | Full TRAP #0 syscall path | automated-testing.md | Medium | Autotests call kernel directly in supervisor mode. Need a userspace `apps/test_syscalls.c` that exercises the real TRAP → libc stub → kernel path. |
 | `sigaction()` read-restore correctness | shell-plan.md weak spot A-1 | Easy | Verify `sigaction(sig, NULL, &oact)` reads old handler without corrupting it. |
 | FD_CLOEXEC silently ignored | proc.c:1374 | Easy | Dash sets it but kernel doesn't honor it. Test should document this gap. |
-| Levee crash root cause | test-levee.sh (tracks) | Hard | PC=0x30000 is outside user space. Likely relocation or jump table corruption. Needs investigation. |
+| Levee crash root cause | test-levee.sh | **Fixed** | Was missing `-msep-data` in levee Makefile. a5 (GOT pointer) was clobbered by compiler using it as scratch register. |
 
 ### Medium priority
 
@@ -114,9 +114,7 @@ These documented issues have test coverage:
 
 ## Known Broken Programs
 
-| Program | Symptom | Status | Test |
-|---------|---------|--------|------|
-| levee | Kernel panic PC=0x30000 | Not investigated | `make test-levee` (excluded from test-all) |
+(None — all programs are working.)
 
 ---
 
