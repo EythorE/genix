@@ -126,6 +126,15 @@ run_test "variable assignment and expansion" \
 echo \$X" "hello"
 
 echo ""
+echo "--- Non-interactive mode (lineedit bypass) ---"
+run_test "piped input bypasses lineedit" \
+    "echo piped_ok" "piped_ok"
+
+run_test "multi-line piped script" \
+    "X=abc
+echo \$X" "abc"
+
+echo ""
 echo "--- No error messages on normal operation ---"
 run_test_absent "no 'Success' error spam" \
     "echo hello

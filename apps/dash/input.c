@@ -37,6 +37,7 @@
 #include <unistd.h>
 #include <stdlib.h>
 #include <string.h>
+#include <lineedit.h>
 
 /*
  * This file implements the input routines used by the parser.
@@ -195,6 +196,9 @@ retry:
 
 	} else
 #endif
+	if (parsefile->fd == 0 && iflag && isatty(0))
+		nr = le_readline(0, buf, IBUFSIZ - 1);
+	else
 		nr = read(parsefile->fd, buf, IBUFSIZ - 1);
 
 

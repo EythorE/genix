@@ -59,6 +59,9 @@
 #include "mystring.h"
 #include "exec.h"
 #include "cd.h"
+#include <lineedit.h>
+#include <termios.h>
+#include <sys/ioctl.h>
 
 #define PROFILE 0
 
@@ -146,6 +149,13 @@ main(int argc, char **argv)
 	init();
 	setstackmark(&smark);
 	login = procargs(argc, argv);
+	if (iflag) {
+		struct winsize ws;
+		int cols = 80;
+		if (ioctl(0, TIOCGWINSZ, &ws) >= 0 && ws.ws_col > 0)
+			cols = ws.ws_col;
+		le_init(cols);
+	}
 	if (login) {
 		state = 1;
 		read_profile("/etc/profile");
