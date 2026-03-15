@@ -4,167 +4,115 @@ Research into applications worth porting (or rewriting) for Genix on the
 Sega Mega Drive. Sources: FUZIX app collection, classic Unix utilities,
 retro games, and standalone projects.
 
-## Platform Constraints Recap
+## Platform Constraints
 
 | Constraint | Value |
 |------------|-------|
-| CPU | 68000 @ 7.67 MHz |
+| CPU | 68000 @ 7.67 MHz, 16-bit MULU/DIVU |
 | Main RAM | 64 KB total, ~40 KB user |
-| Per-process data slot (MD) | ~14 KB (.data + .bss + heap + stack) |
-| Text (code) | Executes from ROM (XIP), up to 4 MB |
+| Per-process RAM slot (MD) | ~14 KB for .data + .bss + heap + stack |
+| ROM (code + const data) | Up to 4 MB, free via XIP |
 | Display | VDP 40×28 text, tile/sprite graphics |
 | Input | Saturn keyboard (50 keys) |
 | No fork() | vfork()+exec() only |
 | No curses | No termcap database; raw VT100/ANSI or direct VDP |
-| No floating point | 68000 has no FPU; soft-float is very slow |
+| No floating point HW | 68000 has no FPU; soft-float is slow |
 | No network | No TCP/IP stack |
-| Existing apps | 33 coreutils + dash shell |
+| Existing apps | 33 coreutils + dash + levee (broken) |
 
-**Key bottleneck:** The 14 KB data slot on Mega Drive. Text (code) is
-free — it lives in ROM via XIP. Only .data + .bss + heap + stack must
-fit in the 14 KB slot. For reference, dash (a substantial program with
-91 KB of text) has only 6.8 KB data+bss, using 49% of a slot. Most
-programs have much less. The workbench emulator has ~117 KB slots.
-Phase 8 (EverDrive Pro PSRAM) would give 512 KB per process.
+### What's Free (ROM) vs. What Costs (RAM)
 
-**Important:** Several older comments in the codebase claim certain
-programs are "too large for Mega Drive" based on total binary size
-(text+data). With XIP, only data+bss matters. Always check the
-data+bss split, not the total size.
+With XIP + `-msep-data`, understanding what goes where is critical:
+
+| Segment | Location | Cost |
+|---------|----------|------|
+| .text (code) | ROM | **Free** — executes in place |
+| .rodata (string literals, const arrays, lookup tables) | ROM | **Free** — read directly from ROM |
+| .data (initialized mutable globals) | RAM slot | **Costs RAM** |
+| .bss (zero-initialized mutable globals) | RAM slot | **Costs RAM** |
+| heap (malloc) | RAM slot | **Costs RAM** — grows up |
+| stack | RAM slot | **Costs RAM** — grows down |
+
+**The real constraint is mutable state.** A program with 100 KB of code
+and 50 KB of string constants costs zero RAM — it all lives in ROM.
+Only mutable globals, heap allocations, and stack frames use the 14 KB
+slot.
+
+**Reference point:** dash has 91 KB text but only 6.8 KB data+bss (49%
+of slot). Most programs are much smaller. The 14 KB slot is more
+spacious than it first appears.
+
+**Key implication for porting:** Make data `const` wherever possible.
+String tables, game databases, lookup arrays, format strings — all
+should be `const` so they stay in ROM. This is the single most
+impactful optimization for fitting programs on the Mega Drive.
 
 ---
 
-## Tier 1: High Priority — Maximum Impact
+## Already Ported — Needs Fixing
 
-These fill critical gaps in the system's usability. Port or rewrite these
-first.
+### Levee — vi-like Editor
+
+| Property | Value |
+|----------|-------|
+| Source | Already in `apps/levee/` (15 .c files) |
+| Text (ROM) | ~44 KB (free — XIP) |
+| Data+BSS | Needs measurement — likely ~4-8 KB |
+| Status | **KNOWN BROKEN** — kernel panic at PC=0x30000 |
+
+Already ported to Genix and listed in /bin. The 44 KB binary is
+overwhelmingly text (free via XIP). The Makefile needs updating to
+use `-msep-data` (currently uses old build flags). The crash is likely
+a relocation or jump table corruption issue.
+
+**Next steps:** Update Makefile to `-msep-data`, fix crash, measure
+actual data+bss. If data+bss is comparable to dash (~6.8 KB), levee
+works on Mega Drive with no PSRAM.
+
+**Note:** Multiple docs and Makefile comments claim levee is "too
+large for MD." This assessment predates XIP and `-msep-data` and
+is based on total binary size, which is irrelevant with XIP.
+
+---
+
+## Tier 1: Critical Missing Utilities
+
+These fill gaps that make the system hard to use without them.
 
 ### ed — Line Editor
 
 | Property | Value |
 |----------|-------|
-| Source | FUZIX `Applications/util/ed.c` |
+| Source | FUZIX `Applications/util/ed.c` (3 implementations available) |
 | Size | ~1,000 lines C |
-| Text (ROM) | ~8-12 KB estimated |
 | Data+BSS | ~1-2 KB (small static state) |
-| RAM needs | Dynamic: linked list of lines via malloc |
+| Heap | Linked list of line pointers — proportional to file size |
 | Needs fork() | No |
-| Missing libc | None significant — uses malloc, stdio, string |
+| Missing libc | None — uses malloc, stdio, string, regex (all present) |
 | Approach | **Port from FUZIX** |
-| Value | ★★★★★ |
 
-**Why:** The only way to create/edit files on the system. `ed` is the
-classic Unix line editor — small, no screen control needed, perfect for
-a 40×28 display. FUZIX's implementation is clean and portable.
+The classic Unix line editor. No screen control needed — works
+perfectly on any terminal. With levee broken, this is the only path
+to creating/editing files on the system.
 
-**Risk:** RAM for the line buffer. Each line is a malloc'd node in a
-linked list. On the Mega Drive's 14 KB slot, editing large files will
-hit the heap limit quickly. But for config files, scripts, and small
-programs, it's fine. Could add a line count/memory limit warning.
-
-**Rewrite?** No. FUZIX ed is already small and battle-tested.
+Heap usage for lines is the only concern. With ~6-10 KB of heap
+available after data+bss, that's enough to edit files up to several
+hundred lines — scripts, configs, small programs.
 
 ---
 
-### sort — Sort Lines
+### cp, mv, rm — File Management
 
 | Property | Value |
 |----------|-------|
-| Source | FUZIX `Applications/util/sort.c` |
-| Size | ~1,000 lines C |
-| Text (ROM) | ~8-10 KB |
-| Data+BSS | ~2-4 KB static buffers |
-| RAM needs | Reads file into memory; falls back to temp files |
+| Size | ~50-150 lines each |
+| Data+BSS | <1 KB each |
 | Needs fork() | No |
-| Missing libc | `mkstemp()` or temp file creation |
-| Approach | **Port from FUZIX, reduce default buffer** |
-| Value | ★★★★★ |
+| Approach | **Rewrite** (trivial) |
 
-**Why:** Essential Unix tool. Shell scripts and pipelines need `sort`.
-Combined with `uniq` (already present), enables real data processing.
-
-**Risk:** FUZIX sort tries to allocate ~40 KB for sorting. Must reduce
-to fit in 14 KB slot. The external-merge fallback (temp files) needs
-a writable filesystem. On ROM-only Mega Drive without SD card, sorting
-is limited to what fits in RAM.
-
-**Rewrite?** Consider a simpler rewrite that reads stdin into a
-fixed-size buffer, sorts in-place with qsort (already in libc), and
-outputs. ~100-150 lines. Loses multi-file merge and field keys but
-handles 90% of use cases.
-
----
-
-### diff — File Comparison
-
-| Property | Value |
-|----------|-------|
-| Source | FUZIX `Applications/V7/cmd/diff.c` or write new |
-| Size | ~800-1,200 lines (V7 diff) |
-| Text (ROM) | ~8-12 KB |
-| Data+BSS | ~2-4 KB |
-| RAM needs | O(n) for file lengths (edit script) |
-| Needs fork() | No (core algorithm doesn't) |
-| Missing libc | None significant |
-| Approach | **Port V7 diff or rewrite minimal version** |
-| Value | ★★★★☆ |
-
-**Why:** Comparing files is fundamental. Also useful for verifying edits
-made with `ed`. The V7 version is the classic minimal implementation.
-
-**Risk:** RAM for the edit distance matrix. V7 diff uses Hunt-McIlwain
-which is O(n) auxiliary space. Large files won't fit. Acceptable — diff
-on small files (scripts, configs) is the expected use case.
-
-**Rewrite?** A minimal diff (~300-400 lines, simple LCS) might be
-cleaner than porting V7's archaic C style. Tradeoff: less code to
-maintain vs. proven correctness.
-
----
-
-### find — File Search
-
-| Property | Value |
-|----------|-------|
-| Source | Write new (FUZIX version is complex) |
-| Size | ~200-400 lines |
-| Text (ROM) | ~4-6 KB |
-| Data+BSS | ~1 KB |
-| RAM needs | Stack depth proportional to directory nesting |
-| Needs fork() | No (for basic find; `-exec` needs vfork+exec) |
-| Missing libc | `fnmatch()` or simple glob matching |
-| Approach | **Rewrite — minimal version** |
-| Value | ★★★★☆ |
-
-**Why:** Finding files by name is basic OS functionality. Pairs with
-`xargs` for batch operations. The filesystem is small, so a simple
-recursive walk with `-name` and `-type` filters covers 90% of use.
-
-**Rewrite?** Yes. A full POSIX find is overkill. Write a ~200-line
-version supporting `-name PATTERN`, `-type f/d`, and printing paths.
-Add `-exec` later (needs vfork+exec, not fork).
-
----
-
-### xargs — Build Commands from stdin
-
-| Property | Value |
-|----------|-------|
-| Source | FUZIX `Applications/util/xargs.c` |
-| Size | ~250 lines C |
-| Text (ROM) | ~3-4 KB |
-| Data+BSS | <1 KB |
-| RAM needs | Minimal (reads stdin, builds argv) |
-| Needs fork() | Uses fork() — **must change to vfork()** |
-| Missing libc | None |
-| Approach | **Port from FUZIX, replace fork→vfork** |
-| Value | ★★★★☆ |
-
-**Why:** Essential complement to `find` and pipes. `find / -name '*.c'
-| xargs grep TODO` is a classic Unix pattern.
-
-**Risk:** FUZIX version uses fork(). Easy fix — it's a trivial
-fork+exec pattern that maps directly to vfork+exec. ~5 lines to change.
+Can't copy, move, or delete files without these. All use existing
+syscalls (open/read/write/close, rename, unlink). Could write all
+three in one session.
 
 ---
 
@@ -172,307 +120,205 @@ fork+exec pattern that maps directly to vfork+exec. ~5 lines to change.
 
 | Property | Value |
 |----------|-------|
-| Source | FUZIX `Applications/util/more.c` or `less.c` |
-| Size | ~300-500 lines |
-| Text (ROM) | ~4-6 KB |
-| Data+BSS | ~1-2 KB |
-| RAM needs | Line buffer; can page from file without loading all |
+| Size | ~100-150 lines |
+| Data+BSS | <1 KB |
 | Needs fork() | No |
-| Missing libc | Terminal size query (TIOCGWINSZ or hardcode 40×28) |
-| Approach | **Rewrite — simple pager for VDP** |
-| Value | ★★★★☆ |
+| Missing libc | None (termios raw mode already present) |
+| Approach | **Rewrite for 40×28 VDP** |
 
-**Why:** Without a pager, any output longer than 28 lines scrolls off
-screen. Essential for usability. `ls -l`, `cat` of any file, `help`
-output — all need paging.
-
-**Rewrite?** Yes. FUZIX less.c uses termcap. A Genix-specific pager
-that knows the display is 40×28, uses raw terminal mode, and shows
-"--more--" at the bottom is ~100-150 lines. Much simpler than porting
-less. Could even use VDP scroll register for smooth scrolling.
+Without a pager, anything longer than 28 lines scrolls off screen.
+Hardcode 40×28 dimensions, show "--more--" at bottom, space for next
+page, q to quit. Could use VDP scroll register for smooth scrolling.
 
 ---
 
-## Tier 2: High Value — Fun & Impressive
+### sort — Sort Lines
 
-These make the system feel alive. A Mega Drive running Unix with games
-is inherently impressive.
+| Property | Value |
+|----------|-------|
+| Source | Rewrite (~100-150 lines) |
+| Data+BSS | <1 KB |
+| Heap | Proportional to input size |
+| Needs fork() | No |
+| Approach | **Rewrite using qsort()** (already in libc) |
 
-### startrek — Star Trek Game
+Read stdin into malloc'd buffer, sort with qsort, output. Simple
+version handles 90% of use cases. With ~10 KB heap available, can
+sort files up to ~10 KB. FUZIX's version tries to allocate 40 KB
+— a simpler rewrite is better here.
+
+---
+
+### find — File Search
+
+| Property | Value |
+|----------|-------|
+| Size | ~200 lines |
+| Data+BSS | <1 KB |
+| Needs fork() | No (basic); vfork+exec for `-exec` |
+| Approach | **Rewrite — minimal version** |
+
+Support `-name PATTERN`, `-type f/d`, and printing paths. ~200 lines.
+The filesystem is small; recursive walk is fine.
+
+---
+
+### xargs — Build Commands from stdin
+
+| Property | Value |
+|----------|-------|
+| Source | FUZIX `Applications/util/xargs.c` (~250 lines) |
+| Data+BSS | <1 KB |
+| Needs fork() | Uses fork() — **change to vfork()** (trivial) |
+| Approach | **Port from FUZIX** |
+
+Essential complement to find and pipes. Fork→vfork change is ~5 lines.
+
+---
+
+### kill, mkdir, touch, which, uname, clear
+
+All trivial rewrites, 10-80 lines each, <1 KB data:
+
+| App | Lines | Why |
+|-----|-------|-----|
+| kill | ~60 | Job control: `kill -9 PID` |
+| mkdir | ~20 | Standalone mkdir command (syscall exists) |
+| touch | ~30 | Create files, update timestamps |
+| which | ~40 | Find command in PATH |
+| uname | ~20 | "Genix 68000 megadrive" — system identity |
+| clear | ~5 | `\033[2J\033[H` — clear screen |
+
+---
+
+## Tier 2: Games — The Fun Stuff
+
+A Mega Drive running Unix with games is inherently impressive.
+All games below use only stdio + stdlib (already present) and have
+negligible data+bss. String constants (prompts, descriptions) are
+`const` → ROM.
+
+### Trivial Ports (stdio-only, <1 KB data each)
+
+These could all be ported in a single session:
+
+| Game | Source | Lines | Description |
+|------|--------|-------|-------------|
+| hamurabi | FUZIX `games/hamurabi.c` | ~380 | Ancient city simulation (1968). Manage land, grain, population. |
+| dopewars | FUZIX `games/dopewars.c` | ~720 | Trading game. Buy low, sell high, avoid cops. Addictive. |
+| wump | FUZIX `V7/games/wump.c` | ~250 | Hunt the Wumpus (1973). Navigate caves, shoot arrows. |
+| hangman | FUZIX `V7/games/hangman.c` | ~200 | Word guessing. Needs a compiled-in word list (~3 KB, const → ROM). |
+| fish | FUZIX `V7/games/fish.c` | ~200 | Go Fish card game. |
+| arithmetic | FUZIX `V7/games/arithmetic.c` | ~150 | Math practice drills. |
+| ttt | FUZIX `MWC/cmd/ttt.c` | ~150 | Tic-tac-toe with AI opponent. |
+| moo | FUZIX `MWC/cmd/moo.c` | ~100 | Mastermind number-guessing variant. |
+| cowsay | FUZIX `games/cowsay.c` | ~100 | ASCII cow says your text. |
+| fortune | FUZIX `games/fortune.c` | ~65 | Random quotes. Fortune DB is const → ROM. |
+
+None use fork(). None need terminal control beyond stdio. None have
+meaningful data+bss.
+
+### Star Trek — Flagship Text Game
 
 | Property | Value |
 |----------|-------|
 | Source | FUZIX `Applications/games/startrek.c` |
 | Size | ~1,400 lines C |
-| Text (ROM) | ~15-20 KB |
-| Data+BSS | ~4-8 KB (galaxy map, ship state) |
-| RAM needs | Static arrays for 8×8 galaxy + quadrant map |
+| Data+BSS | ~1-2 KB mutable (galaxy map = 8×8 ints, ship state) |
+| Const data (ROM) | ~10-15 KB (all prompt strings, format strings) |
 | Needs fork() | No |
-| Missing libc | `time()` for RNG seed (already present) |
 | Approach | **Port from FUZIX** |
-| Value | ★★★★★ |
 | Cool factor | ★★★★★ |
 
-**Why:** THE classic Unix game. Navigating the Enterprise on a Sega
-Mega Drive is exactly the kind of thing that makes people say "that's
-amazing." FUZIX's version was explicitly "put on a diet to run in 32K."
+THE classic Unix game. FUZIX version was "put on a diet to run in
+32K" — and that was without XIP. With string constants in ROM,
+mutable state is tiny. The 40×28 display is narrower than 80×24 —
+may need minor output reformatting.
 
-**Risk:** Data+BSS may be tight at ~4-8 KB in a 14 KB slot. Needs
-measurement after cross-compilation. The 40×28 display is narrower
-than the usual 80×24 — may need minor output reformatting.
-
-**Rewrite?** No. The FUZIX version is already optimized for small
-systems. May need display width adjustments.
-
----
-
-### hamurabi — Ancient City Simulation
+### Scott Adams Adventures (14 games)
 
 | Property | Value |
 |----------|-------|
-| Source | FUZIX `Applications/games/hamurabi.c` |
-| Size | ~380 lines C |
-| Text (ROM) | ~4-5 KB |
-| Data+BSS | <1 KB |
-| RAM needs | Minimal — a handful of integers |
+| Source | FUZIX `Applications/games/adv01.c`-`adv14b.c` |
+| Size | Shared engine ~500 lines + data per game |
+| Data+BSS | ~1-2 KB mutable per game |
+| Const data (ROM) | Game databases — all const → ROM |
 | Needs fork() | No |
-| Missing libc | None |
-| Approach | **Port from FUZIX** (trivial) |
-| Value | ★★★★☆ |
-| Cool factor | ★★★★☆ |
-
-**Why:** Classic 1968 strategy game. Manage land, grain, and population
-for 10 turns. Tiny, fun, historically significant. The OG resource
-management game.
-
-**Risk:** None. It's tiny. Will definitely fit.
-
----
-
-### dopewars — Trading Game
-
-| Property | Value |
-|----------|-------|
-| Source | FUZIX `Applications/games/dopewars.c` |
-| Size | ~720 lines C |
-| Text (ROM) | ~8-10 KB |
-| Data+BSS | <1 KB |
-| RAM needs | Minimal static state |
-| Needs fork() | No |
-| Missing libc | `getuid()` for RNG seed (can substitute getpid) |
-| Approach | **Port from FUZIX** |
-| Value | ★★★☆☆ |
-| Cool factor | ★★★★☆ |
-
-**Why:** Addictive trading game. Buy low, sell high, avoid cops, pay
-off debt. Simple text UI, runs perfectly in 40×28. The kind of game
-you play "one more turn" for 30 minutes.
-
-**Risk:** None. Tiny data footprint.
-
----
-
-### adventure — Colossal Cave
-
-| Property | Value |
-|----------|-------|
-| Source | FUZIX `Applications/cave/` |
-| Size | ~2,000+ lines across multiple files |
-| Text (ROM) | ~20-30 KB |
-| Data+BSS | ~8-15 KB (game database, room/object state) |
-| RAM needs | Large — room descriptions, parser, object graph |
-| Needs fork() | No |
-| Missing libc | None significant |
-| Approach | **Port from FUZIX** (needs data size audit) |
-| Value | ★★★★☆ |
 | Cool factor | ★★★★★ |
 
-**Why:** THE original text adventure. "You are in a maze of twisty
-little passages, all alike." Running Colossal Cave on a Mega Drive
-is legendary. FUZIX has a complete port.
+14 classic text adventures from one compact engine: Adventureland,
+Pirate Adventure, Voodoo Castle, etc. Designed for 8-bit computers
+with 16 KB RAM. The game databases are const data → ROM. One engine
+in ROM, 14 games essentially free.
 
-**Risk:** Data size is the blocker. The game database (room
-descriptions, connections, object properties) could easily exceed
-14 KB. Need to measure after cross-compilation. **May require Phase 8
-(PSRAM)** on Mega Drive, but would work fine on workbench. Could also
-store room strings in ROM (const data trick).
-
-**Rewrite?** No — the game data is the bulk, and it needs to be
-faithful. Consider a smaller adventure (Scott Adams engine, below).
-
----
-
-### Scott Adams Adventures (adv01-adv14b)
+### Colossal Cave Adventure
 
 | Property | Value |
 |----------|-------|
-| Source | FUZIX `Applications/games/` |
-| Size | ~500-800 lines (shared engine + data files) |
-| Text (ROM) | ~8-12 KB |
-| Data+BSS | ~2-4 KB per game |
-| RAM needs | Much smaller than Colossal Cave |
+| Source | FUZIX `Applications/cave/` (~2,000 lines, 10 files) |
+| Data+BSS | ~1-3 KB mutable (player state, object locations, flags) |
+| Const data (ROM) | ~15-20 KB (room descriptions, vocabulary, connections) |
 | Needs fork() | No |
-| Missing libc | None |
-| Approach | **Port from FUZIX** |
-| Value | ★★★★☆ |
 | Cool factor | ★★★★★ |
 
-**Why:** 14 classic text adventures with a shared compact engine.
-"Pirate Adventure," "Adventureland," "Voodoo Castle," etc. These
-were designed for 8-bit computers with 16-32 KB RAM — they'll fit
-easily. One engine, 14 games in ROM.
+THE original text adventure. Previously classified as "needs PSRAM"
+based on total game data (~15 KB). **This was wrong.** The bulk of
+that data is room descriptions and vocabulary — string constants that
+should be `const` → ROM. Mutable game state is: player location,
+~60 object locations, ~30 flag bits, lamp timer, score — probably
+~1-3 KB.
 
-**Risk:** Low. These were literally built for systems smaller than ours.
+**Caveat:** Need to verify that the FUZIX source actually uses `const`
+for the data tables. If not, the port must add `const` qualifiers.
+This is a mechanical change, not a design problem.
 
----
-
-### Hunt the Wumpus — Classic Cave Game
-
-| Property | Value |
-|----------|-------|
-| Source | FUZIX `Applications/V7/games/wump.c` |
-| Size | ~200-300 lines C |
-| Text (ROM) | ~3-4 KB |
-| Data+BSS | <1 KB |
-| Needs fork() | No |
-| Missing libc | None |
-| Approach | **Port from FUZIX** (trivial) |
-| Value | ★★★☆☆ |
-| Cool factor | ★★★★☆ |
-
-**Why:** One of the earliest computer games (1973). Navigate a
-dodecahedral cave system, shoot arrows at the Wumpus, avoid pits and
-bats. Tiny, fun, historically significant.
-
----
-
-### V7 Mini-Games Collection
-
-| Game | Source | Size | Description |
-|------|--------|------|-------------|
-| hangman | `V7/games/hangman.c` | ~200 lines | Word guessing (needs word list) |
-| fish | `V7/games/fish.c` | ~200 lines | Go Fish card game |
-| arithmetic | `V7/games/arithmetic.c` | ~150 lines | Math practice drills |
-| ttt | `MWC/cmd/ttt.c` | ~150 lines | Tic-tac-toe with AI |
-| moo | `MWC/cmd/moo.c` | ~100 lines | Mastermind number variant |
-| cowsay | `games/cowsay.c` | ~100 lines | ASCII cow says your text |
-
-All are trivial ports: stdio only, no fork, no terminal control, <1 KB
-data each. Could port the entire collection in one session.
-
----
-
-### fortune — Random Quotes
+### Tetris
 
 | Property | Value |
 |----------|-------|
-| Source | FUZIX `Applications/games/fortune.c` |
-| Size | ~65 lines C + fortune database |
-| Text (ROM) | ~1-2 KB |
-| Data+BSS | <1 KB |
-| RAM needs | Minimal — reads one fortune from file |
+| Source | Rewrite (~250-400 lines, no curses) |
+| Data+BSS | ~1 KB (10×20 board + piece state + score) |
 | Needs fork() | No |
-| Missing libc | `ntohs()` (trivial macro) |
-| Approach | **Port from FUZIX + create fortune.dat** |
-| Value | ★★★☆☆ |
-| Cool factor | ★★★☆☆ |
-
-**Why:** Login message, shell prompt decoration, just fun to have.
-Makes the system feel like a real Unix box. The fortune database
-lives in ROM.
-
-**Risk:** Need to create/curate fortune.dat. The program itself is
-trivial. Could include programming quotes, Unix history, Mega Drive
-trivia.
-
----
-
-### Tetris — The Classic
-
-| Property | Value |
-|----------|-------|
-| Source | Rewrite (~230-400 lines, no curses) |
-| Text (ROM) | ~3-5 KB |
-| Data+BSS | ~1-2 KB (10×20 board + piece shapes) |
-| RAM needs | ~500 bytes game state |
-| Needs fork() | No |
-| Missing libc | Non-blocking input (termios raw — already present) |
-| Approach | **Rewrite for VDP** |
-| Value | ★★★★★ |
+| Missing libc | Non-blocking input (termios raw mode — present) |
+| Approach | **Rewrite for VDP tiles** |
 | Cool factor | ★★★★★ |
 
-**Why:** Tetris on a Mega Drive running under a Unix shell. The 40×28
-display is plenty for a 10×20 board. Could use VDP tiles for proper
-block graphics — this would look like a real Mega Drive game but
-launched from `$ tetris` at a shell prompt.
+Tetris on a Mega Drive launched from `$ tetris` at a shell prompt.
+Could use VDP tiles for proper block graphics — would look like a
+real Mega Drive game. Needs non-blocking keyboard input + timer for
+piece drop (termios raw mode + timeout).
 
-**Challenge:** Non-blocking keyboard input + timer for piece drop.
-Need termios raw mode + poll/timeout. The Saturn keyboard latency
-will be the limiting factor, not CPU.
-
----
-
-### Snake — Action Game
+### Snake
 
 | Property | Value |
 |----------|-------|
 | Source | Rewrite (~200-300 lines) |
-| Text (ROM) | ~2-4 KB |
-| Data+BSS | ~1-2 KB (40×28 board + snake body) |
-| RAM needs | ~1.2 KB |
-| Needs fork() | No |
-| Missing libc | Non-blocking input, timer/delay |
+| Data+BSS | ~1.2 KB (40×28 board + snake body positions) |
 | Approach | **Rewrite for VDP** |
-| Value | ★★★★☆ |
 | Cool factor | ★★★★★ |
 
-**Why:** Action game on a game console! Uses ANSI escapes or VDP
-tiles for real-time gameplay. The 40×28 grid is a natural play field.
+Action game on a game console. Same input requirements as Tetris.
 
-**Challenge:** Same as Tetris — non-blocking input + game timer.
-
----
-
-### 2048 — Tile Puzzle
+### 2048
 
 | Property | Value |
 |----------|-------|
-| Source | mevdschee/2048.c (~350 lines, single file) |
-| Text (ROM) | ~2-3 KB |
+| Source | mevdschee/2048.c (~350 lines) or rewrite |
 | Data+BSS | <1 KB (4×4 grid + score) |
-| RAM needs | ~200 bytes |
-| Needs fork() | No |
-| Missing libc | Raw terminal input (termios — already present) |
-| Approach | **Port/adapt for Genix** |
-| Value | ★★★☆☆ |
+| Approach | **Port or rewrite for VDP** |
 | Cool factor | ★★★★☆ |
 
-**Why:** Modern classic, simple rules, addictive. The mevdschee
-version is already minimal. Could use VDP tiles for a nice visual.
+### Other Games Worth Considering
+
+| Game | Lines | Data+BSS | Notes |
+|------|-------|----------|-------|
+| Robots | ~250 (rewrite) | ~1 KB | BSD robots — chase/crash grid game |
+| Sokoban | ~420 (FUZIX) | ~2 KB | Level maps are const → ROM. Replace termcap I/O with ANSI/VDP. |
+| Invaders | ~500 (rewrite) | ~2 KB | Rewrite for VDP sprites — showcase app |
 
 ---
 
-### Robots — Classic BSD Game
-
-| Property | Value |
-|----------|-------|
-| Source | Rewrite (~200-300 lines, no curses) |
-| Text (ROM) | ~3-4 KB |
-| Data+BSS | ~1 KB |
-| Needs fork() | No |
-| Approach | **Rewrite** |
-| Value | ★★☆☆☆ |
-| Cool factor | ★★★☆☆ |
-
-Player moves on grid, robots chase, robots crash into each other.
-Simple turn-based logic, satisfying gameplay.
-
----
-
-## Tier 3: Useful Utilities — Nice to Have
-
-These round out the system. Less critical than Tier 1 but each adds
-real capability.
+## Tier 3: Text Processing & Scripting
 
 ### sed — Stream Editor
 
@@ -480,660 +326,301 @@ real capability.
 |----------|-------|
 | Source | FUZIX `Applications/util/sed.c` |
 | Size | ~1,400 lines C |
-| Text (ROM) | ~12-16 KB |
-| Data+BSS | ~2-4 KB (pattern/hold space, command buffer) |
-| RAM needs | Pattern space + hold space (line-at-a-time) |
+| Data+BSS | ~2-3 KB (pattern/hold space buffers) |
 | Needs fork() | No |
-| Missing libc | Regex (already present — `regcomp`/`regexec`) |
+| Missing libc | None (regex already present) |
 | Approach | **Port from FUZIX** |
-| Value | ★★★★☆ |
 
-**Why:** sed + grep + sort = real text processing pipeline. Shell
-scripts need sed for substitution. `s/foo/bar/g` is muscle memory
-for any Unix user.
+sed + grep + sort = real text processing pipelines. Shell scripts
+need `s/foo/bar/g`. FUZIX version is designed for small systems.
 
-**Risk:** Pattern/hold space buffers need sizing for 14 KB slot.
-FUZIX version should be manageable — it's designed for small systems.
-
----
-
-### cal — Calendar
+### diff — File Comparison
 
 | Property | Value |
 |----------|-------|
-| Source | FUZIX `Applications/util/cal.c` |
-| Size | ~430 lines C |
-| Text (ROM) | ~4-5 KB |
-| Data+BSS | <1 KB |
-| RAM needs | Minimal |
+| Source | FUZIX V7 or rewrite (~300-800 lines) |
+| Data+BSS | ~1-2 KB |
+| Heap | O(n) for file lengths |
 | Needs fork() | No |
-| Missing libc | `time()` (present), `localtime()` (**missing**) |
-| Approach | **Port from FUZIX, add minimal localtime()** |
-| Value | ★★★☆☆ |
+| Approach | **Port V7 diff or rewrite** |
 
-**Why:** Classic Unix utility. `cal 2026` on a Mega Drive. Small,
-self-contained. Makes the system feel complete.
+Useful with ed for verifying edits. Heap usage proportional to file
+size — works on files up to ~5-10 KB (the expected use case).
 
-**Risk:** Needs `localtime()` or `gmtime()` to get the current
-month/year from `time()`. This is a ~50-line libc addition (epoch
-seconds → year/month/day/etc). Worth adding anyway — other apps
-will use it.
-
----
-
-### date — Print Date/Time
+### cal, date — Calendar and Date
 
 | Property | Value |
 |----------|-------|
-| Source | FUZIX `Applications/util/date.c` or rewrite |
-| Size | ~100-200 lines |
-| Text (ROM) | ~2-3 KB |
-| Data+BSS | <1 KB |
-| Needs fork() | No |
-| Missing libc | `localtime()`, `strftime()` |
-| Approach | **Rewrite** (tiny) |
-| Value | ★★★☆☆ |
+| Source | FUZIX cal.c (~430 lines) / rewrite date |
+| Data+BSS | <1 KB each |
+| Missing libc | `localtime()`, `strftime()` (~130 lines total) |
+| Approach | **Port cal, rewrite date** |
 
-**Why:** Pairs with `cal`. Shows the system has a sense of time.
+`cal 2026` on a Mega Drive. Needs localtime() libc addition — worth
+doing since many programs need time decomposition.
+
+### Other Useful Utilities
+
+| App | Lines | Data+BSS | Notes |
+|-----|-------|----------|-------|
+| dd | ~200 | <1 KB | Block-level copy. Useful for disk ops. |
+| test/[ | ~200 | <1 KB | Condition testing. Dash has built-in but standalone is expected. |
+| tar | ~400 | ~1 KB | Archive/extract. Essential once SD card exists (Phase 7). |
+| banner | ~150 | <1 KB | Large block letters. Font data is const → ROM. Fun. |
+| factor | ~80 | <1 KB | `factor 42` → `2 3 7`. Pure computation. |
 
 ---
 
-### cp — Copy Files
+## Tier 4: Programming Languages
+
+A programming language on the Mega Drive turns it into a home computer.
+
+### BASIC Interpreter
 
 | Property | Value |
 |----------|-------|
-| Source | Rewrite |
-| Size | ~80-150 lines |
-| Text (ROM) | ~2-3 KB |
-| Data+BSS | <1 KB + copy buffer |
-| Needs fork() | No |
-| Missing libc | None |
-| Approach | **Rewrite** |
-| Value | ★★★★☆ |
-
-**Why:** Can't copy files without `cp`. Basic filesystem operation.
-Trivial to implement: open src, open dst, read/write loop, close.
-
----
-
-### mv — Move/Rename Files
-
-| Property | Value |
-|----------|-------|
-| Source | Rewrite |
-| Size | ~50-80 lines |
-| Text (ROM) | ~1-2 KB |
-| Data+BSS | <1 KB |
-| Needs fork() | No |
-| Missing libc | None (rename syscall exists) |
-| Approach | **Rewrite** |
-| Value | ★★★★☆ |
-
-**Why:** Pairs with cp. Uses the existing rename() syscall for
-same-filesystem moves, or cp+unlink for cross-filesystem.
-
----
-
-### rm — Remove Files
-
-| Property | Value |
-|----------|-------|
-| Source | Rewrite |
-| Size | ~60-100 lines |
-| Text (ROM) | ~1-2 KB |
-| Data+BSS | <1 KB |
-| Needs fork() | No |
-| Missing libc | None (unlink syscall exists) |
-| Approach | **Rewrite** |
-| Value | ★★★★☆ |
-
-**Why:** Can't delete files without rm. Uses unlink(). Add `-r` for
-recursive directory removal later.
-
----
-
-### touch — Create/Update Files
-
-| Property | Value |
-|----------|-------|
-| Source | Rewrite |
-| Size | ~30-50 lines |
-| Text (ROM) | ~1 KB |
-| Data+BSS | <1 KB |
-| Needs fork() | No |
-| Missing libc | `utime()` or just open+close |
-| Approach | **Rewrite** |
-| Value | ★★★☆☆ |
-
----
-
-### mkdir (standalone) — Create Directories
-
-Already exists as a syscall but no standalone `mkdir` command yet.
-~20 lines.
-
----
-
-### which — Find Command in PATH
-
-| Property | Value |
-|----------|-------|
-| Source | Rewrite |
-| Size | ~40-60 lines |
-| Needs fork() | No |
-| Approach | **Rewrite** |
-| Value | ★★★☆☆ |
-
----
-
-### uname — System Info
-
-| Property | Value |
-|----------|-------|
-| Source | Rewrite |
-| Size | ~20-30 lines |
-| Needs fork() | No |
-| Approach | **Rewrite** |
-| Value | ★★☆☆☆ |
-
-Prints "Genix 68000 megadrive". Tiny but gives the system identity.
-
----
-
-### kill — Send Signals
-
-| Property | Value |
-|----------|-------|
-| Source | Rewrite |
-| Size | ~50-80 lines |
-| Needs fork() | No |
-| Missing libc | `atoi()` (present), `kill()` syscall (present) |
-| Approach | **Rewrite** |
-| Value | ★★★★☆ |
-
-**Why:** Job control needs `kill`. `kill %1`, `kill -9 PID`. Essential
-for managing background processes.
-
----
-
-### test / [ — Condition Testing
-
-| Property | Value |
-|----------|-------|
-| Source | Rewrite or port V7 |
-| Size | ~200-300 lines |
-| Needs fork() | No |
-| Approach | **Rewrite** |
-| Value | ★★★★☆ |
-
-**Why:** Shell scripts need `test -f file`, `[ "$x" = "y" ]`, etc.
-dash has a built-in `test` but a standalone `/bin/test` (symlinked as
-`[`) is expected by some scripts.
-
-Note: dash already has `test` as a built-in, so this is lower priority.
-
----
-
-### dd — Data Copy
-
-| Property | Value |
-|----------|-------|
-| Source | FUZIX or rewrite |
-| Size | ~200-400 lines |
-| Needs fork() | No |
-| Approach | **Rewrite minimal version** |
-| Value | ★★★☆☆ |
-
-**Why:** Block-level copy. Useful for disk operations, creating images,
-raw device access. The `dd if=/dev/disk of=backup bs=1024` pattern.
-
----
-
-## Tier 4: Aspirational — Cool But Challenging
-
-These push the platform's limits. Some may require Phase 8 (PSRAM) on
-Mega Drive but work on the workbench immediately.
-
-### BASIC Interpreter (fforth or fuzixbasic)
-
-| Property | Value |
-|----------|-------|
-| Source | FUZIX `Applications/basic/` or `Applications/util/fforth.c` |
-| Size | ~2,000-2,400 lines C |
-| Text (ROM) | ~20-30 KB |
-| Data+BSS | ~4-8 KB (variable/stack space) |
-| RAM needs | Program storage + variables in heap |
-| Needs fork() | No |
-| Missing libc | Minimal |
-| Approach | **Port FUZIX BASIC** or **rewrite minimal Forth** |
-| Value | ★★★★☆ |
-| Cool factor | ★★★★★ |
-
-**Why:** A programming language ON the Mega Drive. Write BASIC programs
-on the system itself. This is what 1980s home computers did — turning
-the Mega Drive into one is deeply satisfying.
-
-FUZIX BASIC is tokenized (faster execution, less RAM) and designed for
-small systems. Forth (fforth) is even more memory-efficient but less
-accessible.
-
-**Recommendation:** Port FUZIX BASIC first (more familiar to users),
-then Forth if there's interest.
-
-**Smaller alternatives:**
-- **uBASIC** (Adam Dunkels, ~700 lines) — extremely tiny, runs in
-  <1 KB working memory. Only integer variables (A-Z), but supports
-  IF/THEN, FOR/NEXT, GOSUB, PRINT. Perfect for 14 KB slot.
-- **zForth** (~3-4 KB compiled kernel) — designed for "extending
-  embedded applications on small microprocessors." Even smaller than
-  fforth, configurable dictionary size.
-
-**Risk:** Heap space for the BASIC program and variables. A 14 KB slot
-minus ~4-8 KB BSS leaves ~6-10 KB for programs. Enough for small
-programs (10-50 lines), which is authentic to the 8-bit experience.
-uBASIC sidesteps this entirely with its <1 KB footprint.
-
-**Rewrite?** For BASIC, no — FUZIX's or uBASIC are already optimized.
-For Forth, zForth is purpose-built for this; prefer it over fforth.
-
----
-
-### ue — Micro Screen Editor
-
-| Property | Value |
-|----------|-------|
-| Source | FUZIX `Applications/ue/` (ue.c + term.c) |
-| Size | ~800-1,000 lines C (2 files) |
-| Text (ROM) | ~5-7 KB estimated |
+| Source | FUZIX `Applications/basic/` or uBASIC (~700 lines) |
+| Text (ROM) | ~20-30 KB (FUZIX) or ~4 KB (uBASIC) |
 | Data+BSS | ~2-4 KB |
-| RAM needs | File buffer in heap |
+| Heap | User's BASIC program + variables |
 | Needs fork() | No |
-| Missing libc | Terminal raw mode (already have termios) |
-| Approach | **Port from FUZIX** |
-| Value | ★★★★★ |
 | Cool factor | ★★★★★ |
 
-**Why:** A tiny screen editor that "uses no libraries except clib."
-FUZIX already has a platform-specific terminal backend for it. This
-is the sweet spot between ed (line-mode only) and levee (too large):
-a real full-screen editor that might actually fit in 14 KB on the
-Mega Drive. Has a 68000 Makefile in FUZIX already.
+**FUZIX BASIC:** Tokenized interpreter designed for small systems.
+Handles string/numeric vars, arrays (4 dimensions), FOR/NEXT, GOSUB,
+expressions. Tokenizes at input time for speed. Text is ~20-30 KB
+(free in ROM). Data+bss ~2-4 KB. Leaves ~8-10 KB heap for user
+programs — enough for 50-100 line programs, authentic to the 8-bit
+experience.
 
-**Risk:** Data+BSS ~2-4 KB is manageable. The file buffer is heap-
-allocated, so editing capacity depends on remaining slot space
-(~8-10 KB for text). Enough for scripts and config files.
+**uBASIC** (Adam Dunkels, ~700 lines): Extremely tiny, <1 KB working
+memory. Integer variables A-Z only, IF/THEN, FOR/NEXT, GOSUB, PRINT.
+Fits anywhere. Good starting point, upgrade to FUZIX BASIC later.
 
-**Rewrite?** No. It's already minimal and designed for small systems.
-May need terminal output adapted to VDP/ANSI sequences.
-
----
-
-### Levee — vi-like Editor (ALREADY PORTED)
+### Forth Interpreter
 
 | Property | Value |
 |----------|-------|
-| Source | Already in `apps/levee/` |
-| Size | ~3,000+ lines across 15 .c files |
-| Text (ROM) | ~44 KB (XIP — runs from ROM, free) |
-| Data+BSS | Needs measurement — likely ~4-8 KB |
-| RAM needs | File buffer in heap |
-| Status | **Already ported, currently KNOWN BROKEN** |
-| Value | ★★★★★ |
+| Source | FUZIX `util/fforth.c` (~2,400 lines) or zForth (~1,000 lines) |
+| Text (ROM) | ~15-25 KB |
+| Data+BSS | ~2-4 KB |
+| Heap | Dictionary + stacks (configurable, ~4-8 KB) |
+| Needs fork() | No |
 | Cool factor | ★★★★★ |
 
-**Why:** A vi clone on the Mega Drive. Full-screen editing, modal
-interface, the real Unix editing experience. Already ported to Genix
-and included in /bin. The 44 KB binary is all text (runs from ROM
-via XIP) — only data+bss goes to the 14 KB RAM slot.
+Interactive Forth on a 68000 is historically appropriate — many early
+68000 systems ran Forth. fforth passes most ANS conformance tests.
+zForth is smaller and designed for "extending embedded applications on
+small microprocessors." Dictionary size is configurable.
 
-**Current status:** Listed as KNOWN BROKEN in test-coverage.md —
-crashes with kernel panic at PC=0x30000 (outside user space, likely
-relocation or jump table corruption). The Makefile doesn't use
-`-msep-data` yet — needs updating to match the current build system.
-
-**Next steps:** Fix the build to use `-msep-data`, investigate the
-crash (Bug in test-coverage.md), and measure actual data+bss. If
-data+bss is comparable to dash (~6.8 KB), levee fits in a Mega Drive
-slot with no PSRAM needed.
-
-**Note:** The Makefile and several docs claim levee is "too large for
-Mega Drive" — this assessment predates XIP and `-msep-data`. With
-text in ROM, only data+bss matters, and levee's data+bss is likely
-small enough. This needs verification.
-
----
+Could write Forth programs that interact with VDP registers directly
+for graphics.
 
 ### Fweep — Z-Machine Interpreter
 
 | Property | Value |
 |----------|-------|
-| Source | FUZIX `Applications/games/fweep.c` |
-| Size | ~2,100 lines C |
+| Source | FUZIX `Applications/games/fweep.c` (~2,100 lines) |
 | Text (ROM) | ~20-25 KB |
-| Data+BSS | ~4-8 KB |
-| RAM needs | Z-machine memory (varies by story file, 32-128 KB) |
+| Data+BSS | ~2-4 KB interpreter state |
 | Needs fork() | No |
-| Missing libc | Minimal |
-| Approach | **Port from FUZIX — needs story files in ROM** |
-| Value | ★★★★☆ |
 | Cool factor | ★★★★★ |
 
-**Why:** Runs Infocom games (Zork, Hitchhiker's Guide, etc.) and
-modern IF. Thousands of free Z-machine games exist. One interpreter
-= hundreds of games.
+Runs Infocom games (Zork, Hitchhiker's Guide, Planetfall) and
+thousands of free Z-machine games. One interpreter = hundreds of
+games.
 
-**Risk:** Z-machine story files need 32-128 KB of addressable memory.
-Story text can live in ROM but the dynamic memory portion must be in
-RAM. Versions 1-3 (original Infocom) need ~32 KB dynamic — might
-work. Later versions need more. **May require Phase 8 (PSRAM).**
+**Memory model:** Z-machine story files have a "dynamic memory" area
+(the first N bytes, must be writable) and "static/high memory"
+(read-only, can stay in ROM). For Z-machine v1-3 (original Infocom
+games), dynamic memory is typically **4-12 KB**. The rest of the
+story file (30-100 KB) can be `const` data in ROM.
 
-**Rewrite?** No — Z-machine is a complex VM. Porting fweep is the
-right approach. The Scott Adams engine (above) is the memory-safe
-alternative.
+**Feasibility:** With ~8-10 KB available in the slot after
+interpreter data+bss, most v1-3 games fit. v5+ games have larger
+dynamic memory areas and may not fit. Story files go in ROM with only
+the dynamic header copied to RAM.
 
----
+**Previously classified as "needs PSRAM" — this was wrong.** The
+misconception was that the entire story file needs to be in RAM.
+It doesn't. Only the dynamic memory portion does.
 
-### clear — Clear Screen
-
-| Property | Value |
-|----------|-------|
-| Source | Rewrite |
-| Size | ~5-10 lines |
-| Approach | **Rewrite** |
-| Value | ★★★☆☆ |
-
-One escape sequence: `\033[2J\033[H`. Trivial but useful.
-
----
-
-### banner — Large Text
+### awk — Pattern Language
 
 | Property | Value |
 |----------|-------|
-| Source | FUZIX `Applications/util/banner.c` |
-| Size | ~100-200 lines + font data |
-| Approach | **Port from FUZIX** |
-| Value | ★★☆☆☆ |
-| Cool factor | ★★★☆☆ |
-
-Prints text in large block letters. Fun visual utility.
-
----
-
-### factor — Prime Factorization
-
-| Property | Value |
-|----------|-------|
-| Source | FUZIX `Applications/util/factor.c` |
-| Size | ~50-100 lines |
-| Approach | **Port from FUZIX** |
-| Value | ★★☆☆☆ |
-
-Pure computation. `factor 42` → `2 3 7`. Tiny, educational.
-
----
-
-### bc — Calculator
-
-| Property | Value |
-|----------|-------|
-| Source | Various minimal implementations |
-| Size | ~500-1,000 lines |
-| Text (ROM) | ~8-12 KB |
-| Data+BSS | ~2-4 KB |
-| Needs fork() | Traditional bc pipes to dc — avoid this |
-| Missing libc | Possibly arbitrary precision math |
-| Approach | **Rewrite — standalone integer calculator** |
-| Value | ★★★☆☆ |
-| Cool factor | ★★★☆☆ |
-
-**Why:** Interactive calculator. Useful for quick math, hex conversion.
-
-**Rewrite?** Yes. Traditional bc/dc uses pipes (bc→dc). Write a
-standalone calculator that handles integer arithmetic, hex/dec/oct
-conversion, and basic operations. ~200-300 lines. Skip arbitrary
-precision (no FPU, slow soft-float). Or port `dc` alone — it's a
-simpler stack-based calculator.
-
----
-
-### tar — Archive Files
-
-| Property | Value |
-|----------|-------|
-| Source | FUZIX `Applications/util/tar.c` |
-| Size | ~500-800 lines |
-| Text (ROM) | ~6-10 KB |
-| Data+BSS | ~1-2 KB |
-| RAM needs | 512-byte block buffer |
-| Needs fork() | No (for create/extract) |
-| Approach | **Port from FUZIX** |
-| Value | ★★★☆☆ |
-
-**Why:** Archive/extract files. Essential once SD card support exists
-(Phase 7). Load software bundles from SD card as tar files.
-
----
-
-### Invaders — Space Invaders
-
-| Property | Value |
-|----------|-------|
-| Source | FUZIX `Applications/cursesgames/invaders.c` |
-| Size | ~500-800 lines |
-| Text (ROM) | ~6-10 KB |
-| Data+BSS | ~2-4 KB |
-| Needs fork() | No |
-| Missing libc | curses — **must replace with VDP graphics** |
-| Approach | **Rewrite using VDP sprites/tiles** |
-| Value | ★★★☆☆ |
+| Source | One True Awk (Kernighan's, ~6,000 lines) |
+| Text (ROM) | ~25-40 KB (free) |
+| Data+BSS | ~3-6 KB static |
+| Heap | Runtime: symbol tables, field buffers, associative arrays |
+| Needs fork() | No (except optional system() which isn't essential) |
 | Cool factor | ★★★★★ |
 
-**Why:** Space Invaders on a Mega Drive using the actual VDP hardware
-(sprites, tiles, scrolling). This could look and play like a real
-Mega Drive game, not just a text-mode curiosity.
+**Previously dismissed as "needs PSRAM" — reconsider.** The 25-40 KB
+text is free (ROM). Static data+bss is moderate. The real question is
+runtime heap: awk programs that accumulate data in associative arrays
+will fill the slot, but many useful awk programs are stateless
+transformations (`awk '{print $2}'`, `awk -F: '/pattern/{print $1}'`)
+that use minimal heap.
 
-**Rewrite?** Absolutely. The FUZIX curses version is a starting point
-for game logic, but the VDP version would use the Genix graphics API
-(gfx_tiles, gfx_sprite, gfx_scroll) for real arcade-style visuals.
-This is a showcase application.
+**Challenge:** The yacc-generated parser adds to data+bss. Floating
+point numbers (awk uses doubles) would need soft-float — slow and adds
+to text size. Consider integer-only mode or accept slow math.
 
----
+**Approach:** Port One True Awk, measure data+bss. If it fits in a
+slot with ~4-6 KB to spare for heap, most practical awk one-liners
+work. Large awk programs that accumulate state won't fit, but that's
+acceptable — the value is in one-liners and simple scripts.
 
-### Sokoban — Puzzle Game
+### Stretch: Other Language Runtimes
 
-| Property | Value |
-|----------|-------|
-| Source | FUZIX `Applications/games/sok.c` + level maps |
-| Size | ~420 lines C |
-| Text (ROM) | ~4-6 KB |
-| Data+BSS | ~2-4 KB (level map) |
-| Needs fork() | Yes (uses fork+pipe for termcap) — **must rewrite I/O** |
-| Missing libc | termcap — replace with VDP/ANSI |
-| Approach | **Rewrite I/O layer, keep game logic** |
-| Value | ★★★☆☆ |
-| Cool factor | ★★★★☆ |
+| Language | Text (ROM) | Data+BSS | Runtime Heap | Feasibility |
+|----------|-----------|----------|-------------|-------------|
+| PicoC (C interpreter) | ~15-25 KB | ~4-8 KB | ~8-20 KB | **Marginal.** "runs ok in 64KB." Text is free. Tight on heap. |
+| Lua (integer-only mode) | ~60-100 KB | ~4-8 KB | ~16-32 KB | **Unlikely on MD.** Even stripped, GC needs 16+ KB. Workbench only. |
+| Python/Perl | hundreds of KB | enormous | enormous | **No.** |
 
-**Why:** Classic box-pushing puzzle. Could look great with VDP tiles.
-
----
-
-### Game of Life — Cellular Automaton
-
-| Property | Value |
-|----------|-------|
-| Source | Rewrite |
-| Size | ~100-200 lines |
-| Text (ROM) | ~2-3 KB |
-| Data+BSS | ~2-3 KB (40×28 grid = 1,120 bytes × 2) |
-| Needs fork() | No |
-| Approach | **Rewrite for VDP** |
-| Value | ★★☆☆☆ |
-| Cool factor | ★★★★☆ |
-
-**Why:** Visually compelling on the VDP. Could use tile graphics for
-cells. The 40×28 grid is a natural Life board. Simple to implement,
-mesmerizing to watch.
+PicoC is the most interesting stretch goal — a C interpreter running
+on a C-based OS on a 68000 is delightfully recursive.
 
 ---
+
+## Tier 5: Visual Demos & VDP Showcase
+
+These use the Mega Drive's VDP hardware for graphics that go beyond
+text-mode terminals.
 
 ### Mandelbrot — Fractal Renderer
 
 | Property | Value |
 |----------|-------|
-| Source | Rewrite |
-| Size | ~100-200 lines |
-| Text (ROM) | ~2-4 KB |
+| Source | Rewrite (~100-200 lines) |
 | Data+BSS | <1 KB |
-| Needs fork() | No |
-| Approach | **Rewrite with fixed-point math** |
-| Value | ★★☆☆☆ |
+| Approach | **Rewrite with 16.16 fixed-point** |
 | Cool factor | ★★★★★ |
 
-**Why:** Fractals on a Mega Drive. Visual demo of the system's
-capability. Must use fixed-point arithmetic (no FPU). At 7.67 MHz
-it will be slow (~minutes for a full frame) but that's part of the
-charm — watching it render line by line.
+Fixed-point 16.16 arithmetic on the 68000: the MULU instruction does
+16×16→32 multiply. A 40×28 render at 100 max iterations ≈ 112,000
+multiplies at ~50 cycles each ≈ 5.6M cycles ≈ **~0.7 seconds**. Very
+feasible — not the "minutes" I initially estimated.
 
-Could use the VDP palette (64 colors in mode 4) for color depth.
-A dedicated VDP-aware renderer would look stunning.
+With VDP tiles and the 64-color palette, this produces a colorful
+fractal on a game console. THE flagship screenshot for the project.
+
+### Game of Life — Cellular Automaton
+
+| Property | Value |
+|----------|-------|
+| Source | Rewrite (~100-150 lines) |
+| Data+BSS | ~2.2 KB (two 40×28 grids, or bit-packed = ~280 bytes) |
+| Cool factor | ★★★★☆ |
+
+VDP tiles for cells. 40×28 grid is a natural Life board. Mesmerizing
+to watch. Glider guns, oscillators, etc.
+
+### Space Invaders
+
+| Property | Value |
+|----------|-------|
+| Source | Rewrite game logic, use VDP sprites/tiles |
+| Data+BSS | ~2-3 KB |
+| Cool factor | ★★★★★ |
+
+Using the actual Mega Drive VDP hardware (sprites, tiles, scrolling)
+this could look and play like a real Mega Drive game — but launched
+from `$ invaders` at a shell prompt. Showcase application for the
+graphics API.
 
 ---
 
-## Tier 5: Not Recommended
-
-These were considered and rejected, with reasons.
-
-### awk — Pattern Language
-
-~3,000-5,000 lines. Massive data+BSS. The RAM required for awk's
-symbol table, field splitting, and string operations would consume
-the entire 14 KB slot just for the interpreter state. **Wait for
-Phase 8.** On workbench it would work fine. Note: One True Awk
-(Brian Kernighan's) is ~25-40 KB text (free in ROM) but needs
-~8-15 KB data — so it's marginal even with PSRAM.
-
-### Colossal Cave (full)
-
-The full `cave/` from FUZIX has ~15 KB of game state. Exceeds 14 KB
-slot. The Scott Adams adventures are the memory-safe alternative. Could
-work after Phase 8.
-
-### Any curses-based app (unmodified)
-
-No termcap/terminfo database. Every curses app needs its terminal I/O
-rewritten for VDP or hardcoded VT100 sequences. Not impossible but adds
-work to every port.
+## Not Recommended
 
 ### Network utilities
-
-No TCP/IP stack. No serial modem. Not applicable.
+No TCP/IP stack. Not applicable.
 
 ### Multi-user utilities (passwd, su, login, who)
+Genix is single-user. No purpose.
 
-Genix is explicitly single-user. These serve no purpose.
+### Compression (gzip, bzip2)
+gzip needs 256 KB working memory, bzip2 needs 64 KB. Out of scope.
+**Exception:** `lzw-ab` (embedded LZW) decodes with only **2.4 KB
+RAM** using 12-bit symbols. Modest compression ratio but feasible as
+a later addition.
 
-### Compression (gzip, compress)
-
-gzip: ~100 KB code + 256 KB working memory. Completely out.
-bzip2: 64 KB dictionary minimum. Out.
-Classic `compress`: 64 KB hash table. Out.
-**However:** `lzw-ab` (embedded-friendly LZW) needs only **2.4 KB for
-decode** with 12-bit symbols. Modest compression ratio but feasible.
-Could be a Wave 6+ item if there's interest.
-
-### Full vi/vim
-
-Full vim is enormous. Levee (minimal vi) is already ported and
-**should work on Mega Drive** once the crash bug is fixed — 44 KB
-text is free via XIP, only data+bss uses RAM.
-
-### lua/python/perl
-
-Lua: ~60-100 KB text + 16-32 KB data minimum. Marginal even with PSRAM.
-Python/Perl: hundreds of KB. Not feasible.
-**PicoC** (C interpreter, ~15-25 KB text, 8-20 KB data) is the most
-feasible language interpreter in this class — "runs ok in 64KB." Still
-needs Phase 8 for the Mega Drive.
+### Curses-based apps (unmodified)
+No termcap database. Every curses app needs I/O rewritten for
+VDP/ANSI. The game logic can be reused but the display layer must
+be replaced.
 
 ---
 
-## Implementation Priority & Dependency Map
+## Implementation Waves
 
-### Wave 1: Filesystem Essentials (no new libc needed)
+### Wave 1: Filesystem Essentials
 ```
 cp, mv, rm, mkdir, touch, kill, which, uname, clear
 ```
-All are rewrites, ~20-100 lines each. Could be done in a single session.
+All rewrites, 10-150 lines each. Single session.
 
-### Wave 2: Text Processing (minor libc additions)
+### Wave 2: Core Text Tools
 ```
-sort (rewrite, ~150 lines)
-more (rewrite, ~150 lines)
-ed   (port from FUZIX, ~1,000 lines)
+ed     (port from FUZIX — first editor)
+more   (rewrite — first pager)
+sort   (rewrite — simple qsort version)
 ```
-Needs: possibly `mkstemp()` for sort, raw terminal mode for more.
 
-### Wave 3: Shell Scripting Support
+### Wave 3: Quick-Win Games
 ```
-sed   (port from FUZIX, ~1,400 lines)
-find  (rewrite, ~200 lines)
-xargs (port from FUZIX, ~250 lines, fork→vfork fix)
-test  (rewrite, ~200 lines)  [lower priority — dash has built-in]
+hamurabi, dopewars, wump, fortune, cowsay
+ttt, moo, hangman, fish, arithmetic
 ```
-Needs: nothing new if regex already works.
+All trivial stdio-only ports. Single session per batch.
 
-### Wave 4: Games — Quick Wins
+### Wave 4: Fix Levee
 ```
-hamurabi    (port, trivial)
-dopewars    (port, easy)
-fortune     (port + create fortune.dat)
-wump        (port, trivial — Hunt the Wumpus)
-cowsay      (port, trivial)
-ttt         (port, trivial — tic-tac-toe)
-moo         (port, trivial — Mastermind numbers)
-hangman     (port, needs word list)
-fish        (port, trivial — Go Fish)
-arithmetic  (port, trivial — math drills)
+levee  (update Makefile to -msep-data, fix crash bug)
 ```
-Needs: nothing new. Games only use stdio + stdlib.
+Highest-value single fix — gives the system a real screen editor.
 
-### Wave 5: Games — Flagship & Action
+### Wave 5: Scripting & Flagship Games
 ```
-startrek    (port, may need display width tweaks)
-2048        (rewrite/port for VDP)
+sed       (port from FUZIX)
+find      (rewrite, ~200 lines)
+xargs     (port, fork→vfork fix)
+startrek  (port from FUZIX — may need 40-col formatting)
 scott_adams (port shared engine + 14 game data files)
-tetris      (rewrite for VDP tiles — killer demo)
-snake       (rewrite for VDP — action game on a game console)
 ```
 
-### Wave 6: Screen Editor + Advanced Tools
+### Wave 6: Action Games + VDP
 ```
-ue         (port from FUZIX — tiny screen editor, huge value)
+tetris     (rewrite for VDP tiles)
+snake      (rewrite for VDP)
+mandelbrot (rewrite, fixed-point — ~0.7s render)
+life       (rewrite for VDP tiles)
+```
+
+### Wave 7: Programming Languages
+```
+uBASIC or FUZIX BASIC  (first language — turns MD into home computer)
+fforth or zForth        (second language — historically appropriate)
+```
+
+### Wave 8: Advanced Ports
+```
+adventure  (Colossal Cave — const-qualify data tables for ROM)
+fweep      (Z-machine — story files in ROM, dynamic mem in RAM)
+awk        (One True Awk — measure data+bss, assess fit)
 diff       (port or rewrite)
-BASIC      (port FUZIX BASIC)
-fforth     (port from FUZIX — Forth interpreter)
-banner     (port, fun)
-factor     (port, tiny)
+tar        (port — needed once SD card exists)
+cal, date  (need localtime() libc addition)
 ```
 
-### Wave 7: VDP Showcase Apps
+### Wave 9: Stretch Goals
 ```
-Game of Life (rewrite for VDP tiles)
-Mandelbrot   (rewrite with fixed-point)
-Invaders     (rewrite for VDP sprites)
+invaders  (VDP sprites — showcase app)
+sokoban   (replace termcap I/O)
+PicoC     (C interpreter — if heap fits)
 ```
-
-### Wave 8: Phase 8 Dependent (needs PSRAM)
-```
-fweep      (Z-machine — needs PSRAM for story files)
-awk        (needs PSRAM for interpreter state)
-adventure  (Colossal Cave — needs PSRAM for game DB)
-```
-
-Note: levee is already ported and should NOT need PSRAM — its text
-runs from ROM via XIP. It just needs its crash bug fixed and the
-Makefile updated to use `-msep-data`.
 
 ---
 
@@ -1141,80 +628,76 @@ Makefile updated to use `-msep-data`.
 
 | Function | Needed by | Effort |
 |----------|-----------|--------|
-| `localtime()` / `gmtime()` | cal, date | ~50 lines |
+| `localtime()` / `gmtime()` | cal, date, many programs | ~50 lines |
 | `strftime()` | date | ~80 lines |
-| `mkstemp()` | sort (temp files) | ~20 lines |
+| `mkstemp()` | sort (temp files, optional) | ~20 lines |
 | `fnmatch()` | find | ~40 lines |
-| `strlcpy()` | some FUZIX ports | ~10 lines (or just use strncpy) |
+| `ntohs()` / `htons()` | fortune | ~2 lines (macro) |
 
-All are small additions. `localtime()` is the most useful because
-many programs need time decomposition.
+All are small. `localtime()` is the highest value — many programs
+need time decomposition.
 
 ---
 
-## Summary: Port vs. Rewrite Recommendations
+## Summary: Port vs. Rewrite
 
 | App | Approach | Reason |
 |-----|----------|--------|
-| levee | Fix existing port | Already in apps/levee/, just needs -msep-data + crash fix |
-| ed | Port FUZIX | Battle-tested, correct, right size |
-| ue | Port FUZIX | Tiny screen editor, already has 68000 Makefile |
-| sort | Rewrite | FUZIX version too RAM-hungry, simple qsort version is 90% |
-| diff | Either | V7 version works but archaic; rewrite is cleaner |
-| find | Rewrite | Full POSIX find is overkill; 200-line version is enough |
+| levee | Fix existing | Already ported, just needs -msep-data + crash fix |
+| ed | Port FUZIX | Battle-tested, correct, already fits |
+| sort | Rewrite | Simple qsort version is 90% of use cases in ~100 lines |
+| diff | Either | V7 works but archaic; rewrite is cleaner |
+| find | Rewrite | Full POSIX find is overkill; ~200 lines is enough |
 | xargs | Port FUZIX | Small, just fix fork→vfork |
-| more | Rewrite | Hardcode 40×28 VDP, much simpler than porting less |
+| more | Rewrite | Hardcode 40×28, simpler than porting less |
 | sed | Port FUZIX | Complex enough that correctness matters |
+| awk | Port One True Awk | Don't rewrite — language semantics are subtle |
 | startrek | Port FUZIX | Already optimized for 32 KB target |
-| hamurabi | Port FUZIX | Trivial, no changes needed |
-| dopewars | Port FUZIX | Easy, maybe change getuid→getpid |
-| wump/ttt/moo/etc | Port FUZIX | Trivial V7 games, stdio-only |
-| 2048 | Rewrite | Trivial, target VDP display |
-| invaders | Rewrite | Use VDP sprites instead of curses |
-| BASIC | Port FUZIX | Tokenized interpreter already memory-optimized |
+| adventure | Port FUZIX | Const-qualify data tables for ROM placement |
+| fweep | Port FUZIX | Story files in ROM, only dynamic mem in RAM |
+| hamurabi/dopewars/etc | Port FUZIX | Trivial stdio-only games |
+| scott_adams | Port FUZIX | 14 games from one engine, const data → ROM |
+| BASIC | Port FUZIX or uBASIC | Tokenized interpreter already memory-optimized |
 | fforth | Port FUZIX | ANS Forth, single file, great for small systems |
-| mandelbrot | Rewrite | Fixed-point 68000-specific, ~100 lines |
-| life | Rewrite | VDP-specific, ~100 lines |
-| fortune | Port FUZIX | Trivial + curate fortune database |
-| cowsay | Port FUZIX | Trivial, fun |
-| cp/mv/rm/etc | Rewrite | Trivial utilities, <100 lines each |
+| tetris/snake | Rewrite | VDP-native, action games on a game console |
+| mandelbrot/life | Rewrite | VDP-specific, fixed-point, ~100-200 lines each |
+| invaders | Rewrite | VDP sprites — showcase application |
+| cp/mv/rm/etc | Rewrite | Trivial, <100 lines each |
 
 ---
 
-## Total ROM Budget Estimate
-
-If all Tier 1-3 apps were included:
+## Total ROM Budget
 
 | Category | Estimated text (ROM) |
 |----------|---------------------|
-| Existing 33 apps + dash | ~150 KB |
+| Existing 33 apps + dash + levee | ~200 KB |
 | Wave 1 (fs essentials) | ~15 KB |
-| Wave 2 (sort, more, ed) | ~25 KB |
-| Wave 3 (sed, find, xargs) | ~25 KB |
-| Wave 4 (games) | ~50 KB |
-| Wave 5 (BASIC, demos) | ~35 KB |
-| **Total** | **~300 KB** |
+| Wave 2 (ed, more, sort) | ~20 KB |
+| Wave 3 (quick-win games) | ~30 KB |
+| Wave 5 (sed, find, startrek, scott_adams) | ~60 KB |
+| Wave 6 (tetris, snake, mandelbrot, life) | ~15 KB |
+| Wave 7 (BASIC, Forth) | ~40 KB |
+| Wave 8 (adventure, fweep, awk, etc) | ~80 KB |
+| **Total** | **~460 KB** |
 
-Well within the 4 MB ROM limit. Text size is not a constraint.
-The constraint is always RAM (14 KB data slot per process).
+Well within the 4 MB ROM limit. ROM is abundant.
 
 ---
 
 ## The "Mega Drive Computer" Demo Sequence
 
-The most compelling demo showing what all these apps enable:
-
 ```
 1.  Boot → dash prompt
 2.  fortune displays a quote
 3.  cal shows current month
-4.  ls /bin shows 40+ programs
-5.  echo "hello" | rev demonstrates pipes
-6.  mandelbrot renders a fractal (VDP color version)
-7.  tetris or snake for gaming
-8.  basic to program interactively
-9.  ed to write a shell script
-10. adventure for the ultimate nostalgia
+4.  ls /bin shows 50+ programs
+5.  echo "hello" | rev | cowsay
+6.  mandelbrot renders a color fractal in ~1 second
+7.  tetris with VDP tile graphics
+8.  basic to write and run a program
+9.  ed to write a shell script, then run it
+10. adventure — explore Colossal Cave
+11. levee to edit a file with vi keybindings
 ```
 
 This transforms the Mega Drive from a game console into a general-
