@@ -1377,6 +1377,48 @@ with no diagnostic information.
 This made all the above dash debugging significantly easier — previously
 a fault showed no useful information.
 
+### Bug 17: Levee Missing `-msep-data` — Kernel Panic at PC=0x30000
+
+**Date:** March 2026
+**Symptom:** Levee (vi clone) displayed its startup banner then immediately
+crashed with `KERNEL PANIC: exception` at `PC=0x30000 SR=0x226f
+Access=0x4e900000`. PC=0x30000 is outside user memory (slots start at
+0x40000). The access address 0x4e900000 looked like instruction bytes
+being interpreted as a memory address.
+
+**Root cause:** The levee Makefile was missing `-msep-data` in its CFLAGS.
+All other apps, dash, and libc were compiled with `-msep-data`, which
+reserves register a5 as the GOT (Global Offset Table) base pointer for
+data access. Without `-msep-data`, levee's code used absolute data
+references instead of GOT-relative, and the compiler was free to use a5
+as a scratch register — for example, `initialize()` loaded the address of
+`strlen` into a5 (`lea strlen,%a5`). When levee subsequently called libc
+functions (which ARE compiled with `-msep-data`), those functions used a5
+as their GOT base pointer. Since a5 contained a function address instead
+of the GOT base, GOT-relative lookups returned garbage values.
+Specifically, a function pointer loaded from the corrupted GOT produced
+address 0x30000, and the CPU jumped there — into unmapped memory between
+the kernel and user space.
+
+**Why it wasn't caught earlier:** Levee was ported before Phase 6
+(`-msep-data` + slot allocator). When Phase 6 added `-msep-data` to the
+main `apps/Makefile` and `libc/Makefile`, levee's separate Makefile was
+not updated. The levee binary built and linked without errors since
+-msep-data only changes code generation (using a5 for data access vs
+absolute addresses), not linking. The crash only manifested at runtime.
+
+**Fix:** Added `-msep-data` to `apps/levee/Makefile` CFLAGS. This makes
+levee's code access data through the GOT (a5-relative) and prevents the
+compiler from using a5 as a scratch register. Relocation count dropped
+from 2623 to 531 (data accesses no longer need R_68K_32 relocations since
+they go through the GOT).
+
+**Lesson:** When adding a compilation flag that changes the ABI (like
+`-msep-data` which reserves a register), every Makefile that produces
+object files linked into the same binary must be updated. Separate
+subdirectory Makefiles are easy to miss. A build-system-level check
+(e.g., scanning all .o files for a5 usage) would catch this class of bug.
+
 ---
 
 ## 5. The Relocation Story

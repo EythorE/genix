@@ -60,6 +60,7 @@ tests/test_kprintf
 tests/test_pipe
 tests/test_reloc
 tests/test_dash
+tests/test_abi
 test-md-screenshot*.png
 test-md-imshow*.png
 _levee_source/

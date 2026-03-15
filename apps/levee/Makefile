@@ -5,7 +5,7 @@ LD = $(CROSS)ld
 OBJCOPY = $(CROSS)objcopy
 LIBGCC = $(shell $(CC) -m68000 -print-libgcc-file-name)
 
-CFLAGS = -m68000 -nostdlib -nostartfiles -ffreestanding \
+CFLAGS = -m68000 -msep-data -nostdlib -nostartfiles -ffreestanding \
          -I../../libc/include -Wall -Wno-implicit-int \
          -Wno-return-type -Wno-parentheses -Wno-implicit-function-declaration \
          -Wno-unused-but-set-variable -Wno-unused-variable \

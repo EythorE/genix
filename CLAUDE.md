@@ -270,6 +270,14 @@ These are lessons learned from debugging sessions (documented in full in
   `-msep-data`). mkbin generates synthetic relocs by scanning `.got`.
   If adding new linker-generated sections, verify they have relocation
   coverage.
+- **Every Makefile must have `-msep-data`**: All C files linked into user
+  binaries must be compiled with `-msep-data` (which reserves a5 as the
+  GOT base pointer). Without it, the compiler uses a5 as a scratch
+  register, corrupting GOT-relative data access in libc and other
+  `-msep-data` code. This caused levee to crash at PC=0x30000. Subdirectory
+  Makefiles (like `apps/levee/Makefile`) are easy to miss when adding
+  new flags. Assembly files (crt0.S, syscalls.S) are exempt — they don't
+  touch a5.
 
 ## Auto-Memory Rules
 

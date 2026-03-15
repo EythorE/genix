@@ -2,10 +2,6 @@
 #
 # test-levee.sh — Verify levee (vi clone) starts without crashing
 #
-# KNOWN ISSUE: levee crashes with a kernel panic at PC=0x30000
-# (outside user memory — likely relocation or jump table corruption).
-# This test documents the failure for tracking purposes.
-#
 # Usage: ./scripts/test-levee.sh
 #
 
@@ -45,7 +41,7 @@ fi
 
 echo ""
 echo "=== test-levee: $pass passed, $fail failed ==="
-echo "NOTE: levee is a known-broken program (crash at PC=0x30000)."
+echo ""
 
 if [ $fail -gt 0 ]; then
     exit 1
