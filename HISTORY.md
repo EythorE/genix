@@ -1708,6 +1708,29 @@ _Final status snapshot (March 2026)._
 5. **Levee too large for Mega Drive** — 44 KB binary vs ~28 KB user
    space. Workbench-only until ROM XIP is implemented.
 
+### SYS_MEMINFO syscall and meminfo tool
+
+Added a memory monitoring syscall (`SYS_MEMINFO`, number 200) and a
+`/bin/meminfo` user program that displays the full system memory layout:
+kernel heap usage (total/free/largest-block), user slot allocation
+(per-slot PID, data+BSS usage, heap, XIP text size in ROM, free space),
+and the overall user memory map.
+
+Implementation:
+- `kmem_stats()` in `kernel/mem.c` walks the free list to report
+  heap total, free bytes, and largest contiguous block (fragmentation
+  indicator).
+- `struct meminfo` / `struct slot_info` in `kernel/kernel.h` define
+  the ABI between kernel and userspace.
+- `text_size` and `data_bss` fields added to `struct proc`, set
+  during `load_binary()` and `load_binary_xip()`.
+- `sys_meminfo()` in `kernel/proc.c` fills the struct from kernel
+  globals and the process table.
+- Libc stub in `libc/syscalls.S`.
+- Autotest spawns `/bin/meminfo` and checks exit code 0.
+- Host tests for `kmem_stats()` (initial, after alloc, after free,
+  fragmentation detection).
+
 ---
 
 _End of project history. For active design decisions, see

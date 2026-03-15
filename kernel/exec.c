@@ -371,6 +371,8 @@ int load_binary(const char *path, const char **argv, uint32_t load_addr,
         curproc->mem_base = load_addr;
         curproc->mem_size = slot_size();
         curproc->brk = load_addr + hdr.load_size + hdr.bss_size;
+        curproc->text_size = 0;  /* non-XIP: text is in RAM slot */
+        curproc->data_bss = hdr.load_size + hdr.bss_size;
 
         /* Compute a5 for -msep-data: data region base + got_offset.
          * In the contiguous layout, data starts at load_addr + text_size.
@@ -499,6 +501,8 @@ int load_binary_xip(const char *path, const char **argv,
         curproc->mem_base = data_addr;
         curproc->mem_size = slot_size();
         curproc->brk = data_addr + data_size + hdr.bss_size;
+        curproc->text_size = hdr.text_size;  /* XIP: text in ROM */
+        curproc->data_bss = data_size + hdr.bss_size;
 
         /* Compute a5 for -msep-data: data_addr + got_offset */
         if (HDR_HAS_GOT(&hdr))

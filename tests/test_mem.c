@@ -209,6 +209,85 @@ static void test_write_to_allocated(void)
         ASSERT_EQ(p[i], 'X');
 }
 
+/* --- kmem_stats tests --- */
+
+static void kmem_stats(uintptr_t *total, uintptr_t *free_bytes, uintptr_t *largest)
+{
+    *total = heap_end - heap_start;
+    *free_bytes = 0;
+    *largest = 0;
+
+    struct mem_block *p = free_list;
+    while (p) {
+        *free_bytes += p->size;
+        if (p->size > *largest)
+            *largest = p->size;
+        p = p->next;
+    }
+}
+
+static void test_kmem_stats_initial(void)
+{
+    setup_heap();
+    uintptr_t total, free_bytes, largest;
+    kmem_stats(&total, &free_bytes, &largest);
+    /* Initially all memory is free (one big block) */
+    ASSERT_EQ(total, free_bytes);
+    ASSERT_EQ(total, largest);
+    ASSERT(total > 0);
+}
+
+static void test_kmem_stats_after_alloc(void)
+{
+    setup_heap();
+    uintptr_t total, free_bytes, largest;
+    kmem_stats(&total, &free_bytes, &largest);
+    uintptr_t initial_free = free_bytes;
+
+    void *p = kmalloc(100);
+    ASSERT_NOT_NULL(p);
+
+    kmem_stats(&total, &free_bytes, &largest);
+    /* Free should have decreased */
+    ASSERT(free_bytes < initial_free);
+    /* Used = total - free should be >= 100 (plus header + alignment) */
+    ASSERT(total - free_bytes >= 100);
+}
+
+static void test_kmem_stats_after_free(void)
+{
+    setup_heap();
+    void *p = kmalloc(100);
+    ASSERT_NOT_NULL(p);
+    kfree(p);
+
+    uintptr_t total, free_bytes, largest;
+    kmem_stats(&total, &free_bytes, &largest);
+    /* After freeing, should coalesce back to full heap */
+    ASSERT_EQ(total, free_bytes);
+}
+
+static void test_kmem_stats_fragmentation(void)
+{
+    setup_heap();
+    void *a = kmalloc(64);
+    void *b = kmalloc(64);
+    void *c = kmalloc(64);
+    ASSERT_NOT_NULL(a);
+    ASSERT_NOT_NULL(b);
+    ASSERT_NOT_NULL(c);
+
+    /* Free a and c but not b — creates two non-adjacent free blocks */
+    kfree(a);
+    kfree(c);
+
+    uintptr_t total, free_bytes, largest;
+    kmem_stats(&total, &free_bytes, &largest);
+    /* largest should be less than free_bytes (fragmented) */
+    ASSERT(largest < free_bytes);
+    ASSERT(largest > 0);
+}
+
 /* --- Slot allocator tests (re-implementation of kernel/mem.c slot code) --- */
 
 #define MAX_SLOTS 8
@@ -356,6 +435,12 @@ int main(void)
     RUN_TEST(test_free_coalesce);
     RUN_TEST(test_exhaust_and_free);
     RUN_TEST(test_write_to_allocated);
+
+    printf("\n--- kmem_stats ---\n");
+    RUN_TEST(test_kmem_stats_initial);
+    RUN_TEST(test_kmem_stats_after_alloc);
+    RUN_TEST(test_kmem_stats_after_free);
+    RUN_TEST(test_kmem_stats_fragmentation);
 
     printf("\n--- slot allocator ---\n");
     RUN_TEST(test_slot_alloc_basic);

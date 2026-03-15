@@ -780,6 +780,27 @@ static void autotest(void)
         }
     }
 
+    /* Test 28: spawn /bin/meminfo (exercises SYS_MEMINFO syscall) */
+    kputs("[test] spawn meminfo: ");
+    {
+        int pid = do_spawn("/bin/meminfo", NULL);
+        if (pid > 0) {
+            int status = -1;
+            int wpid = do_waitpid(pid, &status, 0);
+            int exitcode = (status >> 8) & 0xFF;
+            if (wpid == pid && exitcode == 0) {
+                kputs("PASS\n");
+                pass++;
+            } else {
+                kprintf("FAIL (wpid=%d exitcode=%d)\n", wpid, exitcode);
+                fail++;
+            }
+        } else {
+            kprintf("FAIL (spawn returned %d)\n", pid);
+            fail++;
+        }
+    }
+
     /* Summary */
     kprintf("\n=== AUTOTEST DONE: %d passed, %d failed ===\n", pass, fail);
     if (fail > 0)

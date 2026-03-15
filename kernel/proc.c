@@ -1238,6 +1238,52 @@ static int sys_getcwd(char *buf, uint32_t size)
     return (int32_t)(uint32_t)buf;
 }
 
+/* ======== Memory info syscall ======== */
+
+static int32_t sys_meminfo(struct meminfo *info)
+{
+    if (!info) return -EINVAL;
+
+    /* Kernel heap stats */
+    kmem_stats(&info->kheap_total, &info->kheap_free, &info->kheap_largest);
+
+    /* User memory layout */
+    info->user_base = USER_BASE;
+    info->user_top = USER_TOP;
+    info->slot_size = slot_size();
+    info->num_slots = (uint8_t)num_slots;
+    info->_pad[0] = info->_pad[1] = info->_pad[2] = 0;
+
+    /* Per-slot info */
+    for (int i = 0; i < MAX_SLOTS; i++) {
+        struct slot_info *si = &info->slots[i];
+        si->used = 0;
+        si->pid = 0;
+        si->_pad = 0;
+        si->base = slot_base(i);
+        si->size = (i < num_slots) ? slot_size() : 0;
+        si->text_size = 0;
+        si->data_bss = 0;
+        si->brk = 0;
+    }
+
+    /* Fill in per-process info for occupied slots */
+    for (int i = 0; i < MAXPROC; i++) {
+        struct proc *p = &proctab[i];
+        if (p->state == P_FREE) continue;
+        int slot = p->mem_slot;
+        if (slot < 0 || slot >= num_slots) continue;
+        struct slot_info *si = &info->slots[slot];
+        si->used = 1;
+        si->pid = p->pid;
+        si->text_size = p->text_size;
+        si->data_bss = p->data_bss;
+        si->brk = p->brk;
+    }
+
+    return 0;
+}
+
 /* ======== Syscall dispatch ======== */
 
 int32_t syscall_dispatch(uint32_t num, uint32_t a1, uint32_t a2,
@@ -1398,6 +1444,8 @@ int32_t syscall_dispatch(uint32_t num, uint32_t a1, uint32_t a2,
         return do_pipe((int *)a1);
     case SYS_TIME:
         return pal_timer_ticks();
+    case SYS_MEMINFO:
+        return sys_meminfo((struct meminfo *)a1);
     default:
         return -ENOSYS;
     }
