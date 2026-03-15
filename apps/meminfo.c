@@ -1,13 +1,13 @@
 /*
  * meminfo — display system memory layout and usage
  *
- * Shows kernel heap stats, per-slot usage, and XIP text info.
+ * Shows kernel heap stats, per-process memory regions, and XIP text info.
  */
 #include <stdio.h>
 #include <stdint.h>
 
-/* Must match kernel's struct slot_info / struct meminfo exactly */
-struct slot_info {
+/* Must match kernel's struct region_info / struct meminfo exactly */
+struct region_info {
     uint8_t  used;
     uint8_t  pid;
     uint16_t _pad;
@@ -18,7 +18,7 @@ struct slot_info {
     uint32_t brk;
 };
 
-#define MAX_SLOTS 8
+#define MAX_REGIONS 16
 
 struct meminfo {
     uint32_t kheap_total;
@@ -26,10 +26,9 @@ struct meminfo {
     uint32_t kheap_largest;
     uint32_t user_base;
     uint32_t user_top;
-    uint32_t slot_size;
-    uint8_t  num_slots;
-    uint8_t  _pad[3];
-    struct slot_info slots[MAX_SLOTS];
+    uint32_t user_free;
+    uint32_t user_largest;
+    struct region_info regions[MAX_REGIONS];
 };
 
 extern int meminfo(struct meminfo *info);
@@ -56,33 +55,31 @@ int main(void)
     printf("\nUser space:  0x%lx - 0x%lx  (%lu bytes)\n",
            (unsigned long)mi.user_base, (unsigned long)mi.user_top,
            (unsigned long)user_total);
-    printf("Slots:       %d x %lu bytes\n\n",
-           mi.num_slots, (unsigned long)mi.slot_size);
+    printf("Free:        %lu bytes (largest %lu)\n\n",
+           (unsigned long)mi.user_free, (unsigned long)mi.user_largest);
 
-    /* Per-slot detail */
-    for (int i = 0; i < mi.num_slots; i++) {
-        struct slot_info *s = &mi.slots[i];
-        printf("Slot %d: ", i);
-        if (!s->used) {
-            printf("[FREE]  0x%lx\n", (unsigned long)s->base);
+    /* Per-process detail */
+    for (int i = 0; i < MAX_REGIONS; i++) {
+        struct region_info *r = &mi.regions[i];
+        if (!r->used)
             continue;
-        }
-        printf("[PID %d] 0x%lx\n", s->pid, (unsigned long)s->base);
-        if (s->text_size > 0)
+        printf("PID %d: 0x%lx  (%lu bytes)\n",
+               r->pid, (unsigned long)r->base, (unsigned long)r->size);
+        if (r->text_size > 0)
             printf("  ROM text (XIP): %lu bytes\n",
-                   (unsigned long)s->text_size);
+                   (unsigned long)r->text_size);
         printf("  Data+BSS:       %lu / %lu bytes\n",
-               (unsigned long)s->data_bss, (unsigned long)s->size);
+               (unsigned long)r->data_bss, (unsigned long)r->size);
         uint32_t heap_used = 0;
-        if (s->brk > s->base + s->data_bss)
-            heap_used = s->brk - (s->base + s->data_bss);
+        if (r->brk > r->base + r->data_bss)
+            heap_used = r->brk - (r->base + r->data_bss);
         printf("  Heap:           %lu bytes\n", (unsigned long)heap_used);
         uint32_t stack_reserve = 4096;
-        uint32_t used = s->data_bss + heap_used;
-        uint32_t avail = s->size > used + stack_reserve ?
-                         s->size - used - stack_reserve : 0;
+        uint32_t used = r->data_bss + heap_used;
+        uint32_t avail = r->size > used + stack_reserve ?
+                         r->size - used - stack_reserve : 0;
         printf("  Stack reserve:  %lu bytes\n", (unsigned long)stack_reserve);
-        printf("  Free in slot:   %lu bytes\n", (unsigned long)avail);
+        printf("  Free in region: %lu bytes\n", (unsigned long)avail);
     }
 
     return 0;

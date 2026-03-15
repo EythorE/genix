@@ -184,16 +184,16 @@ void  kfree(void *ptr);
 void *sbrk_proc(int32_t incr);
 void  kmem_stats(uint32_t *total, uint32_t *free_bytes, uint32_t *largest);
 
-#define MAX_SLOTS   8
+#define MAX_REGIONS   16  /* max concurrent user memory regions (= MAXPROC) */
 
 /* ======== Memory info (SYS_MEMINFO) ======== */
 
-struct slot_info {
-    uint8_t  used;        /* 1 if slot is occupied */
+struct region_info {
+    uint8_t  used;        /* 1 if region is occupied */
     uint8_t  pid;         /* owning process PID (0 if free) */
     uint16_t _pad;
-    uint32_t base;        /* slot base address */
-    uint32_t size;        /* slot size */
+    uint32_t base;        /* region base address */
+    uint32_t size;        /* region size */
     uint32_t text_size;   /* text in ROM (XIP), 0 if non-XIP */
     uint32_t data_bss;    /* data+bss bytes used */
     uint32_t brk;         /* current heap break */
@@ -204,23 +204,20 @@ struct meminfo {
     uint32_t kheap_total;
     uint32_t kheap_free;
     uint32_t kheap_largest;
-    /* User slots */
+    /* User memory */
     uint32_t user_base;
     uint32_t user_top;
-    uint32_t slot_size;
-    uint8_t  num_slots;
-    uint8_t  _pad[3];
-    struct slot_info slots[MAX_SLOTS];
+    uint32_t user_free;     /* total free bytes in user pool */
+    uint32_t user_largest;  /* largest contiguous free region */
+    struct region_info regions[MAX_REGIONS];
 };
 
-/* ======== Slot allocator (Phase 6) ======== */
+/* ======== User memory allocator ======== */
 
-void slot_init(void);
-int  slot_alloc(void);     /* returns slot index or -1 */
-void slot_free(int slot);
-uint32_t slot_base(int slot);
-uint32_t slot_size(void);
-extern int num_slots;
+void     umem_init(void);
+uint32_t umem_alloc(uint32_t need);   /* returns base address or 0 */
+void     umem_free(uint32_t base);
+void     umem_stats(uint32_t *free_bytes, uint32_t *largest);
 
 /* ======== Filesystem (minifs) ======== */
 
@@ -389,12 +386,10 @@ struct proc {
     uint8_t  ppid;
     int8_t   exitcode;
     uint32_t ksp;          /* saved kernel stack pointer (into kstack[]) */
-    uint32_t mem_base;     /* start of process memory (slot base) */
-    uint32_t mem_size;     /* size of allocated memory (slot size) */
+    uint32_t mem_base;     /* start of process memory (0 = none) */
+    uint32_t mem_size;     /* size of allocated memory */
     uint32_t brk;          /* current break (top of data) */
-    uint32_t data_a5;      /* a5 value for -msep-data (GOT base in slot) */
-    int8_t   mem_slot;     /* slot index (-1 = no slot) */
-    uint8_t  _pad1;
+    uint32_t data_a5;      /* a5 value for -msep-data (GOT base) */
     uint32_t text_size;    /* text segment size (0 if non-XIP, ROM bytes if XIP) */
     uint32_t data_bss;     /* data+bss size loaded into slot */
     uint16_t cwd;          /* current working directory inode */
@@ -417,8 +412,10 @@ int  load_binary(const char *path, const char **argv, uint32_t load_addr,
 int  load_binary_xip(const char *path, const char **argv,
                      uint32_t text_addr, uint32_t data_addr,
                      uint32_t *entry_out, uint32_t *user_sp_out);
-int  exec_validate_header(const struct genix_header *hdr);
-int  exec_validate_header_xip(const struct genix_header *hdr);
+int  exec_validate_header(const struct genix_header *hdr, uint32_t region_size);
+int  exec_validate_header_xip(const struct genix_header *hdr, uint32_t region_size);
+uint32_t exec_mem_need(const struct genix_header *hdr);
+uint32_t exec_mem_need_xip(const struct genix_header *hdr);
 void apply_relocations_xip(uint8_t *text_mem, uint32_t text_base,
                             uint8_t *data_mem, uint32_t data_base,
                             uint32_t text_size, uint32_t load_size,

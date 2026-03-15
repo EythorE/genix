@@ -295,23 +295,24 @@ struct simple_proc {
     int pid;
     int ppid;
     int state;
-    int mem_slot;
+    uint32_t mem_base;
+    uint32_t mem_size;
     int exitcode;
 };
 
 static void test_correct_vfork_exec_semantics(void)
 {
     /* Setup: parent (PID 1) did vfork, child (PID 2) is running */
-    struct simple_proc parent = { .pid = 1, .state = P_VFORK, .mem_slot = 0 };
-    struct simple_proc child  = { .pid = 2, .ppid = 1, .state = P_RUNNING, .mem_slot = -1 };
+    struct simple_proc parent = { .pid = 1, .state = P_VFORK, .mem_base = 0x040000, .mem_size = 10000 };
+    struct simple_proc child  = { .pid = 2, .ppid = 1, .state = P_RUNNING, .mem_base = 0 };
 
     /* What happens when child calls execve("/bin/echo"): */
 
-    /* 1. Child gets its own memory slot */
-    int new_slot = 1;  /* slot_alloc() */
-    child.mem_slot = new_slot;
+    /* 1. Child gets its own memory region via umem_alloc */
+    child.mem_base = 0x042710;  /* umem_alloc(need) */
+    child.mem_size = 5000;
 
-    /* 2. Binary loaded into new slot */
+    /* 2. Binary loaded into new region */
 
     /* 3. Child marked P_READY for scheduler */
     child.state = P_READY;
@@ -323,7 +324,8 @@ static void test_correct_vfork_exec_semantics(void)
 
     /* Verify post-conditions */
     ASSERT_EQ(child.state, P_READY);
-    ASSERT_EQ(child.mem_slot, 1);  /* own slot, not parent's */
+    ASSERT(child.mem_base != parent.mem_base);  /* own region, not parent's */
+    ASSERT(child.mem_base != 0);  /* has memory allocated */
     ASSERT_EQ(parent.state, P_RUNNING);  /* parent resumed */
 }
 

@@ -119,72 +119,133 @@ void kmem_stats(uint32_t *total, uint32_t *free_bytes, uint32_t *largest)
     }
 }
 
-/* ======== Slot allocator (Phase 6) ======== */
+/* ======== User memory allocator ======== */
 
 /*
- * Divide user RAM (USER_BASE..USER_TOP) into fixed-size slots.
- * Each process gets one slot for .data + .bss + heap + stack.
- * Text stays in ROM (XIP), shared by all processes.
+ * Variable-size first-fit allocator for user process memory.
  *
- * Slot size is USER_SIZE / num_slots, rounded down to 4-byte alignment.
- * Mega Drive: 2 slots × ~13.75 KB each.
- * Workbench: 8 slots × ~88 KB each.
+ * Instead of maintaining a separate free list, this allocator scans the
+ * process table (proctab[]) to find used regions. The gaps between them
+ * are free space. This works because:
+ *   - Every active process already stores mem_base and mem_size
+ *   - At most MAXPROC (16) processes exist — linear scan is trivial
+ *   - No inline headers needed (process data starts at mem_base)
+ *   - Coalescing is automatic: clearing mem_base makes the gap visible
  */
 
-int num_slots;
-static uint8_t  slot_used[MAX_SLOTS];
-static uint32_t slot_bases[MAX_SLOTS];
-static uint32_t slot_sz;
+static uint32_t umem_base, umem_top;
 
-void slot_init(void)
+void umem_init(void)
 {
-    /* Choose slot count based on available user RAM.
-     * Mega Drive (~27.5 KB): 2 slots (dash uses XIP — text in ROM).
-     * Workbench (~704 KB): 6 slots (~117 KB each, fits dash ~100 KB
-     * which has no XIP on workbench since disk is I/O, not memory-mapped). */
-    if (USER_SIZE >= 128 * 1024)
-        num_slots = 6;
-    else if (USER_SIZE >= 64 * 1024)
-        num_slots = 4;
-    else
-        num_slots = 2;
-
-    slot_sz = (USER_SIZE / num_slots) & ~3u;
-
-    for (int i = 0; i < num_slots; i++) {
-        slot_used[i] = 0;
-        slot_bases[i] = USER_BASE + (uint32_t)i * slot_sz;
-    }
-
-    kprintf("[slot] %d slots, %d bytes each (0x%x-0x%x)\n",
-            num_slots, slot_sz, USER_BASE, USER_BASE + num_slots * slot_sz);
+    umem_base = USER_BASE;
+    umem_top = USER_TOP;
+    kprintf("[umem] user pool 0x%x-0x%x (%d bytes)\n",
+            umem_base, umem_top, umem_top - umem_base);
 }
 
-int slot_alloc(void)
+/*
+ * Find a free region of at least `need` bytes. Returns base address or 0.
+ *
+ * Algorithm: collect all used regions from proctab, sort by address,
+ * scan gaps for first fit. O(n^2) where n <= MAXPROC = 16.
+ */
+uint32_t umem_alloc(uint32_t need)
 {
-    for (int i = 0; i < num_slots; i++) {
-        if (!slot_used[i]) {
-            slot_used[i] = 1;
-            return i;
+    need = (need + 3) & ~3u;  /* 4-byte align */
+
+    /* Collect used regions from proctab */
+    uint32_t bases[MAXPROC], sizes[MAXPROC];
+    int n = 0;
+    for (int i = 0; i < MAXPROC; i++) {
+        if (proctab[i].state != P_FREE && proctab[i].mem_base != 0) {
+            bases[n] = proctab[i].mem_base;
+            sizes[n] = proctab[i].mem_size;
+            n++;
         }
     }
-    return -1;
+
+    /* Insertion sort by base address */
+    for (int i = 1; i < n; i++) {
+        uint32_t kb = bases[i], ks = sizes[i];
+        int j = i - 1;
+        while (j >= 0 && bases[j] > kb) {
+            bases[j + 1] = bases[j];
+            sizes[j + 1] = sizes[j];
+            j--;
+        }
+        bases[j + 1] = kb;
+        sizes[j + 1] = ks;
+    }
+
+    /* Scan gaps for first fit */
+    uint32_t gap_start = umem_base;
+    for (int i = 0; i < n; i++) {
+        uint32_t gap = bases[i] - gap_start;
+        if (gap >= need)
+            return gap_start;
+        gap_start = bases[i] + sizes[i];
+    }
+
+    /* Check gap after last region */
+    if (umem_top - gap_start >= need)
+        return gap_start;
+
+    return 0;  /* no space */
 }
 
-void slot_free(int slot)
+/*
+ * Free a user memory region. Just clears mem_base in the proc struct.
+ * The gap becomes visible on the next umem_alloc scan automatically.
+ */
+void umem_free(uint32_t base)
 {
-    if (slot >= 0 && slot < num_slots)
-        slot_used[slot] = 0;
+    (void)base;  /* nothing to do — caller clears proc->mem_base */
 }
 
-uint32_t slot_base(int slot)
+/*
+ * Report free space statistics for the user memory pool.
+ */
+void umem_stats(uint32_t *free_bytes, uint32_t *largest)
 {
-    if (slot >= 0 && slot < num_slots)
-        return slot_bases[slot];
-    return 0;
-}
+    *free_bytes = 0;
+    *largest = 0;
 
-uint32_t slot_size(void)
-{
-    return slot_sz;
+    /* Same scan as umem_alloc but tracks stats instead of allocating */
+    uint32_t bases[MAXPROC], sizes[MAXPROC];
+    int n = 0;
+    for (int i = 0; i < MAXPROC; i++) {
+        if (proctab[i].state != P_FREE && proctab[i].mem_base != 0) {
+            bases[n] = proctab[i].mem_base;
+            sizes[n] = proctab[i].mem_size;
+            n++;
+        }
+    }
+
+    /* Sort by base */
+    for (int i = 1; i < n; i++) {
+        uint32_t kb = bases[i], ks = sizes[i];
+        int j = i - 1;
+        while (j >= 0 && bases[j] > kb) {
+            bases[j + 1] = bases[j];
+            sizes[j + 1] = sizes[j];
+            j--;
+        }
+        bases[j + 1] = kb;
+        sizes[j + 1] = ks;
+    }
+
+    uint32_t gap_start = umem_base;
+    for (int i = 0; i < n; i++) {
+        uint32_t gap = bases[i] - gap_start;
+        *free_bytes += gap;
+        if (gap > *largest)
+            *largest = gap;
+        gap_start = bases[i] + sizes[i];
+    }
+
+    /* Gap after last region */
+    uint32_t gap = umem_top - gap_start;
+    *free_bytes += gap;
+    if (gap > *largest)
+        *largest = gap;
 }

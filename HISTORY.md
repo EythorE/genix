@@ -1772,6 +1772,51 @@ Implementation:
 - Host tests for `kmem_stats()` (initial, after alloc, after free,
   fragmentation detection).
 
+### Variable-Size User Memory Allocator (replacing fixed slots)
+
+**Date:** 2026-03-15
+
+The Phase 6 fixed-slot allocator divided user RAM into equal-size slots
+(2 × 13,750 bytes on Mega Drive). This was replaced with a variable-size
+allocator because:
+
+1. **97% waste for small programs:** `ls` (400 B data+bss) got 13,750 B.
+2. **Pipeline failure:** `ls | more` needs 3 concurrent processes (dash +
+   ls + more) but only 2 slots existed. The pipeline failed with ENOMEM.
+3. **Artificial size cap:** Larger programs were limited to slot_size even
+   when more RAM was available.
+
+**Solution:** Proc-table-scanned first-fit allocator. The process table
+already stores `mem_base` and `mem_size` for each active process — the
+allocator scans proctab to find gaps in USER_BASE..USER_TOP and returns
+the first gap >= the requested size. No new data structures, no inline
+headers. ~25 lines of allocator code replace ~70 lines of slot code.
+
+**Key changes:**
+- `kernel/mem.c`: Removed `slot_init/alloc/free/base/size` (~70 lines).
+  Added `umem_init/alloc/free/stats` (~50 lines). Net reduction.
+- `kernel/exec.c`: `do_exec` now reads the binary header first to compute
+  memory needs, then allocates. This fixes the old slot-before-file-lookup
+  weak spot. `exec_validate_header` takes `region_size` parameter instead
+  of calling `slot_size()`. Added `exec_mem_need`/`exec_mem_need_xip`
+  helpers.
+- `kernel/proc.c`: `do_spawn` reads header first, computes needs, allocates
+  variable-size region. `do_exit` clears `mem_base` instead of calling
+  `slot_free`. `sys_meminfo` reports per-process regions instead of
+  per-slot info.
+- `kernel/kernel.h`: Removed `mem_slot` from `struct proc`. Renamed
+  `struct slot_info` to `struct region_info`. Updated `struct meminfo`
+  with `user_free`/`user_largest` instead of `slot_size`/`num_slots`.
+- `apps/meminfo.c`: Updated to display variable regions instead of
+  fixed slots.
+- `tests/test_mem.c`: Replaced 8 slot allocator tests with 17 umem
+  tests (variable sizes, fragmentation, pipeline scenario, stats).
+
+**Lesson:** On a system with 27.5 KB of user RAM and programs ranging
+from 400 B to 15 KB, a fixed-size allocator is the wrong abstraction.
+The "simplest" approach (equal slots) was the most wasteful. Allocating
+what's needed requires fewer lines of code and works better.
+
 ---
 
 _End of project history. For active design decisions, see

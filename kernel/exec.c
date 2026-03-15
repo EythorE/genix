@@ -24,10 +24,38 @@ int exec_active = 0;
 uint32_t exec_user_a5;  /* a5 for -msep-data, set before exec_enter */
 
 /*
+ * Compute the minimum memory needed for a non-XIP binary.
+ * Includes load_size + effective_bss + stack.
+ */
+uint32_t exec_mem_need(const struct genix_header *hdr)
+{
+    uint32_t stack = HDR_STACK_SIZE(hdr);
+    if (stack == 0) stack = USER_STACK_DEFAULT;
+    uint32_t reloc_bytes = hdr->reloc_count * 4;
+    uint32_t effective_bss = hdr->bss_size;
+    if (reloc_bytes > effective_bss)
+        effective_bss = reloc_bytes;
+    return hdr->load_size + effective_bss + stack;
+}
+
+/*
+ * Compute the minimum memory needed for an XIP binary.
+ * Only data + bss + stack (text stays in ROM).
+ */
+uint32_t exec_mem_need_xip(const struct genix_header *hdr)
+{
+    uint32_t data_size = hdr->load_size - hdr->text_size;
+    uint32_t stack = HDR_STACK_SIZE(hdr);
+    if (stack == 0) stack = USER_STACK_DEFAULT;
+    return data_size + hdr->bss_size + stack;
+}
+
+/*
  * Validate a Genix binary header.
+ * region_size is the available memory for this process.
  * Returns 0 on success, negative errno on failure.
  */
-int exec_validate_header(const struct genix_header *hdr)
+int exec_validate_header(const struct genix_header *hdr, uint32_t region_size)
 {
     if (hdr->magic != GENIX_MAGIC)
         return -ENOEXEC;
@@ -43,22 +71,9 @@ int exec_validate_header(const struct genix_header *hdr)
     if (hdr->text_size > hdr->load_size)
         return -ENOEXEC;
 
-    /* Check that the binary fits in a memory slot.
-     * Need: load_size + bss_size + stack.
-     * The relocation table is loaded into BSS temporarily, so BSS
-     * must be large enough for the reloc table (or we pad if needed). */
-    uint32_t stack = HDR_STACK_SIZE(hdr);
-    if (stack == 0) stack = USER_STACK_DEFAULT;
-    uint32_t reloc_bytes = hdr->reloc_count * 4;
-
-    /* BSS must be at least as large as the relocation table,
-     * since we load the reloc table into BSS area temporarily. */
-    uint32_t effective_bss = hdr->bss_size;
-    if (reloc_bytes > effective_bss)
-        effective_bss = reloc_bytes;
-
-    uint32_t total = hdr->load_size + effective_bss + stack;
-    if (total > slot_size())
+    /* Check that the binary fits in the allocated region */
+    uint32_t total = exec_mem_need(hdr);
+    if (total > region_size)
         return -ENOMEM;
 
     return 0;
@@ -71,7 +86,7 @@ int exec_validate_header(const struct genix_header *hdr)
  * Requires text_size > 0 (split text/data) and GENIX_FLAG_XIP set.
  * Returns 0 on success, negative errno on failure.
  */
-int exec_validate_header_xip(const struct genix_header *hdr)
+int exec_validate_header_xip(const struct genix_header *hdr, uint32_t region_size)
 {
     if (hdr->magic != GENIX_MAGIC)
         return -ENOEXEC;
@@ -91,12 +106,9 @@ int exec_validate_header_xip(const struct genix_header *hdr)
     if (!(hdr->flags & GENIX_FLAG_XIP))
         return -ENOEXEC;
 
-    /* Only data+BSS+stack must fit in a memory slot (text is in ROM) */
-    uint32_t data_size = hdr->load_size - hdr->text_size;
-    uint32_t stack = HDR_STACK_SIZE(hdr);
-    if (stack == 0) stack = USER_STACK_DEFAULT;
-    uint32_t total = data_size + hdr->bss_size + stack;
-    if (total > slot_size())
+    /* Only data+BSS+stack must fit in the allocated region (text is in ROM) */
+    uint32_t total = exec_mem_need_xip(hdr);
+    if (total > region_size)
         return -ENOMEM;
 
     return 0;
@@ -315,7 +327,7 @@ int load_binary(const char *path, const char **argv, uint32_t load_addr,
         return -ENOEXEC;
     }
 
-    int err = exec_validate_header(&hdr);
+    int err = exec_validate_header(&hdr, curproc->mem_size);
     if (err < 0) {
         fs_iput(ip);
         return err;
@@ -362,16 +374,14 @@ int load_binary(const char *path, const char **argv, uint32_t load_addr,
     if (zero_size > 0)
         memset((void *)(load_addr + hdr.load_size), 0, zero_size);
 
-    /* Set up user stack at top of slot */
-    uint32_t stack_top = load_addr + slot_size();
+    /* Set up user stack at top of region */
+    uint32_t stack_top = load_addr + curproc->mem_size;
     uint32_t user_sp = exec_setup_stack(stack_top, path, argv);
 
     /* Update process info */
     if (curproc) {
-        curproc->mem_base = load_addr;
-        curproc->mem_size = slot_size();
         curproc->brk = load_addr + hdr.load_size + hdr.bss_size;
-        curproc->text_size = 0;  /* non-XIP: text is in RAM slot */
+        curproc->text_size = 0;  /* non-XIP: text is in RAM */
         curproc->data_bss = hdr.load_size + hdr.bss_size;
 
         /* Compute a5 for -msep-data: data region base + got_offset.
@@ -430,7 +440,7 @@ int load_binary_xip(const char *path, const char **argv,
         return -ENOEXEC;
     }
 
-    int err = exec_validate_header_xip(&hdr);
+    int err = exec_validate_header_xip(&hdr, curproc->mem_size);
     if (err < 0) {
         fs_iput(ip);
         return err;
@@ -492,14 +502,12 @@ int load_binary_xip(const char *path, const char **argv,
     if (hdr.bss_size > 0)
         memset((void *)(data_addr + data_size), 0, hdr.bss_size);
 
-    /* Set up user stack at top of slot */
-    uint32_t stack_top = data_addr + slot_size();
+    /* Set up user stack at top of region */
+    uint32_t stack_top = data_addr + curproc->mem_size;
     uint32_t user_sp = exec_setup_stack(stack_top, path, argv);
 
     /* Update process info */
     if (curproc) {
-        curproc->mem_base = data_addr;
-        curproc->mem_size = slot_size();
         curproc->brk = data_addr + data_size + hdr.bss_size;
         curproc->text_size = hdr.text_size;  /* XIP: text in ROM */
         curproc->data_bss = data_size + hdr.bss_size;
@@ -538,41 +546,72 @@ int do_exec(const char *path, const char **argv)
     uint32_t entry, user_sp;
     int err;
 
-    /* Allocate a temporary slot for this synchronous exec */
-    int slot = slot_alloc();
-    if (slot < 0)
+    /* Read the binary header to determine memory needs */
+    struct inode *ip = fs_namei(path);
+    if (!ip)
+        return -ENOENT;
+    if (ip->type != FT_FILE) {
+        fs_iput(ip);
+        return -ENOEXEC;
+    }
+
+    struct genix_header hdr;
+    int n = fs_read(ip, &hdr, 0, sizeof(hdr));
+    if (n != sizeof(hdr)) {
+        fs_iput(ip);
+        return -ENOEXEC;
+    }
+
+    /* Determine memory needed: try XIP first, fall back to non-XIP */
+    uint32_t rom_addr = pal_rom_file_addr(ip);
+    fs_iput(ip);
+
+    uint32_t need;
+    int use_xip = 0;
+    if (rom_addr && hdr.text_size > 0 && (hdr.flags & GENIX_FLAG_XIP)) {
+        need = exec_mem_need_xip(&hdr);
+        use_xip = 1;
+    } else {
+        need = exec_mem_need(&hdr);
+        rom_addr = 0;  /* not usable for XIP */
+    }
+
+    /* Allocate user memory region */
+    uint32_t data_addr = umem_alloc(need);
+    if (data_addr == 0)
         return -ENOMEM;
 
-    uint32_t data_addr = slot_base(slot);
-    curproc->mem_slot = slot;
     curproc->mem_base = data_addr;
-    curproc->mem_size = slot_size();
+    curproc->mem_size = need;
 
-    /* Try XIP first: if the file is in memory-mapped ROM and has the
-     * XIP flag, execute text directly from ROM (saves precious RAM). */
-    struct inode *ip = fs_namei(path);
-    if (ip) {
-        uint32_t rom_addr = pal_rom_file_addr(ip);
-        fs_iput(ip);
-        if (rom_addr) {
-            err = load_binary_xip(path, argv,
-                                  rom_addr + GENIX_HDR_SIZE, data_addr,
-                                  &entry, &user_sp);
-            if (err == 0)
-                goto run;
-            /* XIP failed (not XIP-flagged, or validation error) —
-             * fall through to regular loading */
+    /* Load the binary */
+    if (use_xip) {
+        err = load_binary_xip(path, argv,
+                              rom_addr + GENIX_HDR_SIZE, data_addr,
+                              &entry, &user_sp);
+        if (err < 0) {
+            /* XIP failed — try non-XIP if the region is large enough */
+            uint32_t need2 = exec_mem_need(&hdr);
+            if (need2 > need) {
+                /* Need a larger region for non-XIP; free and re-allocate */
+                curproc->mem_base = 0;
+                data_addr = umem_alloc(need2);
+                if (data_addr == 0)
+                    return -ENOMEM;
+                curproc->mem_base = data_addr;
+                curproc->mem_size = need2;
+            }
+            err = load_binary(path, argv, data_addr, &entry, &user_sp);
         }
+    } else {
+        err = load_binary(path, argv, data_addr, &entry, &user_sp);
     }
 
-    err = load_binary(path, argv, data_addr, &entry, &user_sp);
     if (err < 0) {
-        slot_free(slot);
-        curproc->mem_slot = -1;
+        curproc->mem_base = 0;
+        curproc->mem_size = 0;
         return err;
     }
-
-run:
 
     /* Vfork child doing exec: become an independent schedulable process
      * instead of running synchronously.  Set up kstack for first context
@@ -597,9 +636,9 @@ run:
     int exitcode = exec_enter(entry, user_sp, proc_kstack_top(curproc));
     exec_active = 0;
 
-    /* Free the temporary slot */
-    slot_free(slot);
-    curproc->mem_slot = -1;
+    /* Free user memory */
+    curproc->mem_base = 0;
+    curproc->mem_size = 0;
 
     kprintf("[exec] Program exited with code %d\n", exitcode);
     return exitcode;

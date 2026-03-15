@@ -23,7 +23,7 @@ void proc_init(void)
     curproc->ppid = 0;
     curproc->cwd = 1;  /* root directory */
     curproc->pgrp = 0;
-    curproc->mem_slot = -1;  /* kernel shell has no slot */
+    curproc->mem_base = 0;   /* kernel shell has no user memory */
     curproc->data_a5 = 0;
     curproc->kstack[0] = KSTACK_CANARY;
     nproc = 1;
@@ -378,11 +378,9 @@ void do_exit(int code)
         }
     }
 
-    /* Free the memory slot */
-    if (curproc->mem_slot >= 0) {
-        slot_free(curproc->mem_slot);
-        curproc->mem_slot = -1;
-    }
+    /* Free user memory */
+    curproc->mem_base = 0;
+    curproc->mem_size = 0;
 
     curproc->exitcode = code;
     curproc->state = P_ZOMBIE;
@@ -528,7 +526,8 @@ int do_vfork(void)
     child->ppid = parent->pid;
     child->state = P_RUNNING;
     child->exitcode = 0;
-    child->mem_slot = -1;  /* child doesn't own a slot until exec allocates one */
+    child->mem_base = 0;  /* child has no user memory until exec allocates */
+    child->mem_size = 0;
 
     /* Increment refcounts on open file descriptors */
     for (int i = 0; i < MAXFD; i++) {
@@ -564,15 +563,45 @@ int do_vfork(void)
  */
 int do_spawn(const char *path, const char **argv)
 {
+    /* Read the binary header to determine memory needs */
+    struct inode *ip = fs_namei(path);
+    if (!ip)
+        return -ENOENT;
+    if (ip->type != FT_FILE) {
+        fs_iput(ip);
+        return -ENOEXEC;
+    }
+
+    struct genix_header hdr;
+    int n = fs_read(ip, &hdr, 0, sizeof(hdr));
+    if (n != (int)sizeof(hdr)) {
+        fs_iput(ip);
+        return -ENOEXEC;
+    }
+
+    /* Determine memory needed: try XIP first */
+    uint32_t rom_addr = pal_rom_file_addr(ip);
+    fs_iput(ip);
+
+    uint32_t need;
+    int use_xip = 0;
+    if (rom_addr && hdr.text_size > 0 && (hdr.flags & GENIX_FLAG_XIP)) {
+        need = exec_mem_need_xip(&hdr);
+        use_xip = 1;
+    } else {
+        need = exec_mem_need(&hdr);
+        rom_addr = 0;
+    }
+
     uint8_t cpid = alloc_pid();
     if (cpid == 0xFF)
         return -EAGAIN;
 
     struct proc *child = &proctab[cpid];
 
-    /* Allocate a memory slot for the child */
-    int slot = slot_alloc();
-    if (slot < 0) {
+    /* Allocate user memory for the child */
+    uint32_t data_addr = umem_alloc(need);
+    if (data_addr == 0) {
         return -ENOMEM;
     }
 
@@ -583,11 +612,10 @@ int do_spawn(const char *path, const char **argv)
     child->exitcode = 0;
     child->cwd = curproc->cwd;
     child->pgrp = cpid;  /* own process group by default */
-    child->mem_base = slot_base(slot);
-    child->mem_size = slot_size();
+    child->mem_base = data_addr;
+    child->mem_size = need;
     child->brk = 0;
     child->data_a5 = 0;
-    child->mem_slot = slot;
     child->sig_pending = 0;
     for (int i = 0; i < NSIG; i++)
         child->sig_handler[i] = SIG_DFL;
@@ -600,33 +628,42 @@ int do_spawn(const char *path, const char **argv)
     }
     nproc++;
 
-    /* Save current curproc — load_binary updates curproc->mem_base etc. */
+    /* Save current curproc — load_binary updates curproc fields */
     struct proc *parent = curproc;
     curproc = child;
 
-    /* Load binary into the child's slot.
+    /* Load binary into the child's region.
      * Try XIP first if ROM address is available. */
     uint32_t entry, user_sp;
     int rc = -ENOEXEC;
-    {
-        struct inode *xip = fs_namei(path);
-        if (xip) {
-            uint32_t rom_addr = pal_rom_file_addr(xip);
-            fs_iput(xip);
-            if (rom_addr)
-                rc = load_binary_xip(path, argv,
-                                     rom_addr + GENIX_HDR_SIZE,
-                                     child->mem_base,
-                                     &entry, &user_sp);
+    if (use_xip)
+        rc = load_binary_xip(path, argv,
+                             rom_addr + GENIX_HDR_SIZE,
+                             child->mem_base,
+                             &entry, &user_sp);
+    if (rc < 0) {
+        /* XIP failed or not attempted — try non-XIP.
+         * May need a larger region if we allocated for XIP. */
+        uint32_t need2 = exec_mem_need(&hdr);
+        if (need2 > child->mem_size) {
+            child->mem_base = 0;
+            data_addr = umem_alloc(need2);
+            if (data_addr == 0) {
+                rc = -ENOMEM;
+                goto fail;
+            }
+            child->mem_base = data_addr;
+            child->mem_size = need2;
         }
-    }
-    if (rc < 0)
         rc = load_binary(path, argv, child->mem_base, &entry, &user_sp);
+    }
 
+fail:
     /* Restore curproc to parent */
     curproc = parent;
 
     if (rc < 0) {
+
         /* Clean up child's inherited FDs */
         for (int i = 0; i < MAXFD; i++) {
             if (child->fd[i]) {
@@ -634,8 +671,8 @@ int do_spawn(const char *path, const char **argv)
                 child->fd[i] = NULL;
             }
         }
-        slot_free(slot);
-        child->mem_slot = -1;
+        child->mem_base = 0;
+        child->mem_size = 0;
         child->state = P_FREE;
         nproc--;
         return rc;
@@ -1250,35 +1287,35 @@ static int32_t sys_meminfo(struct meminfo *info)
     /* User memory layout */
     info->user_base = USER_BASE;
     info->user_top = USER_TOP;
-    info->slot_size = slot_size();
-    info->num_slots = (uint8_t)num_slots;
-    info->_pad[0] = info->_pad[1] = info->_pad[2] = 0;
+    umem_stats(&info->user_free, &info->user_largest);
 
-    /* Per-slot info */
-    for (int i = 0; i < MAX_SLOTS; i++) {
-        struct slot_info *si = &info->slots[i];
-        si->used = 0;
-        si->pid = 0;
-        si->_pad = 0;
-        si->base = slot_base(i);
-        si->size = (i < num_slots) ? slot_size() : 0;
-        si->text_size = 0;
-        si->data_bss = 0;
-        si->brk = 0;
+    /* Per-process region info */
+    int ri = 0;
+    for (int i = 0; i < MAXPROC && ri < MAX_REGIONS; i++) {
+        struct proc *p = &proctab[i];
+        if (p->state == P_FREE || p->mem_base == 0) continue;
+        struct region_info *r = &info->regions[ri++];
+        r->used = 1;
+        r->pid = p->pid;
+        r->_pad = 0;
+        r->base = p->mem_base;
+        r->size = p->mem_size;
+        r->text_size = p->text_size;
+        r->data_bss = p->data_bss;
+        r->brk = p->brk;
     }
 
-    /* Fill in per-process info for occupied slots */
-    for (int i = 0; i < MAXPROC; i++) {
-        struct proc *p = &proctab[i];
-        if (p->state == P_FREE) continue;
-        int slot = p->mem_slot;
-        if (slot < 0 || slot >= num_slots) continue;
-        struct slot_info *si = &info->slots[slot];
-        si->used = 1;
-        si->pid = p->pid;
-        si->text_size = p->text_size;
-        si->data_bss = p->data_bss;
-        si->brk = p->brk;
+    /* Clear remaining entries */
+    for (; ri < MAX_REGIONS; ri++) {
+        struct region_info *r = &info->regions[ri];
+        r->used = 0;
+        r->pid = 0;
+        r->_pad = 0;
+        r->base = 0;
+        r->size = 0;
+        r->text_size = 0;
+        r->data_bss = 0;
+        r->brk = 0;
     }
 
     return 0;

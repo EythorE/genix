@@ -98,7 +98,7 @@ void kmain(void)
     fs_init();
     dev_create_nodes();
     proc_init();
-    slot_init();
+    umem_init();
 
     kputs("All subsystems initialized.\n");
 

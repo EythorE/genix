@@ -185,14 +185,19 @@ deferral, and concurrent pipeline execution all work on both platforms.
 - `exec_user_a5` global is set by `do_exec()` before `exec_enter()`.
   For spawned processes, a5 is baked into the kstack register frame.
 
+**Update (2026-03-15):** Fixed-slot allocator replaced with variable-size
+user memory allocator (`umem_alloc`). The slot allocator's equal-size
+division wasted 97% of RAM for small programs and limited Mega Drive to
+2 concurrent processes. The new allocator scans proctab to find gaps,
+allocating exactly what each process needs. See
+[docs/decisions.md](docs/decisions.md) "Fixed-Slot Allocator Oversight"
+and [docs/memory-system.md](docs/memory-system.md) for details.
+
 **Known weak spots** (not bugs today, but places to look if issues arise):
 
-1. **`slot_base()` returns 0 on invalid slot index** (`mem.c`). Address 0
-   is the 68000 reset vector area — a write there would corrupt vectors.
-   Callers currently check `slot_alloc()` before calling `slot_base()`, so
-   this can't happen in practice. If a future code path passes an unchecked
-   slot index, this could become a silent corruption bug. Consider changing
-   the sentinel to `(uint32_t)-1` or adding a `panic()`.
+1. ~~**`slot_base()` returns 0 on invalid slot index**~~ Resolved: slot
+   allocator removed. `umem_alloc` returns 0 on failure, which callers
+   check before proceeding.
 
 2. **No duplicate reloc guard in mkbin GOT scanning** (`mkbin.c`). mkbin
    adds synthetic R_68K_32 relocs for each non-zero GOT entry. If a future
@@ -217,17 +222,14 @@ deferral, and concurrent pipeline execution all work on both platforms.
    has no spare fields, so growing this would require a header version
    bump.
 
-5. **`do_exec` allocates slot before file lookup** (`exec.c`). The slot
-   is held during `fs_namei()` + binary loading. If the file doesn't
-   exist, the slot is freed on the error path, but during that window
-   another process could fail to get a slot. Not a real issue with 2
-   slots and single-threaded exec, but worth knowing if slot count
-   becomes tight.
+5. ~~**`do_exec` allocates slot before file lookup**~~ Resolved: `do_exec`
+   now reads the binary header first (to compute memory needs), then
+   allocates. File-not-found returns -ENOENT before any allocation.
 
 **Measured results:**
 
-- Workbench: 6 slots × ~117 KB (reduced from 8 to fit dash ~91 KB text)
-- Mega Drive: 2 slots × ~13.75 KB (dash uses XIP — text in ROM)
+- Workbench: variable-size regions from 704 KB pool
+- Mega Drive: variable-size regions from 27.5 KB pool (XIP: only data+bss+stack in RAM)
 - Binary size overhead: ~2-7% (GOT + extra relocs)
 - hello: 616 bytes text+data, 3 relocs (was 1 without GOT relocs)
 - levee: 46336 bytes text+data, 2560 relocs (was 2533)

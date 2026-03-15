@@ -288,137 +288,410 @@ static void test_kmem_stats_fragmentation(void)
     ASSERT(largest > 0);
 }
 
-/* --- Slot allocator tests (re-implementation of kernel/mem.c slot code) --- */
+/* --- User memory allocator tests (re-implementation of kernel/mem.c umem code) ---
+ *
+ * The real umem_alloc scans proctab[] to find used regions. For host testing,
+ * we simulate proctab with a simple array of {base, size, state} entries.
+ */
 
-#define MAX_SLOTS 8
+#define MAXPROC 16
+#define P_FREE    0
+#define P_RUNNING 1
 
-static int t_num_slots;
-static uint8_t  t_slot_used[MAX_SLOTS];
-static uint32_t t_slot_bases[MAX_SLOTS];
-static uint32_t t_slot_sz;
+struct test_proc {
+    uint8_t  state;
+    uint32_t mem_base;
+    uint32_t mem_size;
+};
 
-static void t_slot_init(uint32_t user_base, uint32_t user_size, int nslots)
+static struct test_proc t_proctab[MAXPROC];
+static uint32_t t_umem_base, t_umem_top;
+
+static void t_umem_init(uint32_t base, uint32_t top)
 {
-    t_num_slots = nslots;
-    t_slot_sz = (user_size / nslots) & ~3u;
-    for (int i = 0; i < nslots; i++) {
-        t_slot_used[i] = 0;
-        t_slot_bases[i] = user_base + (uint32_t)i * t_slot_sz;
+    t_umem_base = base;
+    t_umem_top = top;
+    for (int i = 0; i < MAXPROC; i++) {
+        t_proctab[i].state = P_FREE;
+        t_proctab[i].mem_base = 0;
+        t_proctab[i].mem_size = 0;
     }
 }
 
-static int t_slot_alloc(void)
+static uint32_t t_umem_alloc(uint32_t need)
 {
-    for (int i = 0; i < t_num_slots; i++) {
-        if (!t_slot_used[i]) { t_slot_used[i] = 1; return i; }
+    need = (need + 3) & ~3u;
+
+    /* Collect used regions */
+    uint32_t bases[MAXPROC], sizes[MAXPROC];
+    int n = 0;
+    for (int i = 0; i < MAXPROC; i++) {
+        if (t_proctab[i].state != P_FREE && t_proctab[i].mem_base != 0) {
+            bases[n] = t_proctab[i].mem_base;
+            sizes[n] = t_proctab[i].mem_size;
+            n++;
+        }
+    }
+
+    /* Insertion sort by base */
+    for (int i = 1; i < n; i++) {
+        uint32_t kb = bases[i], ks = sizes[i];
+        int j = i - 1;
+        while (j >= 0 && bases[j] > kb) {
+            bases[j + 1] = bases[j];
+            sizes[j + 1] = sizes[j];
+            j--;
+        }
+        bases[j + 1] = kb;
+        sizes[j + 1] = ks;
+    }
+
+    /* Scan gaps for first fit */
+    uint32_t gap_start = t_umem_base;
+    for (int i = 0; i < n; i++) {
+        uint32_t gap = bases[i] - gap_start;
+        if (gap >= need)
+            return gap_start;
+        gap_start = bases[i] + sizes[i];
+    }
+
+    if (t_umem_top - gap_start >= need)
+        return gap_start;
+
+    return 0;
+}
+
+static void t_umem_stats(uint32_t *free_bytes, uint32_t *largest)
+{
+    *free_bytes = 0;
+    *largest = 0;
+
+    uint32_t bases[MAXPROC], sizes[MAXPROC];
+    int n = 0;
+    for (int i = 0; i < MAXPROC; i++) {
+        if (t_proctab[i].state != P_FREE && t_proctab[i].mem_base != 0) {
+            bases[n] = t_proctab[i].mem_base;
+            sizes[n] = t_proctab[i].mem_size;
+            n++;
+        }
+    }
+
+    for (int i = 1; i < n; i++) {
+        uint32_t kb = bases[i], ks = sizes[i];
+        int j = i - 1;
+        while (j >= 0 && bases[j] > kb) {
+            bases[j + 1] = bases[j];
+            sizes[j + 1] = sizes[j];
+            j--;
+        }
+        bases[j + 1] = kb;
+        sizes[j + 1] = ks;
+    }
+
+    uint32_t gap_start = t_umem_base;
+    for (int i = 0; i < n; i++) {
+        uint32_t gap = bases[i] - gap_start;
+        *free_bytes += gap;
+        if (gap > *largest)
+            *largest = gap;
+        gap_start = bases[i] + sizes[i];
+    }
+    uint32_t gap = t_umem_top - gap_start;
+    *free_bytes += gap;
+    if (gap > *largest)
+        *largest = gap;
+}
+
+/* Helper to simulate process allocation */
+static int t_proc_alloc(uint32_t need)
+{
+    uint32_t base = t_umem_alloc(need);
+    if (base == 0) return -1;
+    for (int i = 0; i < MAXPROC; i++) {
+        if (t_proctab[i].state == P_FREE) {
+            t_proctab[i].state = P_RUNNING;
+            t_proctab[i].mem_base = base;
+            t_proctab[i].mem_size = need;
+            return i;
+        }
     }
     return -1;
 }
 
-static void t_slot_free(int slot)
+static void t_proc_free(int idx)
 {
-    if (slot >= 0 && slot < t_num_slots)
-        t_slot_used[slot] = 0;
+    t_proctab[idx].state = P_FREE;
+    t_proctab[idx].mem_base = 0;
+    t_proctab[idx].mem_size = 0;
 }
 
-static uint32_t t_slot_base(int slot)
+/* --- Tests --- */
+
+static void test_umem_alloc_basic(void)
 {
-    if (slot >= 0 && slot < t_num_slots)
-        return t_slot_bases[slot];
-    return 0;
+    t_umem_init(0x040000, 0x0F0000);
+    uint32_t base = t_umem_alloc(1024);
+    ASSERT(base != 0);
+    ASSERT_EQ(base, 0x040000);
 }
 
-static void test_slot_alloc_basic(void)
+static void test_umem_alloc_alignment(void)
 {
-    t_slot_init(0x040000, 704 * 1024, 6);
-    int s = t_slot_alloc();
-    ASSERT(s >= 0);
-    ASSERT_EQ(t_slot_base(s), 0x040000);
+    t_umem_init(0x040000, 0x0F0000);
+    uint32_t base = t_umem_alloc(13);
+    ASSERT(base != 0);
+    ASSERT_EQ(base & 3, 0);  /* 4-byte aligned */
 }
 
-static void test_slot_alloc_sequential(void)
+static void test_umem_alloc_sequential(void)
 {
-    t_slot_init(0x040000, 704 * 1024, 6);
-    int s0 = t_slot_alloc();
-    int s1 = t_slot_alloc();
-    ASSERT(s0 >= 0);
-    ASSERT(s1 >= 0);
-    ASSERT(s0 != s1);
-    ASSERT(t_slot_base(s0) != t_slot_base(s1));
+    t_umem_init(0x040000, 0x0F0000);
+    int p0 = t_proc_alloc(1000);
+    int p1 = t_proc_alloc(2000);
+    ASSERT(p0 >= 0);
+    ASSERT(p1 >= 0);
+    ASSERT(t_proctab[p0].mem_base != t_proctab[p1].mem_base);
+    /* Second allocation starts after first */
+    ASSERT_EQ(t_proctab[p1].mem_base, t_proctab[p0].mem_base + t_proctab[p0].mem_size);
 }
 
-static void test_slot_alloc_exhaustion(void)
+static void test_umem_alloc_variable_sizes(void)
 {
-    t_slot_init(0x040000, 704 * 1024, 2);
-    int s0 = t_slot_alloc();
-    int s1 = t_slot_alloc();
-    int s2 = t_slot_alloc();
-    ASSERT(s0 >= 0);
-    ASSERT(s1 >= 0);
-    ASSERT_EQ(s2, -1);  /* no slots left */
+    /* Simulate Mega Drive: dash (5100) + ls (400) + more (650) */
+    t_umem_init(0xFF9000, 0xFFFE00);
+    int dash = t_proc_alloc(5100);
+    int ls = t_proc_alloc(400);
+    int more = t_proc_alloc(652);  /* 652 rounds to 652 -> aligned to 652 */
+    ASSERT(dash >= 0);
+    ASSERT(ls >= 0);
+    ASSERT(more >= 0);
+    /* All fit (5100 + 400 + 652 = 6152 << 28160 total) */
+    uint32_t total_used = 5100 + 400 + 652;
+    ASSERT(total_used < (0xFFFE00u - 0xFF9000u));
 }
 
-static void test_slot_free_reuse(void)
+static void test_umem_alloc_exhaustion(void)
 {
-    t_slot_init(0x040000, 704 * 1024, 2);
-    int s0 = t_slot_alloc();
-    (void)t_slot_alloc();  /* s1 — fill the second slot */
-    ASSERT_EQ(t_slot_alloc(), -1);  /* exhausted */
-    t_slot_free(s0);
-    int s2 = t_slot_alloc();
-    ASSERT(s2 >= 0);  /* freed slot reusable */
-    ASSERT_EQ(t_slot_base(s2), t_slot_base(s0));
+    t_umem_init(0xFF9000, 0xFFFE00);  /* 28160 bytes */
+    int p0 = t_proc_alloc(20000);
+    ASSERT(p0 >= 0);
+    /* Only ~8160 left; allocating 10000 should fail */
+    uint32_t base = t_umem_alloc(10000);
+    ASSERT_EQ(base, 0);
 }
 
-static void test_slot_base_invalid(void)
+static void test_umem_alloc_exact_fit(void)
 {
-    t_slot_init(0x040000, 704 * 1024, 4);
-    /* Invalid slot indices return 0 (documented weak spot) */
-    ASSERT_EQ(t_slot_base(-1), 0);
-    ASSERT_EQ(t_slot_base(99), 0);
-    ASSERT_EQ(t_slot_base(MAX_SLOTS), 0);
+    uint32_t total = 0xFFFE00u - 0xFF9000u;  /* 28160 */
+    t_umem_init(0xFF9000, 0xFFFE00);
+    /* Allocate exact total (after alignment) */
+    int p = t_proc_alloc(total);
+    ASSERT(p >= 0);
+    /* No space left */
+    ASSERT_EQ(t_umem_alloc(4), 0);
 }
 
-static void test_slot_free_invalid(void)
+static void test_umem_free_reuse(void)
 {
-    t_slot_init(0x040000, 704 * 1024, 2);
-    /* Freeing invalid slots should not corrupt state */
-    t_slot_free(-1);
-    t_slot_free(99);
-    int s = t_slot_alloc();
-    ASSERT(s >= 0);  /* allocator still works */
+    t_umem_init(0x040000, 0x0F0000);
+    int p0 = t_proc_alloc(1000);
+    int p1 = t_proc_alloc(2000);
+    ASSERT(p0 >= 0);
+    ASSERT(p1 >= 0);
+
+    uint32_t old_base = t_proctab[p0].mem_base;
+    t_proc_free(p0);
+
+    /* Should reuse the freed region */
+    int p2 = t_proc_alloc(800);
+    ASSERT(p2 >= 0);
+    ASSERT_EQ(t_proctab[p2].mem_base, old_base);
 }
 
-static void test_slot_sizing_megadrive(void)
+static void test_umem_free_coalesce(void)
 {
-    /* Mega Drive: ~27.5 KB, 2 slots */
-    uint32_t user_size = 0xFFFE00 - 0xFF9000;  /* 28160 bytes */
-    t_slot_init(0xFF9000, user_size, 2);
-    ASSERT(t_slot_sz > 0);
-    ASSERT_EQ(t_slot_sz & 3, 0);  /* 4-byte aligned */
-    /* Both slots fit within user memory */
-    ASSERT(t_slot_bases[0] >= 0xFF9000);
-    ASSERT(t_slot_bases[1] + t_slot_sz <= 0xFFFE00);
+    t_umem_init(0x040000, 0x0F0000);
+    int p0 = t_proc_alloc(10000);
+    int p1 = t_proc_alloc(10000);
+    int p2 = t_proc_alloc(10000);
+    ASSERT(p0 >= 0);
+    ASSERT(p1 >= 0);
+    ASSERT(p2 >= 0);
+
+    /* Free all three — gaps should coalesce into one big region */
+    t_proc_free(p0);
+    t_proc_free(p1);
+    t_proc_free(p2);
+
+    /* Should be able to allocate nearly the entire pool */
+    uint32_t total = 0x0F0000u - 0x040000u;
+    int p3 = t_proc_alloc(total - 100);
+    ASSERT(p3 >= 0);
 }
 
-static void test_slot_no_leak_on_free(void)
+static void test_umem_gap_between_procs(void)
 {
-    /* Verify all slots can be allocated, freed, and re-allocated */
-    t_slot_init(0x040000, 704 * 1024, 4);
-    int slots[4];
-    for (int i = 0; i < 4; i++) {
-        slots[i] = t_slot_alloc();
-        ASSERT(slots[i] >= 0);
+    /* Free a middle process and verify the gap is found */
+    t_umem_init(0x040000, 0x0F0000);
+    int p0 = t_proc_alloc(4000);
+    int p1 = t_proc_alloc(4000);
+    int p2 = t_proc_alloc(4000);
+    ASSERT(p0 >= 0);
+    ASSERT(p1 >= 0);
+    ASSERT(p2 >= 0);
+
+    uint32_t p1_base = t_proctab[p1].mem_base;
+    t_proc_free(p1);
+
+    /* Allocate into the gap left by p1 */
+    int p3 = t_proc_alloc(3000);
+    ASSERT(p3 >= 0);
+    ASSERT_EQ(t_proctab[p3].mem_base, p1_base);
+}
+
+static void test_umem_gap_too_small(void)
+{
+    /* Create a gap that's too small, allocation should find the next gap */
+    t_umem_init(0x040000, 0x0F0000);
+    int p0 = t_proc_alloc(1000);
+    int p1 = t_proc_alloc(1000);
+    int p2 = t_proc_alloc(1000);
+    ASSERT(p0 >= 0);
+    ASSERT(p1 >= 0);
+    ASSERT(p2 >= 0);
+
+    t_proc_free(p1);  /* creates 1000-byte gap */
+
+    /* 2000 doesn't fit in the 1000 gap — should go after p2 */
+    int p3 = t_proc_alloc(2000);
+    ASSERT(p3 >= 0);
+    ASSERT(t_proctab[p3].mem_base >= t_proctab[p2].mem_base + t_proctab[p2].mem_size);
+}
+
+static void test_umem_fragmentation(void)
+{
+    /* Allocate alternating, free odds — creates checkerboard */
+    t_umem_init(0x040000, 0x0F0000);
+    int procs[8];
+    for (int i = 0; i < 8; i++) {
+        procs[i] = t_proc_alloc(4000);
+        ASSERT(procs[i] >= 0);
     }
-    ASSERT_EQ(t_slot_alloc(), -1);  /* exhausted */
-    for (int i = 0; i < 4; i++)
-        t_slot_free(slots[i]);
-    /* All slots available again */
-    for (int i = 0; i < 4; i++) {
-        int s = t_slot_alloc();
-        ASSERT(s >= 0);
+    /* Free odd indices */
+    t_proc_free(procs[1]);
+    t_proc_free(procs[3]);
+    t_proc_free(procs[5]);
+    t_proc_free(procs[7]);
+
+    /* Each gap is 4000 bytes. Can allocate 4000 but not 5000 in any gap
+     * (except after last proc, which might have more space) */
+    int p = t_proc_alloc(4000);
+    ASSERT(p >= 0);
+    /* Should fit in the first gap (between proc[0] and proc[2]) */
+    ASSERT_EQ(t_proctab[p].mem_base, t_proctab[procs[0]].mem_base + 4000);
+}
+
+static void test_umem_megadrive_pipeline(void)
+{
+    /* Realistic Mega Drive scenario: dash + ls | more */
+    uint32_t md_base = 0xFF9000;
+    uint32_t md_top = 0xFFFE00;
+    uint32_t md_total = md_top - md_base;  /* 28160 */
+    t_umem_init(md_base, md_top);
+
+    /* dash with XIP: data+bss ~5100 bytes */
+    int dash = t_proc_alloc(5100);
+    ASSERT(dash >= 0);
+    ASSERT_EQ(t_proctab[dash].mem_base, md_base);
+
+    /* ls with XIP: ~400 bytes */
+    int ls = t_proc_alloc(400);
+    ASSERT(ls >= 0);
+
+    /* more with XIP: ~650 bytes */
+    int more = t_proc_alloc(652);
+    ASSERT(more >= 0);
+
+    /* All three fit — total ~6152 out of 28160 */
+    uint32_t free_bytes, largest;
+    t_umem_stats(&free_bytes, &largest);
+    ASSERT(free_bytes > 20000);  /* Plenty of space left */
+    ASSERT_EQ(free_bytes, md_total - 5100 - 400 - 652);
+}
+
+static void test_umem_stats_empty(void)
+{
+    t_umem_init(0x040000, 0x0F0000);
+    uint32_t total = 0x0F0000u - 0x040000u;
+    uint32_t free_bytes, largest;
+    t_umem_stats(&free_bytes, &largest);
+    ASSERT_EQ(free_bytes, total);
+    ASSERT_EQ(largest, total);
+}
+
+static void test_umem_stats_partial(void)
+{
+    t_umem_init(0x040000, 0x0F0000);
+    int p = t_proc_alloc(10000);
+    ASSERT(p >= 0);
+
+    uint32_t total = 0x0F0000u - 0x040000u;
+    uint32_t free_bytes, largest;
+    t_umem_stats(&free_bytes, &largest);
+    ASSERT_EQ(free_bytes, total - 10000);
+    ASSERT_EQ(largest, total - 10000);
+}
+
+static void test_umem_stats_fragmented(void)
+{
+    t_umem_init(0x040000, 0x0F0000);
+    int p0 = t_proc_alloc(4000);
+    int p1 = t_proc_alloc(4000);
+    int p2 = t_proc_alloc(4000);
+    ASSERT(p0 >= 0 && p1 >= 0 && p2 >= 0);
+
+    t_proc_free(p1);  /* 4000-byte gap between p0 and p2 */
+
+    uint32_t free_bytes, largest;
+    t_umem_stats(&free_bytes, &largest);
+
+    /* Free = gap (4000) + tail (total - 12000) */
+    uint32_t total = 0x0F0000u - 0x040000u;
+    ASSERT_EQ(free_bytes, total - 8000);
+    /* Largest is the tail, not the gap */
+    ASSERT(largest >= total - 12000);
+    ASSERT(largest > 4000);
+}
+
+static void test_umem_alloc_zero(void)
+{
+    /* Allocating 0 should still return a valid aligned base */
+    t_umem_init(0x040000, 0x0F0000);
+    uint32_t base = t_umem_alloc(0);
+    /* After alignment, need becomes 0 which is >= 0, so it should succeed.
+     * This is an edge case — the allocator should return the pool base. */
+    ASSERT(base != 0);
+}
+
+static void test_umem_many_procs(void)
+{
+    /* Fill all 16 proc slots with small allocations */
+    t_umem_init(0x040000, 0x0F0000);
+    int procs[MAXPROC];
+    for (int i = 0; i < MAXPROC; i++) {
+        procs[i] = t_proc_alloc(1000);
+        ASSERT(procs[i] >= 0);
     }
-    ASSERT_EQ(t_slot_alloc(), -1);
+    /* All 16 used — no more proc slots */
+    int extra = t_proc_alloc(100);
+    ASSERT_EQ(extra, -1);
+
+    /* Free all and re-allocate */
+    for (int i = 0; i < MAXPROC; i++)
+        t_proc_free(procs[i]);
+    int p = t_proc_alloc(1000);
+    ASSERT(p >= 0);
+    ASSERT_EQ(t_proctab[p].mem_base, 0x040000);
 }
 
 int main(void)
@@ -442,15 +715,24 @@ int main(void)
     RUN_TEST(test_kmem_stats_after_free);
     RUN_TEST(test_kmem_stats_fragmentation);
 
-    printf("\n--- slot allocator ---\n");
-    RUN_TEST(test_slot_alloc_basic);
-    RUN_TEST(test_slot_alloc_sequential);
-    RUN_TEST(test_slot_alloc_exhaustion);
-    RUN_TEST(test_slot_free_reuse);
-    RUN_TEST(test_slot_base_invalid);
-    RUN_TEST(test_slot_free_invalid);
-    RUN_TEST(test_slot_sizing_megadrive);
-    RUN_TEST(test_slot_no_leak_on_free);
+    printf("\n--- user memory allocator ---\n");
+    RUN_TEST(test_umem_alloc_basic);
+    RUN_TEST(test_umem_alloc_alignment);
+    RUN_TEST(test_umem_alloc_sequential);
+    RUN_TEST(test_umem_alloc_variable_sizes);
+    RUN_TEST(test_umem_alloc_exhaustion);
+    RUN_TEST(test_umem_alloc_exact_fit);
+    RUN_TEST(test_umem_free_reuse);
+    RUN_TEST(test_umem_free_coalesce);
+    RUN_TEST(test_umem_gap_between_procs);
+    RUN_TEST(test_umem_gap_too_small);
+    RUN_TEST(test_umem_fragmentation);
+    RUN_TEST(test_umem_megadrive_pipeline);
+    RUN_TEST(test_umem_stats_empty);
+    RUN_TEST(test_umem_stats_partial);
+    RUN_TEST(test_umem_stats_fragmented);
+    RUN_TEST(test_umem_alloc_zero);
+    RUN_TEST(test_umem_many_procs);
 
     TEST_REPORT();
 }
