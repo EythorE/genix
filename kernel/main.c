@@ -52,23 +52,24 @@ void timer_interrupt(void)
  */
 void panic_exception(uint32_t *frame)
 {
-    /* frame points to the saved regs pushed by movem + the sp we pushed */
-    /* Try to read the PC from the exception frame */
-    uint16_t *w = (uint16_t *)frame;
-    /* Skip past d0-d7 (8*4=32 bytes = 16 words), a0-a6 (7*4=28 bytes = 14 words),
-     * and the frame pointer (2 words) = 32 words total.
-     * Then: access info word, fault address, IR, SR, PC */
+    /* frame = SP after movem + push_sp.
+     * Layout: [sp_val(4), d0..d7(32), a0..a6(28), exception_frame...]
+     * For bus/addr error (group 0, 68000):
+     *   exception_frame = [func_code(2), access_addr(4), IR(2), SR(2), PC(4)]
+     * For other exceptions (group 1/2):
+     *   exception_frame = [SR(2), PC(4)] */
     kputs("\n*** KERNEL PANIC: exception ***\n");
-    kputs("Frame at: ");
-    kprintf("0x%x\n", (uint32_t)frame);
-    /* For a group 0 fault, the PC is at offset 70 from the start of the saved regs */
-    /* For a group 1/2 fault, the PC is at offset 58 */
-    /* Try the simpler group 1/2 layout first (most exceptions) */
-    /* After movem (56 bytes) + pushed sp (4 bytes) = 60 bytes */
-    /* Then: SR (2 bytes) at offset 60, PC (4 bytes) at offset 62 */
-    uint32_t *pc_ptr = (uint32_t *)((uint8_t *)frame + 62 - 4);
-    kputs("Approx PC: ");
-    kprintf("0x%x\n", *pc_ptr);
+
+    /* Skip: sp_val(1 long) + 15 regs(15 longs) = 16 longs */
+    uint16_t *exc = (uint16_t *)&frame[16];
+
+    /* Dump as group 0 (bus/addr error) */
+    uint32_t acc_addr = ((uint32_t)exc[1] << 16) | exc[2];
+    uint16_t sr = exc[4];
+    uint32_t pc = ((uint32_t)exc[5] << 16) | exc[6];
+
+    kprintf("  PC=0x%x SR=0x%x Access=0x%x\n", pc, sr, acc_addr);
+
     for (;;)
         ;
 }
