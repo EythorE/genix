@@ -44,8 +44,9 @@ For the testing ladder and procedures, see
 | `test_reloc.c` | Relocations | 64 | Simple/split reloc, XIP, **duplicate offset (known bug)** |
 | `test_dash.c` | Dash semantics | 44 | errno conversion, waitpid, execve, PATH search |
 | `test_abi.c` | ABI compat | 28 | **struct stat layout match** (kernel vs libc), field alignment |
+| `test_lineedit.c` | libc/lineedit.c | 102 | Edit ops (insert/delete/move/kill), history ring, key parsing (ANSI, MD, ctrl) |
 
-**Total: ~5,130 assertions across 16 test files**
+**Total: ~5,230 assertions across 17 test files**
 
 ---
 
@@ -54,7 +55,7 @@ For the testing ladder and procedures, see
 | Test | Command | What it tests |
 |------|---------|---------------|
 | `check-opcodes.sh` | `make test-opcodes` | Scan .elf files for 68020 MULU.L/DIVU.L/EXTB.L/RTD |
-| `test-dash.sh` | `make test-dash` | 13 tests: boot, echo, exit status, ls, pipes, redirection, variables, error absence |
+| `test-dash.sh` | `make test-dash` | 15 tests: boot, echo, exit status, ls, pipes, redirection, variables, non-interactive bypass, error absence |
 | `test-levee.sh` | `make test-levee` | Smoke test: levee starts, displays editor, accepts :q! |
 
 ---

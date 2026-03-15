@@ -26,11 +26,12 @@ export CROSS=m68k-elf-
 ## Project Stage & Current Focus
 
 Phases 1-6, Phase A (libc prerequisites), Phase B (kernel
-enhancements), Phase C (dash shell port), and Tier 1 apps (Waves 1-2
-plus find/xargs) complete. The kernel spawns dash as the default
-interactive shell. 47 user programs in /bin. Next: Phase 7 (SD card).
-See PLAN.md for the full dependency graph and docs/apps_to_port.md
-for the app porting roadmap.
+enhancements), Phase C (dash shell port), Phase D (line editing for
+dash), and Tier 1 apps (Waves 1-2 plus find/xargs) complete. The
+kernel spawns dash as the default interactive shell with arrow key
+cursor movement, command history, and in-line editing. 47 user
+programs in /bin. Next: Phase 7 (SD card). See PLAN.md for the full
+dependency graph and docs/apps_to_port.md for the app porting roadmap.
 
 Design choices that are LOAD-BEARING (changing these is expensive):
 - Binary format and relocation scheme (affects all 47 apps + libc + mkbin)

@@ -27,26 +27,54 @@ history and [HISTORY.md](HISTORY.md) for the full project timeline.
 | Phase A | Libc prerequisites — POSIX headers, setjmp/longjmp, signal wrappers, stat conversion | **Complete** |
 | Phase B | Kernel enhancements — fcntl F_DUPFD, waitpid WNOHANG | **Complete** |
 | Phase C | Port dash shell — POSIX scripting, variable expansion, command substitution | **Complete** |
+| Phase D | Interactive line editing — arrow keys, cursor movement, command history | **Complete** |
 | Phase 7 | SD card — load programs at runtime (Open EverDrive SPI + Mega EverDrive Pro FIFO) | Planned |
 | Phase 8 | EverDrive Pro PSRAM — banked 512 KB per process, enables large programs on MD | Planned |
 | Phase 9 | Performance — assembly memcpy/memset, DIVU.W fast path, VDP DMA scroll | Anytime |
 
 See [PLAN.md](PLAN.md) for detailed implementation plans.
 
-**What works today:** kernel boots on both workbench and Mega Drive, minifs
-filesystem with indirect blocks, exec() loads user programs (47 apps in
-/bin including dash shell, grep, levee, cp, mv, rm, sort, find, and
-standard Unix utilities), dash POSIX shell with pipes (`|`), I/O redirection (`>`,
-`>>`, `<`), variable expansion, command substitution, scripting
-(if/then/else, for, case, functions), process table (16 slots) with
-preemptive
-scheduling, per-process kernel stacks, blocking pipes (512-byte circular
-buffer), user signal handlers (SIGTSTP/SIGCONT, Ctrl+C/Ctrl+Z), TTY line
-discipline with cooked/raw modes, termios ioctls, interrupt-driven Saturn
-keyboard on Mega Drive, SRAM with boot-time validation, configurable
-buffer cache, multi-TTY infrastructure (4 TTYs), 4924+ host test
-assertions across 13 test files, 31+ automated guest tests on both
-platforms, CI pipeline enforcing full testing ladder.
+### What works today
+
+All of this runs on a 7.67 MHz CPU with 64 KB of RAM and no MMU.
+
+**A real POSIX shell.** Genix boots into [dash](https://en.wikipedia.org/wiki/Almquist_shell)
+(the Debian Almquist Shell) with interactive line editing: arrow keys
+move the cursor, up/down browse command history, Home/End jump to line
+boundaries, and ^U kills the line. Tab through 16 remembered commands.
+All the shell features you'd expect: pipes (`|`), I/O redirection
+(`>`, `>>`, `<`), variable expansion (`$VAR`, `${VAR}`), command
+substitution (`` `cmd` ``), control flow (`if`/`then`/`else`, `for`,
+`while`, `case`), functions, traps, and full POSIX scripting.
+
+**47 user programs in `/bin`.** `ls`, `cat`, `grep`, `sort`, `find`,
+`xargs`, `cp`, `mv`, `rm`, `mkdir`, `more`, `wc`, `tr`, `cut`,
+`uniq`, `comm`, `expr`, `env`, `seq`, `od`, `touch`, `kill`,
+`which`, `uname` — plus `levee` (a vi clone) and `dash` itself. Every
+binary runs from ROM via execute-in-place (XIP): only `.data` is
+copied to RAM, `.text` executes directly from the cartridge. A typical
+utility uses ~300 bytes of RAM.
+
+**Preemptive multitasking.** 16 process slots with per-process kernel
+stacks. Pipelines run concurrently — `find / -name '*.c' | grep main |
+wc -l` spawns three processes that execute in parallel. Signals work:
+Ctrl+C sends SIGINT, Ctrl+Z sends SIGTSTP, `kill` delivers any signal,
+and user-installed signal handlers fire correctly.
+
+**A proper TTY.** Cooked and raw modes, termios ioctls, ICRNL/ONLCR
+translation, echo control, interrupt characters, and a 4-TTY
+infrastructure. On the Mega Drive, input comes from an interrupt-driven
+Saturn keyboard on controller port 2.
+
+**A Unix filesystem.** minifs: inodes, directories, indirect blocks,
+hard links. Create files, make directories, rename, unlink — it's all
+there.
+
+**Tested.** 5,230+ host test assertions across 17 test files, 31
+automated guest tests on the workbench emulator, 15 dash integration
+tests, BlastEm Mega Drive autotest, and a 68020 opcode scan that
+catches wrong-toolchain bugs at compile time. Every change runs the
+full ladder before it ships.
 
 ## Getting Started
 
@@ -88,6 +116,9 @@ then boots Genix in your terminal. You'll see the dash `#` prompt.
 # echo hello | cat        # Pipes work
 # cat /etc/motd > /tmp/x  # I/O redirection
 # wc < /tmp/x             # Input redirection
+# ← → Home End           # Arrow keys and cursor movement
+# ↑ ↓                    # Browse command history
+# find / -name cat        # Real utilities, real pipelines
 # exit                    # Exit (dash respawns automatically)
 ```
 
@@ -176,7 +207,7 @@ genix/
 ├── libc/         # Minimal C library + syscall stubs (for user programs)
 ├── apps/         # Userspace programs (47 including dash)
 ├── tools/        # Host tools (mkfs, mkbin)
-├── tests/        # Host unit tests (13 test files, 4924+ assertions)
+├── tests/        # Host unit tests (17 test files, 5230+ assertions)
 └── docs/         # Technical documentation
 ```
 
@@ -188,7 +219,7 @@ genix/
 - **Custom filesystem (minifs)** — classic Unix inode layout
 - **Syscalls via TRAP #0** — number in `d0`, args in `d1-d4`, return in `d0` (negative = -errno)
 - **Preemptive scheduling** — timer-driven context switch, 16 process slots
-- **Custom libc** — 18 modules including regex and POSIX stubs, tuned for 68000 constraints
+- **Custom libc** — 19 modules including regex, line editing, and POSIX stubs, tuned for 68000 constraints
 
 ## Documentation
 

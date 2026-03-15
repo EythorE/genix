@@ -1662,6 +1662,47 @@ workbench emulator 31/31, BlastEm MD autotest).
   (CORE_BINS) to include all 13 new apps in the disk image.
 - Added all 13 binary names to `.gitignore`.
 
+### Phase D: Line Editing for dash (March 2026)
+
+Added interactive line editing to dash via a new libc library
+(`libc/lineedit.c`, ~300 lines). The editor switches the TTY to raw
+mode, reads keys, performs editing, and outputs display updates using
+only `\b` and character writes (no ANSI cursor positioning — works on
+both VDP console and UART terminals).
+
+**Features:**
+- Cursor movement: left/right arrows, Home/End (^A/^E, ANSI ESC[H/F,
+  MD keycodes 0x91/0x92)
+- Editing: insert at any position, backspace (^H), delete (0x7F, ESC[3~),
+  kill line (^U)
+- History: 16-entry ring buffer (128 bytes/entry), up/down navigation,
+  saves current line as scratch on first UP
+- Key reader: ANSI escape sequences, Saturn keyboard raw keycodes
+  (0x95-0x98 arrows, 0x91/0x92 home/end), control characters
+- ^D: EOF on empty line, delete-forward with content
+- ISIG stays on — kernel handles ^C/^Z, le_readline restores termios
+
+**Integration:** Modified `preadfd()` in `apps/dash/input.c` to call
+`le_readline()` when `fd == 0 && iflag && isatty(0)`. Non-interactive
+paths (piped input, `-c`, scripts) use plain `read()` unchanged.
+Added `le_init()` in `main.c` after option parsing, querying terminal
+width via TIOCGWINSZ ioctl.
+
+**RAM impact:** 2,576 bytes static data (history 2048 + buffers 512 +
+misc 16). Code ~2 KB in ROM text via XIP.
+
+**Tests:** 102 host assertions in `test_lineedit.c` covering edit
+operations, history ring buffer, and key parsing (ANSI, MD keycodes,
+control characters). 15 dash integration tests (2 new non-interactive
+regression tests added). Full testing ladder passes: host tests,
+68020 opcode scan, workbench autotest 31/31, BlastEm OK.
+
+**Known limitations (v1):**
+1. ESC alone blocks on workbench (needs VTIME or O_NONBLOCK)
+2. No line wrapping past terminal width
+3. Delete = Backspace on workbench (emulator translates 0x7F→0x08)
+4. History truncates lines >127 chars
+
 ### Remaining Optional Work
 
 | Item | Effort | Priority |
@@ -1681,11 +1722,11 @@ _Final status snapshot (March 2026)._
 | Metric | Value |
 |--------|-------|
 | Kernel lines of code | ~5,650 |
-| Host test assertions | 5,123+ |
-| Host test files | 14 |
+| Host test assertions | 5,230+ |
+| Host test files | 17 |
 | Autotest cases | 31+ |
 | User programs | 47 (including dash, levee, 13 tier-1 utilities) |
-| Libc modules | 18+ |
+| Libc modules | 19+ |
 | Syscalls implemented | 32 |
 | Platforms | 2 (workbench + Mega Drive) |
 

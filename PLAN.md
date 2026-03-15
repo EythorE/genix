@@ -13,10 +13,11 @@ complete: multiple processes can reside in memory simultaneously with
 shared ROM text and per-process data slots. Pipelines execute
 concurrently. Phase A (libc prerequisites), Phase B (kernel
 enhancements: fcntl F_DUPFD, waitpid WNOHANG), Phase C (dash shell
-port), and Tier 1 apps (cp, mv, rm, mkdir, touch, kill, which, uname,
-clear, more, sort, find, xargs) are complete. The kernel spawns dash
-as the default interactive shell, falling back to the builtin shell if
-not found. The next step is Phase 7 (SD card filesystem). See
+port), Phase D (line editing for dash), and Tier 1 apps (cp, mv, rm,
+mkdir, touch, kill, which, uname, clear, more, sort, find, xargs) are
+complete. The kernel spawns dash as the default interactive shell with
+arrow key cursor movement, command history (up/down), and in-line
+editing. The next step is Phase 7 (SD card filesystem). See
 [docs/apps_to_port.md](docs/apps_to_port.md) for the app porting
 roadmap.
 
@@ -418,50 +419,47 @@ each optimization.
 
 ---
 
-## Phase D: Line Editing for dash — Planned
+## Phase D: Line Editing for dash — Complete
 
 **Goal:** Arrow key history and basic line editing for interactive use.
-Dash is currently configured with no line editing (no libedit, no
-readline). Typing at the `#` prompt has no history, no cursor movement.
 
 **Depends on:** Phase C (dash port — complete), TTY raw mode (complete).
 
 **Reference:** [docs/shell-plan.md](docs/shell-plan.md) Phase D section.
 
-### Approach
+### What was built
 
-Custom ~800-line module (not libedit — too large, too many dependencies):
-- Arrow key navigation (left/right within current line)
-- History (up/down, 16 entries x 128 bytes = 2 KB RAM)
-- Backspace, Home, End, Delete
-- Terminal escape sequences (ESC [ A/B/C/D)
-- Raw terminal mode via termios ioctls (already supported by TTY subsystem)
+Standalone library `libc/lineedit.c` (~300 lines) with `lineedit.h` API:
+- Cursor movement: left/right arrows, Home (^A), End (^E)
+- Editing: backspace, delete, kill line (^U), insert anywhere
+- History: 16-entry ring buffer, up/down navigation, scratch line save
+- Key reader: ANSI escapes (ESC [ A/B/C/D/H/F, ESC [ 3 ~),
+  Mega Drive Saturn keyboard raw keycodes, control characters (^A/^B/^E/^F/^H/^U)
+- Display: `\b` + character writes only (no ANSI cursor positioning),
+  works on both VDP console and UART terminals
+- Terminal safety: saves/restores termios, ISIG stays on for ^C/^Z
+- ^D: EOF on empty line, delete-forward with content
 
-Tailored to Genix's terminal capabilities: VDP console on Mega Drive
-(fixed 40x28 grid, no scrollback), UART on workbench. Reusable by
-other interactive programs (levee already has its own input handling).
+Integrated into dash via `preadfd()` in `input.c` — interactive input
+on fd 0 uses `le_readline()`, piped/file input uses plain `read()`.
 
-### Integration options
-
-1. **Standalone library** (`libc/lineedit.c`): dash calls `readline()`
-   which handles raw mode, escape sequences, history. Simplest.
-2. **dash built-in**: modify dash's `input.c` to use raw mode and
-   handle escape sequences directly. More tightly integrated but
-   dash-specific.
-
-Option 1 is preferred — other programs (a future `ed`, scripts) benefit.
-
-### RAM budget (Mega Drive)
+### RAM usage (Mega Drive)
 
 ```
 History buffer:  2,048 bytes (16 x 128)
 Line buffer:       256 bytes
-Code (text):      ~3 KB (in ROM via XIP)
-Total RAM:       ~2.3 KB
+Scratch buffer:    256 bytes
+Termios save:       16 bytes
+Total RAM:       ~2.6 KB
+Code (text):      ~2 KB (in ROM via XIP)
 ```
 
-Dash currently uses 6.8 KB of its 14 KB slot. Line editing adds ~2.3 KB
-RAM → 9.1 KB total, leaving ~5 KB for heap+stack. Tight but feasible.
+### Known limitations (v1)
+
+1. ESC alone blocks on workbench (needs VTIME or O_NONBLOCK)
+2. No line wrapping past terminal width (content correct, display garbled)
+3. Delete = Backspace on workbench (emulator translates 0x7F→0x08)
+4. History truncates lines >127 chars (edit buffer allows 255)
 
 ---
 
@@ -494,7 +492,7 @@ Kernel prereqs (Phase B) ..... done
     |
 dash Shell Port (Phase C) .... done
     |
-Line Editing (Phase D) ....... planned (depends on C)
+Line Editing (Phase D) ....... done
     |
 Phase 7 (SD Card) ............. next (independent of D)
     |

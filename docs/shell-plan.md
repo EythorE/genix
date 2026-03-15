@@ -389,19 +389,44 @@ See HISTORY.md section 4 for detailed root cause analysis of each bug.
 
 ---
 
-## Phase D: Line Editing (separate task)
+## Phase D: Line Editing — Complete
 
 **Goal:** Arrow key history and basic line editing for interactive use.
 
-Custom ~800-line module:
-- Arrow key navigation (left/right)
-- History (up/down, 16 entries x 128 bytes = 2 KB)
-- Backspace, Home, End
-- Terminal escape sequences (ESC [ A/B/C/D)
-- Raw terminal mode via termios (already supported)
+### Outcome
 
-This replaces libedit and is tailored to Genix's terminal capabilities
-(VDP console on MD, UART on workbench). Reusable by other interactive programs.
+Implemented as `libc/lineedit.c` (~300 lines) with a 2-function API:
+`le_init(cols)` and `le_readline(fd, buf, bufsz)`.
+
+**What was built:**
+- Cursor movement: left/right, Home/End (^A/^E, ANSI, MD keycodes)
+- Editing: insert anywhere, backspace, delete, kill line (^U)
+- History: 16-entry ring buffer with up/down navigation, scratch save
+- Key reader: handles ANSI escapes, Saturn keyboard raw codes, control chars
+- Display: `\b` + character writes only (works on VDP console + UART)
+- Terminal safety: saves/restores termios, ISIG on for ^C/^Z
+- ^D: EOF on empty line, delete-forward with content
+
+**Integration:** `preadfd()` in `apps/dash/input.c` calls `le_readline()`
+when `parsefile->fd == 0 && iflag && isatty(0)`. Non-interactive paths
+(pipes, `-c`, scripts) use plain `read()` — unchanged.
+
+**RAM:** 2,576 bytes data (history 2048 + buffers 512 + misc 16).
+Code ~2 KB in ROM via XIP. Dash data+bss grew from ~4.6 KB to ~7.2 KB.
+
+**Tests:** 102 host assertions in `test_lineedit.c` covering edit ops,
+history ring, and key parsing. 15/15 dash integration tests pass
+(including 2 new non-interactive regression tests).
+
+**Known limitations (v1):**
+1. ESC alone blocks on workbench (needs VTIME or O_NONBLOCK)
+2. No line wrapping past terminal width
+3. Delete = Backspace on workbench (emulator maps 0x7F→0x08)
+4. History truncates lines >127 chars
+
+**Deviations from plan:** None significant. Implementation was ~300
+lines vs estimated ~800 — the plan overestimated by counting display
+code that turned out simpler than expected.
 
 ---
 
