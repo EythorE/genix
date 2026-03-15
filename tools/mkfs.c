@@ -192,6 +192,18 @@ static void add_file(uint16_t dir_inum, struct disk_inode *dir_di,
     di.size = size;
     di.mtime = time(NULL);
 
+    /* Pre-allocate indirect block if needed, so data blocks stay
+     * contiguous for XIP.  Without this, the indirect block lands
+     * between direct block 11 and indirect-referenced block 12,
+     * breaking the contiguous run that romfix requires. */
+    uint32_t nblocks_needed = (size + BLOCK_SIZE - 1) / BLOCK_SIZE;
+    if (nblocks_needed > 12) {
+        di.indirect = alloc_block();
+        uint8_t zbuf[BLOCK_SIZE];
+        memset(zbuf, 0, BLOCK_SIZE);
+        write_block(di.indirect, zbuf);
+    }
+
     /* Allocate blocks and write data */
     uint8_t buf[BLOCK_SIZE];
     int blk_idx = 0;
@@ -204,13 +216,6 @@ static void add_file(uint16_t dir_inum, struct disk_inode *dir_di,
         if (blk_idx < 12) {
             di.direct[blk_idx] = blk;
         } else {
-            /* Indirect block: allocate on first use */
-            if (di.indirect == 0) {
-                di.indirect = alloc_block();
-                uint8_t zbuf[BLOCK_SIZE];
-                memset(zbuf, 0, BLOCK_SIZE);
-                write_block(di.indirect, zbuf);
-            }
             /* Write block number into indirect block */
             uint8_t ibuf[BLOCK_SIZE];
             read_block(di.indirect, ibuf);
