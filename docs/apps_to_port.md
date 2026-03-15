@@ -18,7 +18,7 @@ retro games, and standalone projects.
 | No curses | No termcap database; raw VT100/ANSI or direct VDP |
 | No floating point HW | 68000 has no FPU; soft-float is slow |
 | No network | No TCP/IP stack |
-| Existing apps | 33 coreutils + dash + levee (broken) |
+| Existing apps | 33 coreutils + dash + levee |
 
 ### What's Free (ROM) vs. What Costs (RAM)
 
@@ -49,7 +49,64 @@ impactful optimization for fitting programs on the Mega Drive.
 
 ---
 
-## Already Ported — Needs Fixing
+## Existing Shells
+
+### Dash — Default Interactive Shell
+
+| Property | Value |
+|----------|-------|
+| Source | `apps/dash/` (Debian Almquist Shell port) |
+| Text (ROM) | 88,796 bytes (free — XIP) |
+| data+bss | 6,788 bytes (48% of 14 KB slot) |
+| Status | **Working** — default shell, spawned at boot |
+
+Dash is a full POSIX shell with **39 builtin commands**:
+
+| Category | Commands |
+|----------|----------|
+| Shell control | `.` `:` `eval` `exec` `exit` `return` `break` `continue` |
+| Variables | `set` `shift` `export` `local` `readonly` `unset` `getopts` |
+| Aliases | `alias` `unalias` |
+| I/O | `echo` `printf` `read` |
+| Directory | `cd` `chdir` `pwd` |
+| Commands | `command` `type` `hash` |
+| Test | `test` `[` `true` `false` |
+| Jobs | `bg` `fg` `jobs` `wait` `kill` |
+| Misc | `trap` `times` `umask` `ulimit` |
+
+These builtins mean many common operations (echo, test, printf, cd,
+kill, true/false) don't need standalone binaries — they run inside
+dash with zero exec overhead. The standalone `kill`, `test`, `true`,
+`false`, and `[` in Wave 1 are only needed for scripts that call
+them via `exec` or `xargs`.
+
+### Builtin Kernel Shell — Fallback
+
+| Property | Value |
+|----------|-------|
+| Source | `kernel/main.c` — `builtin_shell()` (~70 lines) |
+| Status | **Working** — fallback if `/bin/dash` not found |
+
+A minimal shell that runs in supervisor mode inside the kernel. The
+boot sequence tries to spawn dash first; if that fails, it drops to
+this shell. Commands:
+
+```
+help  halt  mem  ls [path]  cat <file>  echo <text>
+cd [dir]  exec <prog> [args] [| prog2] [< in] [> out]
+write <path> <text>  mkdir <path>
+```
+
+Any unrecognized command is passed to implicit exec (tries to run as
+a program). Supports pipes and I/O redirection via `exec`.
+
+**Not a replacement for dash** — no scripting, no variables, no
+control flow, no job control. It exists purely for boot resilience
+and early development. Cost to keep is ~70 lines of kernel code.
+
+---
+
+## Already Ported — Needs Work
 
 ### Levee — vi-like Editor
 
