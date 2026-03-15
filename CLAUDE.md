@@ -15,10 +15,9 @@ hardware. Design decisions should always consider the Mega Drive's constraints:
 ```bash
 ./scripts/fetch-toolchain.sh
 export PATH=~/buildtools-m68k-elf/bin:~/blastem:$PATH
-export CROSS=m68k-elf-
 ```
 
-**`CROSS=m68k-elf-` is mandatory.** The distro package
+All Makefiles default to `CROSS=m68k-elf-`. The distro package
 (`gcc-m68k-linux-gnu`) has 68020 libgcc that silently hangs on the
 68000. If `fetch-toolchain.sh` fails, build from source per
 `docs/toolchain.md`. Never use the distro compiler.

@@ -1,4 +1,4 @@
-CROSS ?= m68k-linux-gnu-
+CROSS ?= m68k-elf-
 CC = $(CROSS)gcc
 AS = $(CROSS)as
 LD = $(CROSS)ld

@@ -87,11 +87,11 @@ sudo apt-get install build-essential
 # Fetch pre-built m68k-elf cross-compiler + BlastEm (recommended)
 ./scripts/fetch-toolchain.sh
 export PATH=~/buildtools-m68k-elf/bin:~/blastem:$PATH
-export CROSS=m68k-elf-
 ```
 
 This downloads the correct `m68k-elf-gcc` (built with `--with-cpu=68000`)
-and BlastEm 0.6.3-pre from retrodev.com nightlies.
+and BlastEm 0.6.3-pre from retrodev.com nightlies. All Makefiles default
+to `CROSS=m68k-elf-` — no extra environment variables needed.
 
 **Fallback:** If `fetch-toolchain.sh` doesn't work for your platform,
 build `m68k-elf-gcc` from source — see

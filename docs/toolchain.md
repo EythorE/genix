@@ -10,10 +10,10 @@
 ```bash
 ./scripts/fetch-toolchain.sh
 export PATH=~/buildtools-m68k-elf/bin:~/blastem:$PATH
-export CROSS=m68k-elf-
 ```
 
-That's it. If `fetch-toolchain.sh` fails, build from source — see
+That's it. All Makefiles default to `CROSS=m68k-elf-`. If
+`fetch-toolchain.sh` fails, build from source — see
 [Building the Correct Toolchain](#building-the-correct-toolchain) below.
 
 **Do NOT use `apt install gcc-m68k-linux-gnu`** — see
@@ -123,16 +123,12 @@ export PATH=~/buildtools-m68k-elf/bin:$PATH
 
 ### Use with Genix
 
-```bash
-# Tell Genix to use the self-built toolchain
-make kernel CROSS=m68k-elf-
-make apps CROSS=m68k-elf-
-make megadrive CROSS=m68k-elf-
-```
+All Makefiles default to `CROSS=m68k-elf-`, so just ensure the
+toolchain is on your PATH:
 
-Or set it permanently in your shell:
 ```bash
-export CROSS=m68k-elf-
+export PATH=~/buildtools-m68k-elf/bin:$PATH
+make clean && make run
 ```
 
 ---

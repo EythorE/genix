@@ -506,7 +506,7 @@ create byte-reversed filesystem images for BlastEm if needed.
 #### BlastEm GDB Debugging
 
 ```bash
-m68k-linux-gnu-gdb -q --tui \
+m68k-elf-gdb -q --tui \
     -ex "target remote | blastem -D pal/megadrive/genix-md.bin" \
     pal/megadrive/genix-md.elf
 ```

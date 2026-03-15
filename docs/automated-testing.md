@@ -58,7 +58,7 @@ make test
 
 ### `make kernel` — Cross-Compilation Check
 
-Compiles the full kernel with `m68k-linux-gnu-gcc -m68000`. Does not run
+Compiles the full kernel with `m68k-elf-gcc -m68000`. Does not run
 anything — just verifies that all declarations match, all symbols resolve,
 and the compiler doesn't emit 68020 instructions.
 
@@ -222,7 +222,7 @@ When a test passes in the emulator but fails in BlastEm (or vice versa):
 3. **Root-cause**: Use BlastEm's GDB stub (`-D` flag) to inspect the
    failing point:
    ```bash
-   m68k-linux-gnu-gdb -q --tui \
+   m68k-elf-gdb -q --tui \
        -ex "target remote | blastem -D pal/megadrive/genix-md.bin" \
        pal/megadrive/genix-md.elf
    ```
@@ -284,7 +284,7 @@ Use BlastEm's `-D` flag with scripted GDB to inspect memory at known
 addresses after test completion. More precise than screenshot parsing.
 
 ```bash
-m68k-linux-gnu-gdb -batch \
+m68k-elf-gdb -batch \
     -ex "target remote | blastem -D pal/megadrive/genix-md.bin" \
     -ex "break *0x<test_done_addr>" \
     -ex "continue" \
