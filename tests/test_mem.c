@@ -209,6 +209,139 @@ static void test_write_to_allocated(void)
         ASSERT_EQ(p[i], 'X');
 }
 
+/* --- Slot allocator tests (re-implementation of kernel/mem.c slot code) --- */
+
+#define MAX_SLOTS 8
+
+static int t_num_slots;
+static uint8_t  t_slot_used[MAX_SLOTS];
+static uint32_t t_slot_bases[MAX_SLOTS];
+static uint32_t t_slot_sz;
+
+static void t_slot_init(uint32_t user_base, uint32_t user_size, int nslots)
+{
+    t_num_slots = nslots;
+    t_slot_sz = (user_size / nslots) & ~3u;
+    for (int i = 0; i < nslots; i++) {
+        t_slot_used[i] = 0;
+        t_slot_bases[i] = user_base + (uint32_t)i * t_slot_sz;
+    }
+}
+
+static int t_slot_alloc(void)
+{
+    for (int i = 0; i < t_num_slots; i++) {
+        if (!t_slot_used[i]) { t_slot_used[i] = 1; return i; }
+    }
+    return -1;
+}
+
+static void t_slot_free(int slot)
+{
+    if (slot >= 0 && slot < t_num_slots)
+        t_slot_used[slot] = 0;
+}
+
+static uint32_t t_slot_base(int slot)
+{
+    if (slot >= 0 && slot < t_num_slots)
+        return t_slot_bases[slot];
+    return 0;
+}
+
+static void test_slot_alloc_basic(void)
+{
+    t_slot_init(0x040000, 704 * 1024, 6);
+    int s = t_slot_alloc();
+    ASSERT(s >= 0);
+    ASSERT_EQ(t_slot_base(s), 0x040000);
+}
+
+static void test_slot_alloc_sequential(void)
+{
+    t_slot_init(0x040000, 704 * 1024, 6);
+    int s0 = t_slot_alloc();
+    int s1 = t_slot_alloc();
+    ASSERT(s0 >= 0);
+    ASSERT(s1 >= 0);
+    ASSERT(s0 != s1);
+    ASSERT(t_slot_base(s0) != t_slot_base(s1));
+}
+
+static void test_slot_alloc_exhaustion(void)
+{
+    t_slot_init(0x040000, 704 * 1024, 2);
+    int s0 = t_slot_alloc();
+    int s1 = t_slot_alloc();
+    int s2 = t_slot_alloc();
+    ASSERT(s0 >= 0);
+    ASSERT(s1 >= 0);
+    ASSERT_EQ(s2, -1);  /* no slots left */
+}
+
+static void test_slot_free_reuse(void)
+{
+    t_slot_init(0x040000, 704 * 1024, 2);
+    int s0 = t_slot_alloc();
+    (void)t_slot_alloc();  /* s1 — fill the second slot */
+    ASSERT_EQ(t_slot_alloc(), -1);  /* exhausted */
+    t_slot_free(s0);
+    int s2 = t_slot_alloc();
+    ASSERT(s2 >= 0);  /* freed slot reusable */
+    ASSERT_EQ(t_slot_base(s2), t_slot_base(s0));
+}
+
+static void test_slot_base_invalid(void)
+{
+    t_slot_init(0x040000, 704 * 1024, 4);
+    /* Invalid slot indices return 0 (documented weak spot) */
+    ASSERT_EQ(t_slot_base(-1), 0);
+    ASSERT_EQ(t_slot_base(99), 0);
+    ASSERT_EQ(t_slot_base(MAX_SLOTS), 0);
+}
+
+static void test_slot_free_invalid(void)
+{
+    t_slot_init(0x040000, 704 * 1024, 2);
+    /* Freeing invalid slots should not corrupt state */
+    t_slot_free(-1);
+    t_slot_free(99);
+    int s = t_slot_alloc();
+    ASSERT(s >= 0);  /* allocator still works */
+}
+
+static void test_slot_sizing_megadrive(void)
+{
+    /* Mega Drive: ~27.5 KB, 2 slots */
+    uint32_t user_size = 0xFFFE00 - 0xFF9000;  /* 28160 bytes */
+    t_slot_init(0xFF9000, user_size, 2);
+    ASSERT(t_slot_sz > 0);
+    ASSERT_EQ(t_slot_sz & 3, 0);  /* 4-byte aligned */
+    /* Both slots fit within user memory */
+    ASSERT(t_slot_bases[0] >= 0xFF9000);
+    ASSERT(t_slot_bases[1] + t_slot_sz <= 0xFFFE00);
+}
+
+static void test_slot_no_leak_on_free(void)
+{
+    /* Verify all slots can be allocated, freed, and re-allocated */
+    t_slot_init(0x040000, 704 * 1024, 4);
+    int slots[4];
+    for (int i = 0; i < 4; i++) {
+        slots[i] = t_slot_alloc();
+        ASSERT(slots[i] >= 0);
+    }
+    ASSERT_EQ(t_slot_alloc(), -1);  /* exhausted */
+    for (int i = 0; i < 4; i++)
+        t_slot_free(slots[i]);
+    /* All slots available again */
+    for (int i = 0; i < 4; i++) {
+        int s = t_slot_alloc();
+        ASSERT(s >= 0);
+    }
+    ASSERT_EQ(t_slot_alloc(), -1);
+}
+
 int main(void)
 {
     printf("test_mem:\n");
@@ -223,6 +356,16 @@ int main(void)
     RUN_TEST(test_free_coalesce);
     RUN_TEST(test_exhaust_and_free);
     RUN_TEST(test_write_to_allocated);
+
+    printf("\n--- slot allocator ---\n");
+    RUN_TEST(test_slot_alloc_basic);
+    RUN_TEST(test_slot_alloc_sequential);
+    RUN_TEST(test_slot_alloc_exhaustion);
+    RUN_TEST(test_slot_free_reuse);
+    RUN_TEST(test_slot_base_invalid);
+    RUN_TEST(test_slot_free_invalid);
+    RUN_TEST(test_slot_sizing_megadrive);
+    RUN_TEST(test_slot_no_leak_on_free);
 
     TEST_REPORT();
 }

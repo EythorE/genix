@@ -202,6 +202,7 @@ Technical details live in docs/, not here. Key references:
 - docs/68000-programming.md — ISA constraints, ABI, division rules
 - docs/megadrive.md — MD hardware, cartridges, SRAM, memory layout
 - docs/automated-testing.md — testing ladder, discrepancy procedures
+- docs/test-coverage.md — what is tested, what isn't, and TODOs
 - docs/relocatable-binaries.md — relocation research (1128 lines, canonical)
 - OPTIMIZATION_PLAN.md — performance gaps vs FUZIX with source refs
 - PLAN.md — forward roadmap (Phases 5-9)
