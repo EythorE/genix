@@ -381,27 +381,85 @@ trivia.
 
 ---
 
+### Tetris — The Classic
+
+| Property | Value |
+|----------|-------|
+| Source | Rewrite (~230-400 lines, no curses) |
+| Text (ROM) | ~3-5 KB |
+| Data+BSS | ~1-2 KB (10×20 board + piece shapes) |
+| RAM needs | ~500 bytes game state |
+| Needs fork() | No |
+| Missing libc | Non-blocking input (termios raw — already present) |
+| Approach | **Rewrite for VDP** |
+| Value | ★★★★★ |
+| Cool factor | ★★★★★ |
+
+**Why:** Tetris on a Mega Drive running under a Unix shell. The 40×28
+display is plenty for a 10×20 board. Could use VDP tiles for proper
+block graphics — this would look like a real Mega Drive game but
+launched from `$ tetris` at a shell prompt.
+
+**Challenge:** Non-blocking keyboard input + timer for piece drop.
+Need termios raw mode + poll/timeout. The Saturn keyboard latency
+will be the limiting factor, not CPU.
+
+---
+
+### Snake — Action Game
+
+| Property | Value |
+|----------|-------|
+| Source | Rewrite (~200-300 lines) |
+| Text (ROM) | ~2-4 KB |
+| Data+BSS | ~1-2 KB (40×28 board + snake body) |
+| RAM needs | ~1.2 KB |
+| Needs fork() | No |
+| Missing libc | Non-blocking input, timer/delay |
+| Approach | **Rewrite for VDP** |
+| Value | ★★★★☆ |
+| Cool factor | ★★★★★ |
+
+**Why:** Action game on a game console! Uses ANSI escapes or VDP
+tiles for real-time gameplay. The 40×28 grid is a natural play field.
+
+**Challenge:** Same as Tetris — non-blocking input + game timer.
+
+---
+
 ### 2048 — Tile Puzzle
 
 | Property | Value |
 |----------|-------|
-| Source | Various open-source implementations |
-| Size | ~200-300 lines |
-| Text (ROM) | ~3-4 KB |
+| Source | mevdschee/2048.c (~350 lines, single file) |
+| Text (ROM) | ~2-3 KB |
 | Data+BSS | <1 KB (4×4 grid + score) |
-| RAM needs | Minimal |
+| RAM needs | ~200 bytes |
 | Needs fork() | No |
 | Missing libc | Raw terminal input (termios — already present) |
-| Approach | **Rewrite for Genix** |
+| Approach | **Port/adapt for Genix** |
 | Value | ★★★☆☆ |
 | Cool factor | ★★★★☆ |
 
-**Why:** Modern classic, simple rules, addictive gameplay. Works
-perfectly in text mode. Could use VDP tiles for a nice visual version.
+**Why:** Modern classic, simple rules, addictive. The mevdschee
+version is already minimal. Could use VDP tiles for a nice visual.
 
-**Rewrite?** Yes. It's small enough that a clean implementation
-targeting the 40×28 display (or VDP tiles) is better than porting a
-random terminal version. ~150-200 lines.
+---
+
+### Robots — Classic BSD Game
+
+| Property | Value |
+|----------|-------|
+| Source | Rewrite (~200-300 lines, no curses) |
+| Text (ROM) | ~3-4 KB |
+| Data+BSS | ~1 KB |
+| Needs fork() | No |
+| Approach | **Rewrite** |
+| Value | ★★☆☆☆ |
+| Cool factor | ★★★☆☆ |
+
+Player moves on grid, robots chase, robots crash into each other.
+Simple turn-based logic, satisfying gameplay.
 
 ---
 
@@ -656,13 +714,21 @@ accessible.
 **Recommendation:** Port FUZIX BASIC first (more familiar to users),
 then Forth if there's interest.
 
+**Smaller alternatives:**
+- **uBASIC** (Adam Dunkels, ~700 lines) — extremely tiny, runs in
+  <1 KB working memory. Only integer variables (A-Z), but supports
+  IF/THEN, FOR/NEXT, GOSUB, PRINT. Perfect for 14 KB slot.
+- **zForth** (~3-4 KB compiled kernel) — designed for "extending
+  embedded applications on small microprocessors." Even smaller than
+  fforth, configurable dictionary size.
+
 **Risk:** Heap space for the BASIC program and variables. A 14 KB slot
 minus ~4-8 KB BSS leaves ~6-10 KB for programs. Enough for small
 programs (10-50 lines), which is authentic to the 8-bit experience.
+uBASIC sidesteps this entirely with its <1 KB footprint.
 
-**Rewrite?** For BASIC, no — FUZIX's is already optimized for small
-systems. For Forth, a minimal rewrite (~500 lines) targeting Genix
-specifically might be better than porting fforth's 2,400 lines.
+**Rewrite?** For BASIC, no — FUZIX's or uBASIC are already optimized.
+For Forth, zForth is purpose-built for this; prefer it over fforth.
 
 ---
 
@@ -937,7 +1003,9 @@ These were considered and rejected, with reasons.
 ~3,000-5,000 lines. Massive data+BSS. The RAM required for awk's
 symbol table, field splitting, and string operations would consume
 the entire 14 KB slot just for the interpreter state. **Wait for
-Phase 8.** On workbench it would work fine.
+Phase 8.** On workbench it would work fine. Note: One True Awk
+(Brian Kernighan's) is ~25-40 KB text (free in ROM) but needs
+~8-15 KB data — so it's marginal even with PSRAM.
 
 ### Colossal Cave (full)
 
@@ -961,10 +1029,12 @@ Genix is explicitly single-user. These serve no purpose.
 
 ### Compression (gzip, compress)
 
-~3,000-5,000 lines for gzip. The decompression dictionary alone is
-32 KB (gzip) or 64 KB (bzip2). Far exceeds RAM. `compress` (LZW) needs
-~16 KB dictionary — still too large for 14 KB slot. **Possible after
-Phase 8 only.**
+gzip: ~100 KB code + 256 KB working memory. Completely out.
+bzip2: 64 KB dictionary minimum. Out.
+Classic `compress`: 64 KB hash table. Out.
+**However:** `lzw-ab` (embedded-friendly LZW) needs only **2.4 KB for
+decode** with 12-bit symbols. Modest compression ratio but feasible.
+Could be a Wave 6+ item if there's interest.
 
 ### Full vi/vim
 
@@ -973,8 +1043,11 @@ data. Need Phase 8.
 
 ### lua/python/perl
 
-Interpreter overhead is enormous (50-500 KB). Not feasible even with
-PSRAM.
+Lua: ~60-100 KB text + 16-32 KB data minimum. Marginal even with PSRAM.
+Python/Perl: hundreds of KB. Not feasible.
+**PicoC** (C interpreter, ~15-25 KB text, 8-20 KB data) is the most
+feasible language interpreter in this class — "runs ok in 64KB." Still
+needs Phase 8 for the Mega Drive.
 
 ---
 
@@ -1018,11 +1091,13 @@ arithmetic  (port, trivial — math drills)
 ```
 Needs: nothing new. Games only use stdio + stdlib.
 
-### Wave 5: Games — Flagship
+### Wave 5: Games — Flagship & Action
 ```
 startrek    (port, may need display width tweaks)
-2048        (rewrite for VDP)
+2048        (rewrite/port for VDP)
 scott_adams (port shared engine + 14 game data files)
+tetris      (rewrite for VDP tiles — killer demo)
+snake       (rewrite for VDP — action game on a game console)
 ```
 
 ### Wave 6: Screen Editor + Advanced Tools
@@ -1111,3 +1186,26 @@ If all Tier 1-3 apps were included:
 
 Well within the 4 MB ROM limit. Text size is not a constraint.
 The constraint is always RAM (14 KB data slot per process).
+
+---
+
+## The "Mega Drive Computer" Demo Sequence
+
+The most compelling demo showing what all these apps enable:
+
+```
+1.  Boot → dash prompt
+2.  fortune displays a quote
+3.  cal shows current month
+4.  ls /bin shows 40+ programs
+5.  echo "hello" | rev demonstrates pipes
+6.  mandelbrot renders a fractal (VDP color version)
+7.  tetris or snake for gaming
+8.  basic to program interactively
+9.  ed to write a shell script
+10. adventure for the ultimate nostalgia
+```
+
+This transforms the Mega Drive from a game console into a general-
+purpose home computer — which is exactly what every kid in 1993
+wished it could be.
