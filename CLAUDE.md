@@ -242,6 +242,14 @@ These are lessons learned from debugging sessions (documented in full in
   `names[8][32]` = 256 bytes) can overflow it, corrupting the proc
   struct fields below. Keep syscall stack frames small; move large
   buffers to static/global storage or split into helper functions.
+- **vfork TRAP frame corruption**: After `vfork()`, the child's SSP
+  points to the parent's kstack. The child's next TRAP overwrites the
+  parent's saved registers. Fix: `_vec_syscall` reloads SP from
+  `curproc`'s kstack via `syscall_kstack_frame()` after dispatch.
+- **Libc syscall stubs must set errno**: POSIX requires stubs to
+  negate the kernel's negative return into `errno` and return -1.
+  Without this, dash's PATH search, EINTR retry, and error reporting
+  all break. See `__set_errno` in `libc/syscalls.S`.
 - **Unaligned stack buffers**: `char buf[13]` on the stack may land at an
   odd address. The 68000 faults on word/long access at odd addresses.
   Always use even-sized local buffers.
