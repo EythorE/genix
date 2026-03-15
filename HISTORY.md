@@ -1772,6 +1772,39 @@ Implementation:
 - Host tests for `kmem_stats()` (initial, after alloc, after free,
   fragmentation detection).
 
+### Makefile CROSS default was broken since day one (March 2026)
+
+**This was one of the most costly bugs in the project.** Every Makefile
+in the project (`kernel/`, `libc/`, `apps/`, `apps/dash/`, `apps/levee/`,
+`pal/megadrive/`) defaulted `CROSS ?= m68k-linux-gnu-` — the distro
+compiler whose libgcc contains 68020 instructions that silently hang on
+the 68000. This meant `make clean && make run` produced a non-functional
+build unless the user remembered `export CROSS=m68k-elf-` first.
+
+The irony: CLAUDE.md, README.md, docs/toolchain.md, and the Common
+Pitfalls section all explicitly warned "never use the distro compiler"
+— while every Makefile defaulted to exactly that compiler. The warning
+existed because this bug had already cost multiple days of debugging
+(see Bug 1 below), yet the default was never fixed.
+
+**Impact:** Every new shell session, every CI run, every collaborator
+checkout silently used the wrong compiler unless they knew to set
+`CROSS`. Builds would succeed with zero errors, then the 68000 would
+hang with no diagnostic output. The symptom — a completely silent
+hang after `[exec] /bin/dash: loaded` — looks identical to dozens of
+other possible bugs (relocation errors, stack corruption, memory layout
+issues), making it extremely expensive to diagnose each time.
+
+**Fix:** Changed all 6 Makefiles to `CROSS ?= m68k-elf-`. Now
+`make clean && make run` works out of the box with just PATH set.
+Also updated GDB references in docs from `m68k-linux-gnu-gdb` to
+`m68k-elf-gdb` and removed the now-unnecessary `export CROSS`
+from setup instructions.
+
+**Lesson:** If something is dangerous enough to warrant a "never do
+this" warning in three separate documents, the build system should
+make it impossible, not merely discouraged. Defaults must be safe.
+
 ---
 
 _End of project history. For active design decisions, see
