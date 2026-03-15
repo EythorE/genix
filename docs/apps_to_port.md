@@ -18,7 +18,7 @@ retro games, and standalone projects.
 | No curses | No termcap database; raw VT100/ANSI or direct VDP |
 | No floating point HW | 68000 has no FPU; soft-float is slow |
 | No network | No TCP/IP stack |
-| Existing apps | 33 coreutils + dash + levee |
+| Existing apps | 46 coreutils + dash + levee (47 total) |
 
 ### What's Free (ROM) vs. What Costs (RAM)
 
@@ -168,7 +168,7 @@ hundred lines — scripts, configs, small programs.
 
 ---
 
-### cp, mv, rm — File Management
+### cp, mv, rm — File Management — DONE
 
 | Property | Value |
 |----------|-------|
@@ -176,85 +176,91 @@ hundred lines — scripts, configs, small programs.
 | Data+BSS | <1 KB each |
 | Needs fork() | No |
 | Approach | **Rewrite** (trivial) |
+| Status | **Ported** — all three in `apps/` |
 
 Can't copy, move, or delete files without these. All use existing
-syscalls (open/read/write/close, rename, unlink). Could write all
-three in one session.
+syscalls (open/read/write/close, rename, unlink). rm supports `-r`
+for recursive directory removal.
 
 ---
 
-### more — Pager
+### more — Pager — DONE
 
 | Property | Value |
 |----------|-------|
-| Size | ~100-150 lines |
-| Data+BSS | <1 KB |
+| Size | ~115 lines |
+| Data+BSS | 452+180 bytes |
 | Needs fork() | No |
 | Missing libc | None (termios raw mode already present) |
 | Approach | **Rewrite for 40×28 VDP** |
+| Status | **Ported** — `apps/more.c` |
 
-Without a pager, anything longer than 28 lines scrolls off screen.
-Hardcode 40×28 dimensions, show "--more--" at bottom, space for next
-page, q to quit. Could use VDP scroll register for smooth scrolling.
+Opens `/dev/tty` for raw key input. Space = next page, Enter = next
+line, q = quit. Falls back to cat-through when stdout is not a
+terminal.
 
 ---
 
-### sort — Sort Lines
+### sort — Sort Lines — DONE
 
 | Property | Value |
 |----------|-------|
-| Source | Rewrite (~100-150 lines) |
-| Data+BSS | <1 KB |
+| Source | Rewrite (~120 lines) |
+| Data+BSS | 496+308 bytes |
 | Heap | Proportional to input size |
 | Needs fork() | No |
 | Approach | **Rewrite using qsort()** (already in libc) |
+| Status | **Ported** — `apps/sort.c` |
 
-Read stdin into malloc'd buffer, sort with qsort, output. Simple
-version handles 90% of use cases. With ~10 KB heap available, can
-sort files up to ~10 KB. FUZIX's version tries to allocate 40 KB
-— a simpler rewrite is better here.
+Reads all input into malloc'd buffer, sorts with qsort, outputs.
+Supports `-r` (reverse) and `-n` (numeric sort). With ~10 KB heap
+available on MD, can sort files up to ~10 KB.
 
 ---
 
-### find — File Search
+### find — File Search — DONE
 
 | Property | Value |
 |----------|-------|
-| Size | ~200 lines |
-| Data+BSS | <1 KB |
+| Size | ~130 lines |
+| Data+BSS | 500+308 bytes |
 | Needs fork() | No (basic); vfork+exec for `-exec` |
 | Approach | **Rewrite — minimal version** |
+| Status | **Ported** — `apps/find.c` |
 
-Support `-name PATTERN`, `-type f/d`, and printing paths. ~200 lines.
-The filesystem is small; recursive walk is fine.
+Supports `-name PATTERN` (glob with `*` and `?`) and `-type f/d`.
+Recursive directory walk. No `-exec` yet (would need vfork).
 
 ---
 
-### xargs — Build Commands from stdin
+### xargs — Build Commands from stdin — DONE
 
 | Property | Value |
 |----------|-------|
-| Source | FUZIX `Applications/util/xargs.c` (~250 lines) |
-| Data+BSS | <1 KB |
-| Needs fork() | Uses fork() — **change to vfork()** (trivial) |
-| Approach | **Port from FUZIX** |
+| Source | Rewrite (~98 lines) |
+| Data+BSS | 460+300 bytes |
+| Needs fork() | No — uses vfork()+exec() |
+| Approach | **Rewrite** (simpler than porting FUZIX) |
+| Status | **Ported** — `apps/xargs.c` |
 
-Essential complement to find and pipes. Fork→vfork change is ~5 lines.
+Reads whitespace-separated arguments from stdin, builds command
+lines, executes with vfork()+exec(). 64-argument limit per
+invocation.
 
 ---
 
-### kill, mkdir, touch, which, uname, clear
+### kill, mkdir, touch, which, uname, clear — ALL DONE
 
-All trivial rewrites, 10-80 lines each, <1 KB data:
+All trivial rewrites, 10-80 lines each, <1 KB data. All ported.
 
-| App | Lines | Why |
-|-----|-------|-----|
-| kill | ~60 | Job control: `kill -9 PID` |
-| mkdir | ~20 | Standalone mkdir command (syscall exists) |
-| touch | ~30 | Create files, update timestamps |
-| which | ~40 | Find command in PATH |
-| uname | ~20 | "Genix 68000 megadrive" — system identity |
-| clear | ~5 | `\033[2J\033[H` — clear screen |
+| App | Lines | data+bss | Status |
+|-----|-------|----------|--------|
+| kill | 60 | 620 B | **Ported** — named signals (HUP, INT, KILL, etc.) |
+| mkdir | 20 | 372 B | **Ported** |
+| touch | 25 | 368 B | **Ported** (no utimes syscall yet) |
+| which | 55 | 460 B | **Ported** — PATH search with access(X_OK) |
+| uname | 15 | 376 B | **Ported** — -a for full system info |
+| clear | 5 | 284 B | **Ported** |
 
 ---
 
@@ -623,17 +629,17 @@ be replaced.
 
 ## Implementation Waves
 
-### Wave 1: Filesystem Essentials
+### Wave 1: Filesystem Essentials — DONE
 ```
 cp, mv, rm, mkdir, touch, kill, which, uname, clear
 ```
-All rewrites, 10-150 lines each. Single session.
+All rewrites, 10-150 lines each. Completed in a single session.
 
-### Wave 2: Core Text Tools
+### Wave 2: Core Text Tools — PARTIAL
 ```
-ed     (port from FUZIX — first editor)
-more   (rewrite — first pager)
-sort   (rewrite — simple qsort version)
+ed     (port from FUZIX — first editor)       ← NOT YET
+more   (rewrite — first pager)                ← DONE
+sort   (rewrite — simple qsort version)       ← DONE
 ```
 
 ### Wave 3: Quick-Win Games
@@ -649,11 +655,11 @@ levee  (update Makefile to -msep-data, fix crash bug)
 ```
 Highest-value single fix — gives the system a real screen editor.
 
-### Wave 5: Scripting & Flagship Games
+### Wave 5: Scripting & Flagship Games — PARTIAL
 ```
-sed       (port from FUZIX)
-find      (rewrite, ~200 lines)
-xargs     (port, fork→vfork fix)
+sed       (port from FUZIX)                   ← NOT YET
+find      (rewrite, ~130 lines)               ← DONE
+xargs     (rewrite, ~98 lines)               ← DONE
 startrek  (port from FUZIX — may need 40-col formatting)
 scott_adams (port shared engine + 14 game data files)
 ```
@@ -698,7 +704,7 @@ PicoC     (C interpreter — if heap fits)
 | `localtime()` / `gmtime()` | cal, date, many programs | ~50 lines |
 | `strftime()` | date | ~80 lines |
 | `mkstemp()` | sort (temp files, optional) | ~20 lines |
-| `fnmatch()` | find | ~40 lines |
+| `fnmatch()` | find (has built-in glob) | ~40 lines (optional) |
 | `ntohs()` / `htons()` | fortune | ~2 lines (macro) |
 
 All are small. `localtime()` is the highest value — many programs
@@ -712,11 +718,11 @@ need time decomposition.
 |-----|----------|--------|
 | levee | Fix existing | Already ported, just needs -msep-data + crash fix |
 | ed | Port FUZIX | Battle-tested, correct, already fits |
-| sort | Rewrite | Simple qsort version is 90% of use cases in ~100 lines |
+| sort | ~~Rewrite~~ | **DONE** — qsort-based, -r, -n |
 | diff | Either | V7 works but archaic; rewrite is cleaner |
-| find | Rewrite | Full POSIX find is overkill; ~200 lines is enough |
-| xargs | Port FUZIX | Small, just fix fork→vfork |
-| more | Rewrite | Hardcode 40×28, simpler than porting less |
+| find | ~~Rewrite~~ | **DONE** — -name glob, -type f/d |
+| xargs | ~~Rewrite~~ | **DONE** — vfork()+exec() |
+| more | ~~Rewrite~~ | **DONE** — raw mode pager |
 | sed | Port FUZIX | Complex enough that correctness matters |
 | awk | Port One True Awk | Don't rewrite — language semantics are subtle |
 | startrek | Port FUZIX | Already optimized for 32 KB target |
@@ -729,7 +735,7 @@ need time decomposition.
 | tetris/snake | Rewrite | VDP-native, action games on a game console |
 | mandelbrot/life | Rewrite | VDP-specific, fixed-point, ~100-200 lines each |
 | invaders | Rewrite | VDP sprites — showcase application |
-| cp/mv/rm/etc | Rewrite | Trivial, <100 lines each |
+| cp/mv/rm/etc | ~~Rewrite~~ | **DONE** — all 9 Wave 1 apps ported |
 
 ---
 
@@ -737,9 +743,9 @@ need time decomposition.
 
 | Category | Estimated text (ROM) |
 |----------|---------------------|
-| Existing 33 apps + dash + levee | ~200 KB |
-| Wave 1 (fs essentials) | ~15 KB |
-| Wave 2 (ed, more, sort) | ~20 KB |
+| Existing 46 apps + dash + levee | ~260 KB (measured) |
+| Wave 1 (fs essentials) | ~~~15 KB~~ **DONE** |
+| Wave 2 (ed, more, sort) | ~10 KB remaining (ed only) |
 | Wave 3 (quick-win games) | ~30 KB |
 | Wave 5 (sed, find, startrek, scott_adams) | ~60 KB |
 | Wave 6 (tetris, snake, mandelbrot, life) | ~15 KB |

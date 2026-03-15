@@ -3,18 +3,22 @@
 What remains to be built. For project history and completed phases,
 see [HISTORY.md](HISTORY.md).
 
-Current state: Genix is a working preemptive multitasking OS with 35
-user programs (including dash shell), relocatable binaries, pipes,
-signals, job control, and a TTY subsystem. It runs on both the
-workbench emulator and real Mega Drive hardware. ROM XIP is working on
-Mega Drive (text executes from ROM, only .data copied to RAM). Phase 6
-(`-msep-data` + slot allocator) is complete: multiple processes can
-reside in memory simultaneously with shared ROM text and per-process
-data slots. Pipelines execute concurrently. Phase A (libc prerequisites),
-Phase B (kernel enhancements: fcntl F_DUPFD, waitpid WNOHANG), and
-Phase C (dash shell port) are complete. The kernel spawns dash as the
-default interactive shell, falling back to the builtin shell if not
-found. The next step is Phase 7 (SD card filesystem).
+Current state: Genix is a working preemptive multitasking OS with 47
+user programs (including dash shell and 13 tier-1 utilities),
+relocatable binaries, pipes, signals, job control, and a TTY
+subsystem. It runs on both the workbench emulator and real Mega Drive
+hardware. ROM XIP is working on Mega Drive (text executes from ROM,
+only .data copied to RAM). Phase 6 (`-msep-data` + slot allocator) is
+complete: multiple processes can reside in memory simultaneously with
+shared ROM text and per-process data slots. Pipelines execute
+concurrently. Phase A (libc prerequisites), Phase B (kernel
+enhancements: fcntl F_DUPFD, waitpid WNOHANG), Phase C (dash shell
+port), and Tier 1 apps (cp, mv, rm, mkdir, touch, kill, which, uname,
+clear, more, sort, find, xargs) are complete. The kernel spawns dash
+as the default interactive shell, falling back to the builtin shell if
+not found. The next step is Phase 7 (SD card filesystem). See
+[docs/apps_to_port.md](docs/apps_to_port.md) for the app porting
+roadmap.
 
 ---
 
@@ -418,9 +422,15 @@ each optimization.
 
 Not prioritized, but would improve the system:
 
-- **Larger programs**: ed (line editor), diff, sort, sed, awk
+- **Tier 1 remaining**: ed (line editor — only editor if levee too tight)
+- **Tier 2 games**: hamurabi, dopewars, startrek, adventure, tetris, snake
+- **Tier 3 text processing**: sed, diff, cal, date (needs localtime libc)
+- **Tier 4 languages**: BASIC interpreter, Forth, fweep (Z-machine)
 - **Development tools**: ar, make, small C compiler (from FUZIX)
 - **SA_RESTART**: auto-retry syscalls interrupted by signals
+
+See [docs/apps_to_port.md](docs/apps_to_port.md) for the complete
+app porting roadmap with RAM analysis and wave breakdown.
 
 ---
 
