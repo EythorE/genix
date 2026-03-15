@@ -35,7 +35,7 @@ CORE_BINS = apps/hello apps/echo apps/cat apps/wc apps/head apps/true apps/false
             apps/grep apps/od apps/env apps/expr \
             apps/cp apps/mv apps/rm apps/mkdir apps/touch \
             apps/kill apps/which apps/uname apps/clear \
-            apps/more apps/sort apps/find apps/xargs \
+            apps/more apps/sort apps/find apps/xargs apps/meminfo \
             apps/dash/dash
 
 # All app binaries (levee is workbench-only — too large for MD 31KB user space)

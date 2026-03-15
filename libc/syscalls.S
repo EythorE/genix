@@ -324,6 +324,14 @@ rmdir:
     trap    #0
     bra     __set_errno
 
+/* int meminfo(struct meminfo *info) */
+    .globl meminfo
+meminfo:
+    move.l  4(%sp), %d1        /* info */
+    move.l  #200, %d0          /* SYS_MEMINFO */
+    trap    #0
+    bra     __set_errno
+
 /* time_t time(time_t *t) — always succeeds */
     .globl time
 time:

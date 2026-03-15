@@ -91,6 +91,7 @@ typedef int bool;
 #define SYS_SIGNAL      48
 #define SYS_SBRK        69
 #define SYS_SIGRETURN   119
+#define SYS_MEMINFO     200
 
 /* Process state for stopped jobs */
 #define P_STOPPED   6
@@ -181,10 +182,38 @@ void  mem_init(uint32_t start, uint32_t end);
 void *kmalloc(uint32_t size);
 void  kfree(void *ptr);
 void *sbrk_proc(int32_t incr);
-
-/* ======== Slot allocator (Phase 6) ======== */
+void  kmem_stats(uint32_t *total, uint32_t *free_bytes, uint32_t *largest);
 
 #define MAX_SLOTS   8
+
+/* ======== Memory info (SYS_MEMINFO) ======== */
+
+struct slot_info {
+    uint8_t  used;        /* 1 if slot is occupied */
+    uint8_t  pid;         /* owning process PID (0 if free) */
+    uint16_t _pad;
+    uint32_t base;        /* slot base address */
+    uint32_t size;        /* slot size */
+    uint32_t text_size;   /* text in ROM (XIP), 0 if non-XIP */
+    uint32_t data_bss;    /* data+bss bytes used */
+    uint32_t brk;         /* current heap break */
+};
+
+struct meminfo {
+    /* Kernel heap */
+    uint32_t kheap_total;
+    uint32_t kheap_free;
+    uint32_t kheap_largest;
+    /* User slots */
+    uint32_t user_base;
+    uint32_t user_top;
+    uint32_t slot_size;
+    uint8_t  num_slots;
+    uint8_t  _pad[3];
+    struct slot_info slots[MAX_SLOTS];
+};
+
+/* ======== Slot allocator (Phase 6) ======== */
 
 void slot_init(void);
 int  slot_alloc(void);     /* returns slot index or -1 */
@@ -366,6 +395,8 @@ struct proc {
     uint32_t data_a5;      /* a5 value for -msep-data (GOT base in slot) */
     int8_t   mem_slot;     /* slot index (-1 = no slot) */
     uint8_t  _pad1;
+    uint32_t text_size;    /* text segment size (0 if non-XIP, ROM bytes if XIP) */
+    uint32_t data_bss;     /* data+bss size loaded into slot */
     uint16_t cwd;          /* current working directory inode */
     uint32_t vfork_ctx[13]; /* vfork_save context (d2-d7,a2-a6,sp,retaddr) */
     uint8_t  pgrp;         /* process group ID (for job control) */

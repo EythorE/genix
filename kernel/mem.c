@@ -102,6 +102,23 @@ void *sbrk_proc(int32_t incr)
     return (void *)old_brk;
 }
 
+/* ======== Kernel heap stats ======== */
+
+void kmem_stats(uint32_t *total, uint32_t *free_bytes, uint32_t *largest)
+{
+    *total = heap_end - heap_start;
+    *free_bytes = 0;
+    *largest = 0;
+
+    struct mem_block *p = free_list;
+    while (p) {
+        *free_bytes += p->size;
+        if (p->size > *largest)
+            *largest = p->size;
+        p = p->next;
+    }
+}
+
 /* ======== Slot allocator (Phase 6) ======== */
 
 /*
