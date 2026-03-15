@@ -348,9 +348,9 @@ exitcmd(int argc, char **argv)
 		return 0;
 
 	if (argc > 1)
-		savestatus = number(argv[1]);
+		exitstatus = number(argv[1]);
 
-	exraise(EXEXIT);
+	_exit(exitstatus);
 	/* NOTREACHED */
 }
 
