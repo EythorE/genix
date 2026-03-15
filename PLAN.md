@@ -221,8 +221,8 @@ deferral, and concurrent pipeline execution all work on both platforms.
 
 **Measured results:**
 
-- Workbench: 8 slots × 88 KB, all 31 autotest pass
-- Mega Drive: 2 slots × ~13.75 KB, builds and runs (600 frames)
+- Workbench: 6 slots × ~117 KB (reduced from 8 to fit dash ~91 KB text)
+- Mega Drive: 2 slots × ~13.75 KB (dash uses XIP — text in ROM)
 - Binary size overhead: ~2-7% (GOT + extra relocs)
 - hello: 616 bytes text+data, 3 relocs (was 1 without GOT relocs)
 - levee: 46336 bytes text+data, 2560 relocs (was 2533)
@@ -420,7 +420,6 @@ Not prioritized, but would improve the system:
 
 - **Larger programs**: ed (line editor), diff, sort, sed, awk
 - **Development tools**: ar, make, small C compiler (from FUZIX)
-- **kstack overflow guard**: canary word for debug builds
 - **SA_RESTART**: auto-retry syscalls interrupted by signals
 
 ---

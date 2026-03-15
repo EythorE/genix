@@ -65,11 +65,11 @@ export CROSS=m68k-elf-
 This downloads the correct `m68k-elf-gcc` (built with `--with-cpu=68000`)
 and BlastEm 0.6.3-pre from retrodev.com nightlies.
 
-**Fallback:** If the pre-built toolchain doesn't work for your platform,
-install the distro compiler (`sudo apt-get install gcc-m68k-linux-gnu
-binutils-m68k-linux-gnu`). It defaults to 68020 but Genix works around
-this with `-m68000` and its own `divmod.S`. See
-[docs/toolchain.md](docs/toolchain.md) for details and building from source.
+**Fallback:** If `fetch-toolchain.sh` doesn't work for your platform,
+build `m68k-elf-gcc` from source — see
+[docs/toolchain.md](docs/toolchain.md). **Do NOT use the distro package
+`gcc-m68k-linux-gnu`** — its `libgcc.a` contains 68020 instructions
+that cause silent hangs on the 68000.
 
 ### 2. Build and Run
 
@@ -78,18 +78,17 @@ make run       # Build everything + boot in the workbench emulator
 ```
 
 This builds the emulator, kernel, user programs, and a filesystem image,
-then boots Genix in your terminal. You'll see a `>` prompt.
+then boots Genix in your terminal. You'll see the dash `#` prompt.
 
 ### 3. Try It
 
 ```
-> ls /bin           # List available programs
-> exec /bin/hello   # Run the hello world program
-> exec /bin/echo hello world
-> echo hello | cat  # Pipes work
-> mem               # Show memory allocator state
-> help              # List all built-in commands
-> halt              # Shut down (exits the emulator)
+# echo hello world       # Run a command
+# ls /bin                 # List available programs (35 including dash)
+# echo hello | cat        # Pipes work
+# cat /etc/motd > /tmp/x  # I/O redirection
+# wc < /tmp/x             # Input redirection
+# exit                    # Exit (dash respawns automatically)
 ```
 
 Press **Ctrl+]** to force-quit the emulator at any time (like telnet).
@@ -175,7 +174,7 @@ genix/
 │   ├── workbench/  # Emulated SBC
 │   └── megadrive/  # Sega Mega Drive
 ├── libc/         # Minimal C library + syscall stubs (for user programs)
-├── apps/         # Userspace programs (34 utilities)
+├── apps/         # Userspace programs (35 including dash)
 ├── tools/        # Host tools (mkfs, mkbin)
 ├── tests/        # Host unit tests (13 test files, 4924+ assertions)
 └── docs/         # Technical documentation

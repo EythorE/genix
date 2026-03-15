@@ -108,6 +108,10 @@ static int read_inode(uint16_t inum, struct disk_inode *di)
 /*
  * Get the ROM byte address of a file's data start.
  * Returns 0 if blocks are not contiguous or file is empty.
+ *
+ * For files using indirect blocks (>12 blocks), reads the indirect
+ * block to verify that all data blocks are contiguous.  mkfs allocates
+ * sequentially so this is normally the case.
  */
 static uint32_t file_rom_addr(struct disk_inode *di)
 {
@@ -124,9 +128,19 @@ static uint32_t file_rom_addr(struct disk_inode *di)
             return 0;
     }
 
-    /* Don't handle indirect blocks for XIP */
-    if (nblocks > 12)
-        return 0;
+    /* For files using indirect blocks, verify those are contiguous too */
+    if (nblocks > 12) {
+        if (di->indirect == 0)
+            return 0;
+        uint8_t *indirect = rom_block(di->indirect);
+        if (!indirect)
+            return 0;
+        for (uint32_t i = 12; i < nblocks; i++) {
+            uint16_t blkno = get16(indirect + (i - 12) * 2);
+            if (blkno != first + i)
+                return 0;
+        }
+    }
 
     return romdisk_off + (uint32_t)first * BLOCK_SIZE;
 }

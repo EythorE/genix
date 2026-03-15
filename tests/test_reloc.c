@@ -897,6 +897,29 @@ static void test_xip_header_saves_ram(void)
 
 /* --- Main --- */
 
+/*
+ * Known weak spot: duplicate reloc offset.
+ * If the same offset appears twice in the reloc table, the relocator
+ * applies the adjustment twice, corrupting the value. This documents
+ * the current (broken) behavior. If mkbin ever deduplicates, this
+ * test should be updated to assert correct single-application.
+ */
+static void test_reloc_duplicate_offset(void)
+{
+    memset(test_image, 0, sizeof(test_image));
+    uint32_t *p = (uint32_t *)(test_image + 8);
+    *p = 0x200;  /* zero-based address */
+
+    /* Same offset twice */
+    uint32_t relocs[] = { 8, 8 };
+    apply_relocations(test_image, 0x040000, 0, 1024, relocs, 2);
+
+    /* BUG: value gets load_addr added TWICE = 0x200 + 0x40000 + 0x40000 */
+    ASSERT_EQ(*p, 0x080200);  /* double-applied (known bug) */
+
+    /* Correct behavior would be: *p == 0x040200 (applied once) */
+}
+
 int main(void)
 {
     printf("test_reloc:\n");
@@ -937,6 +960,9 @@ int main(void)
     RUN_TEST(test_reloc_skip_out_of_range);
     RUN_TEST(test_reloc_skip_straddles_end);
     RUN_TEST(test_reloc_skip_split_mode);
+
+    /* Known weak spot: duplicate reloc offset (PLAN.md weak spot 2) */
+    RUN_TEST(test_reloc_duplicate_offset);
 
     /* XIP relocator (split text/data in separate memory) */
     RUN_TEST(test_xip_basic);

@@ -17,7 +17,7 @@ canonical reference — do NOT delete or overwrite that document).
 | 4 | Kernel relocation engine | **Done** |
 | 5 | End-to-end validation | **Done** |
 | 6 | Dynamic load address | **Done** |
-| 7 | Split text/data and XIP | Future |
+| 7 | Split text/data and XIP | **Done** (romfix + kernel XIP engine) |
 
 ### Implementation Deviations from Plan
 

@@ -18,9 +18,10 @@ export PATH=~/buildtools-m68k-elf/bin:~/blastem:$PATH
 export CROSS=m68k-elf-
 ```
 
-If `fetch-toolchain.sh` fails, see `docs/toolchain.md` — but follow
-it carefully and do not improvise. Do NOT install distro packages
-(`gcc-m68k-linux-gnu`) unless `docs/toolchain.md` explicitly says to.
+**`CROSS=m68k-elf-` is mandatory.** The distro package
+(`gcc-m68k-linux-gnu`) has 68020 libgcc that silently hangs on the
+68000. If `fetch-toolchain.sh` fails, build from source per
+`docs/toolchain.md`. Never use the distro compiler.
 
 ## Project Stage & Current Focus
 
@@ -201,6 +202,7 @@ Technical details live in docs/, not here. Key references:
 - docs/68000-programming.md — ISA constraints, ABI, division rules
 - docs/megadrive.md — MD hardware, cartridges, SRAM, memory layout
 - docs/automated-testing.md — testing ladder, discrepancy procedures
+- docs/test-coverage.md — what is tested, what isn't, and TODOs
 - docs/relocatable-binaries.md — relocation research (1128 lines, canonical)
 - OPTIMIZATION_PLAN.md — performance gaps vs FUZIX with source refs
 - PLAN.md — forward roadmap (Phases 5-9)
@@ -229,19 +231,27 @@ considering any change done.
 These are lessons learned from debugging sessions (documented in full in
 `HISTORY.md`). Keep them in mind:
 
-- **68020 instructions in libgcc**: The distro `libgcc.a` contains 68020
-  opcodes (`BSR.L`, `MULU.L`, `DIVU.L`). Any 64-bit arithmetic
-  (`long long` multiply, divide, modulus) pulls in `__muldi3`,
-  `__divdi3`, `__moddi3` which use these illegal opcodes. This affects
-  `strtoull`, `vsnprintf %d`, and any code with `unsigned long long`
-  math. Fix: avoid 64-bit ops in libc (use 32-bit with manual
-  hi:lo splitting), or use `m68k-elf-gcc` (from `fetch-toolchain.sh`).
-  `divmod.S` covers 32-bit division only.
+- **68020 instructions in libgcc — use `m68k-elf-gcc` only**: The
+  distro `libgcc.a` (`m68k-linux-gnu`) contains 68020 opcodes
+  (`MULU.L`, `DIVU.L`, `BSR.L`) in `__muldi3`, `__divdi3`, etc.
+  These cause **silent hangs** — no crash message, no output. This
+  cost multiple days of debugging. `divmod.S` only covers 32-bit
+  division; 64-bit ops are NOT replaced. The ONLY fix is using
+  `m68k-elf-gcc` (from `fetch-toolchain.sh`). Never build with
+  the distro compiler.
 - **kstack overflow in deep syscalls**: The per-process kstack is only
   512 bytes. Syscalls with large local arrays (e.g., `sys_getcwd`'s
   `names[8][32]` = 256 bytes) can overflow it, corrupting the proc
   struct fields below. Keep syscall stack frames small; move large
   buffers to static/global storage or split into helper functions.
+- **vfork TRAP frame corruption**: After `vfork()`, the child's SSP
+  points to the parent's kstack. The child's next TRAP overwrites the
+  parent's saved registers. Fix: `_vec_syscall` reloads SP from
+  `curproc`'s kstack via `syscall_kstack_frame()` after dispatch.
+- **Libc syscall stubs must set errno**: POSIX requires stubs to
+  negate the kernel's negative return into `errno` and return -1.
+  Without this, dash's PATH search, EINTR retry, and error reporting
+  all break. See `__set_errno` in `libc/syscalls.S`.
 - **Unaligned stack buffers**: `char buf[13]` on the stack may land at an
   odd address. The 68000 faults on word/long access at odd addresses.
   Always use even-sized local buffers.
