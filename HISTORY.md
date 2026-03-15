@@ -1248,6 +1248,135 @@ in 68020-only libgcc functions. Audit all libc functions that touch
 64-bit types. Also: 512-byte kstacks are extremely tight; any syscall
 with >100 bytes of locals is a risk.
 
+### Libc syscall stubs didn't set errno (dash PATH search broken)
+
+**Date:** March 2026
+**Symptom:** Dash printed "Success" after running external commands, and
+PATH search didn't work (couldn't find `/bin/echo` without the full path).
+
+**Root cause:** Genix libc syscall stubs returned the raw kernel return
+value (e.g., -2 for ENOENT). POSIX requires stubs to detect negative
+return values, set the global `errno` to the negated value, and return -1.
+Dash's `tryexec()` checked `errno == ENOENT` to continue searching PATH,
+but errno was always stale (never set by the stubs). Dash's `waitproc()`
+checked `errno == EINTR` to retry, which also never matched.
+
+**Fix:** Added `__set_errno` to libc syscall stubs in `libc/syscalls.S`:
+on negative kernel return, negate into the `errno` global and return -1.
+Stubs that return pointers (brk, sbrk) or always succeed (getpid, time)
+were left unchanged.
+
+**Lesson:** POSIX errno semantics are load-bearing for any real shell.
+Every syscall stub that can fail must set errno.
+
+### sys_getcwd kstack overflow (dash hang during setpwd)
+
+**Date:** March 2026
+**Symptom:** Dash hung or corrupted state during initialization at
+`setpwd` → `getpwd` → `getcwd`.
+
+**Root cause:** `sys_getcwd` in `kernel/proc.c` allocated a 256-byte
+`names[8][32]` local array on the 512-byte per-process kstack. Combined
+with the TRAP frame (~30 bytes), syscall dispatch, and the getcwd call
+chain, this overflowed the kstack into the proc struct fields below.
+
+**Fix:** Moved `names[8][32]` to static storage. Safe because the kernel
+is non-preemptive (only one syscall executes at a time).
+
+**Lesson:** Already documented in CLAUDE.md pitfalls (Bug 8), but this
+was a second instance. Any syscall with >100 bytes of locals needs
+scrutiny. Static storage is the standard fix for non-preemptive kernels.
+
+### romfix/mkfs indirect block support for XIP contiguity
+
+**Date:** March 2026
+**Symptom:** Dash binary (88 KB text, ~95 KB total) was too large for
+7 direct blocks (7 KB) and needed indirect blocks. romfix couldn't find
+its XIP address because it only followed direct block pointers.
+
+**Fix:** Two changes:
+1. **mkfs:** Pre-allocate the indirect block *before* data blocks so that
+   XIP binaries remain contiguous in ROM. Previously mkfs allocated data
+   blocks first, then the indirect block, which could break contiguity.
+2. **romfix:** Follow indirect block pointers to verify contiguity and
+   resolve XIP addresses for large binaries.
+
+**Lesson:** XIP contiguity requires the filesystem tool to cooperate.
+mkfs must lay out blocks in ROM order, and romfix must understand the
+full inode addressing scheme (direct + indirect).
+
+### Workbench slots reduced from 8 to 6
+
+**Date:** March 2026
+**Context:** With 8 slots of 88 KB each, dash (91 KB text) didn't fit in
+a single workbench slot. The workbench user memory region is 720 KB
+(0x040000-0x0EFFF8).
+
+**Fix:** Reduced to 6 slots of ~117 KB each. Dash fits comfortably.
+Mega Drive was already at 2 slots and unaffected.
+
+**Lesson:** Slot sizing must account for the largest program's needs.
+With XIP, text stays in ROM but the slot must still be large enough for
+the data+bss+stack. On workbench (without XIP), the full binary must fit.
+
+### vfork TRAP frame corruption on 68000
+
+**Date:** March 2026
+**Symptom:** After running an external command (e.g., `ls`), dash was
+re-spawned from scratch instead of returning to the prompt. The parent
+dash process was getting garbage PC/USP values after the child exited.
+
+**Root cause:** After `vfork()`, the child runs in user mode sharing the
+parent's address space. The child's SSP still points to the parent's
+kstack. When the child makes a TRAP #0 (e.g., for `execve()`), the 68000
+pushes a new exception frame onto the parent's kstack, overwriting the
+parent's saved register state (PC, SR, USP). When the parent resumes
+after `vfork_restore()`, it restores garbage registers from the
+corrupted kstack frame.
+
+**Fix:** After `syscall_dispatch()` returns in `crt0.S`, reload SP from
+`curproc`'s kstack via a new `syscall_kstack_frame()` helper function.
+This ensures each process always restores from its own copy of the
+exception frame. After vfork, the child gets its own copy (from the
+proc struct copy), and the parent's frame is preserved.
+
+**Lesson:** On no-MMU systems with vfork, the child sharing the parent's
+kstack means any TRAP/exception corrupts the parent's saved state. The
+kernel must ensure each process restores from its own state, not from
+whatever happens to be on the stack after the child ran.
+
+### dash exit builtin crash (exraise/longjmp corruption)
+
+**Date:** March 2026
+**Symptom:** Running `exit` at the dash prompt caused a crash instead of
+a clean exit.
+
+**Root cause:** Dash's `exitcmd()` calls `exraise(EXEXIT)` which does a
+`longjmp()` back to the main loop's exception handler. On Genix, this
+longjmp chain crashed — likely due to `-msep-data` relocation affecting
+the `jmp_buf` contents, or `jmp_buf` corruption from the vfork sharing
+of address space.
+
+**Fix:** Modified `apps/dash/main.c` to call `_exit()` directly from
+`exitcmd()` instead of going through `exraise(EXEXIT)`. The kernel's
+`do_exit()` handles all cleanup (fd closing, slot freeing, zombie state),
+so the longjmp-based cleanup path is unnecessary.
+
+**Lesson:** On constrained platforms with `-msep-data` and vfork, complex
+control flow (longjmp chains through multiple stack frames) is fragile.
+When a simpler path exists (direct `_exit()`), prefer it.
+
+### Panic handler enhanced with fault frame decoding
+
+**Date:** March 2026
+**Enhancement:** The kernel's `panic_exception()` handler now decodes the
+68000 group 0 (bus/address error) exception frame, displaying PC, SR, and
+the faulting access address. Previously it just printed "KERNEL PANIC"
+with no diagnostic information.
+
+This made all the above dash debugging significantly easier — previously
+a fault showed no useful information.
+
 ---
 
 ## 5. The Relocation Story

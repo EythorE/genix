@@ -175,7 +175,7 @@ genix/
 │   ├── workbench/  # Emulated SBC
 │   └── megadrive/  # Sega Mega Drive
 ├── libc/         # Minimal C library + syscall stubs (for user programs)
-├── apps/         # Userspace programs (34 utilities)
+├── apps/         # Userspace programs (35 including dash)
 ├── tools/        # Host tools (mkfs, mkbin)
 ├── tests/        # Host unit tests (13 test files, 4924+ assertions)
 └── docs/         # Technical documentation

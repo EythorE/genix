@@ -336,6 +336,50 @@ platforms.
 **All tests pass:** host (63/63), test-emu (31/31), test-all (megadrive +
 BlastEm headless + BlastEm autotest).
 
+### Post-Port Bug Fixes (March 2026)
+
+After the initial Phase C completion, several bugs prevented dash from
+working correctly as an interactive shell. These were found through
+systematic testing (test_dash.c exposed 4 blocking bugs) and fixed in
+a series of commits:
+
+1. **vfork+execve semantics** — `do_exec()` was synchronous, returning
+   exit codes to the caller. POSIX requires `execve()` to never return
+   on success. Added an async exec path: when a vfork child calls
+   `execve()`, the kernel sets up a kstack frame, marks the child
+   `P_READY`, and wakes the parent via `vfork_restore()`.
+
+2. **errno not set by syscall stubs** — Libc stubs passed raw negative
+   kernel return values through without setting `errno`. Dash's PATH
+   search, waitpid retry, and error reporting all depend on errno.
+   Added `__set_errno` to libc syscall stubs.
+
+3. **libgcc 68020 opcodes** — `strtoull` multiplication and `vsnprintf`
+   division pulled in `__muldi3`/`__divdi3`/`__moddi3` containing
+   68020-only `MULU.L`/`DIVU.L`. Rewrote both to use 32-bit arithmetic.
+
+4. **sys_getcwd kstack overflow** — 256-byte `names[8][32]` array on the
+   512-byte kstack. Moved to static storage.
+
+5. **romfix/mkfs indirect blocks** — Dash binary (95 KB) exceeded 7
+   direct blocks. mkfs now pre-allocates indirect blocks before data
+   blocks for XIP contiguity; romfix follows indirect pointers.
+
+6. **Workbench slot sizing** — Reduced from 8×88KB to 6×117KB so dash
+   (91 KB text) fits in a workbench slot.
+
+7. **vfork TRAP frame corruption** — Child's TRAP #0 overwrote parent's
+   saved registers on the shared kstack. Fixed by reloading SP from
+   `curproc`'s kstack frame after `syscall_dispatch()`.
+
+8. **dash exit builtin crash** — `exraise(EXEXIT)` longjmp chain crashed
+   under `-msep-data`. Changed to call `_exit()` directly.
+
+9. **Panic handler** — Enhanced to decode 68000 group 0 fault frames
+   (PC, SR, access address), making all the above debugging feasible.
+
+See HISTORY.md section 4 for detailed root cause analysis of each bug.
+
 ---
 
 ## Phase D: Line Editing (separate task)
