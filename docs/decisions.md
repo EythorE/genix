@@ -180,6 +180,106 @@ parent's memory slot.
 
 ---
 
+## Printf System — Two Separate Implementations
+
+**Status:** Active — works but has sharp edges
+
+The libc has two independent printf implementations that do NOT share
+code:
+
+### 1. printf() / fprintf() — Direct-write, limited format specifiers
+
+`libc/stdio.c` lines 159-293. Hand-rolled parsers that write directly
+to the fd via `write()` syscalls. Only support `%s`, `%d`, `%c`, `%%`.
+
+**Strengths:**
+- No buffer limit — output of any length works
+- No extra code pulled in — zero cost if the app doesn't use vsnprintf
+- Direct-write means no stack buffer (saves RAM on 512-byte kstacks)
+
+**Weaknesses:**
+- No `%u`, `%x`, `%lu`, `%lx` — apps needing hex/unsigned must use
+  snprintf + write, or puts with a manually formatted buffer
+- Varargs via `(const char **)(&fmt + 1)` stack-casting — works on
+  68000 (all args are 32-bit on stack) but is technically undefined
+  behavior per the C standard
+- printf and fprintf are duplicated code (~65 lines each, identical
+  logic differing only in the fd)
+
+### 2. vsnprintf() / snprintf() / sprintf() — Full format support
+
+`libc/sprintf.c`. Two sub-implementations:
+- `do_vsnprintf()` (line 48): old `const char **args` stack-casting,
+  supports `%s`, `%d`, `%u`, `%x`, `%c`, `%%`, `%ld`, `%lu`, `%lx`
+- `vsnprintf()` (line 137): proper `va_list`, full format support
+  including width, padding, precision, `%o`, `%X`, `%p`, `%lld`,
+  64-bit without 68020 instructions (manual hi:lo division)
+
+### Why this matters
+
+Apps that need `%u` or `%x` in printf must either:
+1. Use `snprintf(buf, ...) + write(1, buf, n)` (verbose)
+2. Use `puts()` after manual formatting
+3. Accept that `printf("%x", val)` silently prints `%x` literally
+
+The `meminfo` app hit this — it needs `%u` and `%x` for memory
+addresses and sizes. It currently works around it with a local `pr()`
+helper that calls `vsnprintf` + `write`.
+
+### Rejected approach: replace printf with vsnprintf wrapper
+
+A branch attempted to rewrite `printf()` as:
+```c
+int printf(const char *fmt, ...) {
+    char buf[128];
+    va_list ap;
+    va_start(ap, fmt);
+    int n = vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+    write(1, buf, n < 128 ? n : 127);
+    return n;
+}
+```
+
+This was rejected because:
+1. **Binary size explosion** — vsnprintf is ~5 KB of code. Every app
+   that calls printf (most of them) would link it in, nearly doubling
+   many binaries (e.g., `cp` from 6 KB to 12 KB, `uname` from 6 KB
+   to 11 KB).
+2. **Disk overflow** — the 512-block filesystem couldn't fit all 48
+   apps with the larger binaries.
+3. **128-byte truncation** — the stack buffer silently truncates
+   output longer than 127 bytes. The direct-write version has no limit.
+4. **Stack pressure** — 128 bytes on the stack in every printf call
+   is significant when kstacks are 512 bytes.
+
+### Possible improvements (not yet implemented)
+
+1. **Unify printf/fprintf** — fprintf already takes an fd. printf
+   should just call `fprintf(stdout, fmt, ...)` instead of duplicating
+   the code. Saves ~65 lines and a maintenance hazard. The varargs
+   forwarding works because the stack-casting trick is the same either
+   way.
+
+2. **Add %u and %x to the direct-write printf** — extend the existing
+   switch statement with `case 'u'` and `case 'x'` handlers (~20 lines
+   each). This gives apps the common format specifiers without pulling
+   in vsnprintf. The `unsigned long` cast trick already used in
+   snprintf's `do_vsnprintf` works the same way.
+
+3. **Add %lu/%lx with an `l` modifier check** — another ~5 lines to
+   skip the `l` prefix before the format character. On 68000,
+   `int` and `long` are both 32 bits, so the `l` modifier is a no-op
+   for code generation — it just makes the source code portable.
+
+4. **meminfo could then use plain printf** — once printf supports
+   `%u`/`%x`, the `pr()` workaround in meminfo.c is unnecessary.
+
+These changes would be ~40 lines added to stdio.c with no binary size
+impact on apps that don't use vsnprintf.
+
+---
+
 ## Known Limitations
 
 1. **Single user memory space** — all user programs load at USER_BASE;
