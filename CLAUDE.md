@@ -18,9 +18,10 @@ export PATH=~/buildtools-m68k-elf/bin:~/blastem:$PATH
 export CROSS=m68k-elf-
 ```
 
-If `fetch-toolchain.sh` fails, see `docs/toolchain.md` — but follow
-it carefully and do not improvise. Do NOT install distro packages
-(`gcc-m68k-linux-gnu`) unless `docs/toolchain.md` explicitly says to.
+**`CROSS=m68k-elf-` is mandatory.** The distro package
+(`gcc-m68k-linux-gnu`) has 68020 libgcc that silently hangs on the
+68000. If `fetch-toolchain.sh` fails, build from source per
+`docs/toolchain.md`. Never use the distro compiler.
 
 ## Project Stage & Current Focus
 
@@ -229,14 +230,14 @@ considering any change done.
 These are lessons learned from debugging sessions (documented in full in
 `HISTORY.md`). Keep them in mind:
 
-- **68020 instructions in libgcc**: The distro `libgcc.a` contains 68020
-  opcodes (`BSR.L`, `MULU.L`, `DIVU.L`). Any 64-bit arithmetic
-  (`long long` multiply, divide, modulus) pulls in `__muldi3`,
-  `__divdi3`, `__moddi3` which use these illegal opcodes. This affects
-  `strtoull`, `vsnprintf %d`, and any code with `unsigned long long`
-  math. Fix: avoid 64-bit ops in libc (use 32-bit with manual
-  hi:lo splitting), or use `m68k-elf-gcc` (from `fetch-toolchain.sh`).
-  `divmod.S` covers 32-bit division only.
+- **68020 instructions in libgcc — use `m68k-elf-gcc` only**: The
+  distro `libgcc.a` (`m68k-linux-gnu`) contains 68020 opcodes
+  (`MULU.L`, `DIVU.L`, `BSR.L`) in `__muldi3`, `__divdi3`, etc.
+  These cause **silent hangs** — no crash message, no output. This
+  cost multiple days of debugging. `divmod.S` only covers 32-bit
+  division; 64-bit ops are NOT replaced. The ONLY fix is using
+  `m68k-elf-gcc` (from `fetch-toolchain.sh`). Never build with
+  the distro compiler.
 - **kstack overflow in deep syscalls**: The per-process kstack is only
   512 bytes. Syscalls with large local arrays (e.g., `sys_getcwd`'s
   `names[8][32]` = 256 bytes) can overflow it, corrupting the proc

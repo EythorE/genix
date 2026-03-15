@@ -65,11 +65,11 @@ export CROSS=m68k-elf-
 This downloads the correct `m68k-elf-gcc` (built with `--with-cpu=68000`)
 and BlastEm 0.6.3-pre from retrodev.com nightlies.
 
-**Fallback:** If the pre-built toolchain doesn't work for your platform,
-install the distro compiler (`sudo apt-get install gcc-m68k-linux-gnu
-binutils-m68k-linux-gnu`). It defaults to 68020 but Genix works around
-this with `-m68000` and its own `divmod.S`. See
-[docs/toolchain.md](docs/toolchain.md) for details and building from source.
+**Fallback:** If `fetch-toolchain.sh` doesn't work for your platform,
+build `m68k-elf-gcc` from source — see
+[docs/toolchain.md](docs/toolchain.md). **Do NOT use the distro package
+`gcc-m68k-linux-gnu`** — its `libgcc.a` contains 68020 instructions
+that cause silent hangs on the 68000.
 
 ### 2. Build and Run
 

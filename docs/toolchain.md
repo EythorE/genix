@@ -1,52 +1,44 @@
 # Toolchain
 
-> **Recommended quick-start:** Run `./scripts/fetch-toolchain.sh` to
-> download the pre-built toolchain and BlastEm from GitHub Releases.
-> See `CLAUDE.md` for usage. The rest of this document explains why
-> `--with-cpu=68000` matters and how to build from source.
+> **You MUST use `m68k-elf-gcc`.** The distro package
+> (`gcc-m68k-linux-gnu`) ships a `libgcc.a` with 68020 instructions
+> that cause silent hangs on the 68000. This is not theoretical —
+> dash shell will not boot with the distro compiler.
 
 ## Quick Start
 
-There are two options for the cross-compiler:
+```bash
+./scripts/fetch-toolchain.sh
+export PATH=~/buildtools-m68k-elf/bin:~/blastem:$PATH
+export CROSS=m68k-elf-
+```
 
-| Option | Install time | Reliability | Recommended? |
-|--------|-------------|-------------|--------------|
-| **Self-built `m68k-elf-gcc`** | ~15 min | Fully correct for 68000 | Yes |
-| **Distro `m68k-linux-gnu-gcc`** | ~1 min (apt) | Works with workarounds | Fallback |
-
-**If you just want to get started fast**, the distro compiler works for
-Genix because we provide our own `divmod.S` and pass `-m68000`. See
-[Using the Distro Compiler](#using-the-distro-compiler-quick-start) below.
-
-**If you want a correct, worry-free toolchain**, build from source. See
+That's it. If `fetch-toolchain.sh` fails, build from source — see
 [Building the Correct Toolchain](#building-the-correct-toolchain) below.
+
+**Do NOT use `apt install gcc-m68k-linux-gnu`** — see
+[Why the Distro Compiler Is Broken](#why-the-distro-compiler-is-broken)
+for the full explanation.
 
 ---
 
-## Using the Distro Compiler (Quick Start)
+## Why the Distro Compiler Is Broken
 
-The distro `m68k-linux-gnu-gcc` from apt defaults to the 68020, but
-Genix works around this:
+The distro `m68k-linux-gnu-gcc` (from `apt`) **will silently break
+dash and any program using 64-bit arithmetic**. While `-m68000`
+controls code generation for YOUR code, `libgcc.a` is pre-compiled
+for 68020 and contains `MULU.L`, `DIVU.L`, and `BSR.L` instructions.
 
-1. All Makefiles pass `-m68000` (forces 68000 code generation)
-2. `kernel/divmod.S` provides our own `__udivsi3`/`__divsi3`/etc.
-   (avoids libgcc's 68020-only division routines)
-3. We don't link user programs against the distro's `libgcc.a`
+`divmod.S` only replaces 32-bit division (`__divsi3`, `__udivsi3`).
+It does NOT replace 64-bit operations (`__muldi3`, `__divdi3`,
+`__moddi3`). Any `long long` multiply, divide, or modulus — including
+inside `strtoull`, `vsnprintf`, and `strtoimax` — pulls in the 68020
+libgcc functions and causes the 68000 to silently hang (illegal
+instruction → infinite exception loop with no output).
 
-```bash
-# Install on Ubuntu/Debian
-sudo apt-get install gcc-m68k-linux-gnu binutils-m68k-linux-gnu
-
-# Verify it works
-make kernel    # should complete without errors
-make apps      # should complete without errors
-make run       # should boot the emulator
-```
-
-**Caveat:** The distro compiler's `libgcc.a` contains 68020 instructions.
-If any code path pulls in a libgcc function we haven't replaced (e.g.,
-64-bit arithmetic), it will emit an illegal instruction on real 68000
-hardware. The self-built toolchain avoids this entirely.
+**This cost multiple days of debugging.** The symptom is a completely
+silent hang with no crash message, no output, no diagnostic
+information. Do not use the distro compiler.
 
 ---
 
@@ -145,7 +137,7 @@ export CROSS=m68k-elf-
 
 ---
 
-## Why the Distro Compiler Is Problematic
+## Distro Compiler Technical Details
 
 Debian/Ubuntu's `gcc-m68k-linux-gnu` targets Linux on 68k, which
 requires an MMU (68010+ minimum). The compiler and its `libgcc.a` are
@@ -153,13 +145,8 @@ built for the 68020 or later.
 
 The failure mode is insidious: code compiles and links without errors,
 and mostly runs — until it hits a 68020-only instruction in libgcc.
-The most common culprit is **`BSR.L`** (32-bit branch to subroutine),
-which the 68000 does not have (only 8-bit and 16-bit branch offsets).
-
-When `printf("%d")` triggers a divide-by-10 in libgcc's number
-formatter, the BSR.L in libgcc fires an illegal instruction exception.
-The unused interrupt vectors point to `stop #0x2700`, and the machine
-hangs. Debugging this is painful because the code looks correct.
+The 68000 treats these as illegal instructions, and without a proper
+handler the machine hangs silently.
 
 ### Instructions the distro compiler may silently emit
 
