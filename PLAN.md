@@ -418,6 +418,53 @@ each optimization.
 
 ---
 
+## Phase D: Line Editing for dash — Planned
+
+**Goal:** Arrow key history and basic line editing for interactive use.
+Dash is currently configured with no line editing (no libedit, no
+readline). Typing at the `#` prompt has no history, no cursor movement.
+
+**Depends on:** Phase C (dash port — complete), TTY raw mode (complete).
+
+**Reference:** [docs/shell-plan.md](docs/shell-plan.md) Phase D section.
+
+### Approach
+
+Custom ~800-line module (not libedit — too large, too many dependencies):
+- Arrow key navigation (left/right within current line)
+- History (up/down, 16 entries x 128 bytes = 2 KB RAM)
+- Backspace, Home, End, Delete
+- Terminal escape sequences (ESC [ A/B/C/D)
+- Raw terminal mode via termios ioctls (already supported by TTY subsystem)
+
+Tailored to Genix's terminal capabilities: VDP console on Mega Drive
+(fixed 40x28 grid, no scrollback), UART on workbench. Reusable by
+other interactive programs (levee already has its own input handling).
+
+### Integration options
+
+1. **Standalone library** (`libc/lineedit.c`): dash calls `readline()`
+   which handles raw mode, escape sequences, history. Simplest.
+2. **dash built-in**: modify dash's `input.c` to use raw mode and
+   handle escape sequences directly. More tightly integrated but
+   dash-specific.
+
+Option 1 is preferred — other programs (a future `ed`, scripts) benefit.
+
+### RAM budget (Mega Drive)
+
+```
+History buffer:  2,048 bytes (16 x 128)
+Line buffer:       256 bytes
+Code (text):      ~3 KB (in ROM via XIP)
+Total RAM:       ~2.3 KB
+```
+
+Dash currently uses 6.8 KB of its 14 KB slot. Line editing adds ~2.3 KB
+RAM → 9.1 KB total, leaving ~5 KB for heap+stack. Tight but feasible.
+
+---
+
 ## Remaining Optional Work
 
 Not prioritized, but would improve the system:
@@ -447,7 +494,9 @@ Kernel prereqs (Phase B) ..... done
     |
 dash Shell Port (Phase C) .... done
     |
-Phase 7 (SD Card) ............. next (independent)
+Line Editing (Phase D) ....... planned (depends on C)
+    |
+Phase 7 (SD Card) ............. next (independent of D)
     |
 Phase 8 (EverDrive Pro PSRAM) . depends on Phase 6 + 7
     |
