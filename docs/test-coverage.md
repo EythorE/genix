@@ -126,3 +126,87 @@ These documented issues have test coverage:
 | No Mega Drive-specific autotest for dash | `test-md-auto` runs the builtin autotest, not dash. Dash on MD requires XIP + correct slot sizing. |
 | No emulator illegal-instruction detection | Musashi silently treats 68020 opcodes as NOPs. `check-opcodes.sh` catches at compile time instead. |
 | No CI integration | Tests run manually. A GitHub Actions workflow would catch regressions automatically. |
+
+---
+
+## Phase 7 / Phase 8 Testing Plan (SD Card + PSRAM)
+
+### What BlastEm can test (no hardware needed)
+
+| Feature | How to test | Notes |
+|---------|------------|-------|
+| SSF2 bank switching (ROM page select) | Autotest: write bank regs at 0xA130F0-FE, verify reads from banked regions | BlastEm supports SSF2 mapper when ROM header contains `"SEGA SSF"` at offset 0x100. Added in BlastEm 0.5.0. |
+| SSF bank allocator logic | Host unit test | Allocate/free/track PSRAM banks — pure logic, same pattern as slot allocator |
+| Context switch bank register write | Autotest: spawn two processes, verify each gets its bank | The asm that writes 0xA130Fx on context switch is testable if BlastEm's mapper responds |
+| Standard SRAM at 0x200000 | Already works | ROM header declares SRAM, BlastEm auto-maps. Current Genix build uses this. |
+| Pro detection (safe probe) | Autotest: read 0xA130D4 | Returns open bus in BlastEm → `(val & 0xFFF0) == 0x55A0` correctly returns false. Code can probe without crashing. |
+| Block device / VFS layer | Host unit test | Test the filesystem abstraction layer with a mock block device (no real SD card needed) |
+| FAT16 read-only parser | Host unit test | Feed a synthetic FAT16 image to the parser, verify file listing and reads |
+
+### What requires real EverDrive Pro hardware
+
+| Feature | Why | Test approach |
+|---------|-----|---------------|
+| FIFO command protocol (0xA130D0) | Not emulated in any emulator | Manual test on Pro hardware |
+| SD card read/write (both SPI and FIFO) | No emulator supports either interface | Real hardware only |
+| PSRAM writes via SSF extended W bit | BlastEm's SSF mapper is read-only ROM banking | Real Pro hardware |
+| Bank 31 = BRAM (persistent battery-backed) | Pro-specific bank routing | Real Pro hardware |
+
+### What requires real Open EverDrive hardware
+
+| Feature | Why | Test approach |
+|---------|-----|---------------|
+| SPI bit-bang via 0xA130E0 | Not emulated | Real Open EverDrive only |
+| SD card init (CMD0/CMD8/ACMD41) | SPI protocol | Real hardware only |
+
+### BlastEm SSF mapper limitations
+
+BlastEm emulates **standard SSF2** bank switching, NOT the EverDrive Pro
+extended SSF mapper. Key differences:
+
+| Feature | BlastEm | EverDrive Pro |
+|---------|---------|---------------|
+| Bank page select (0xA130F2-FE) | Yes | Yes |
+| SRAM enable/disable (0xA130F0 bit 0) | Yes | Yes |
+| CTRL0 W bit (global write enable for PSRAM) | **No** | Yes |
+| CTRL0 P bit (protection) | **No** | Yes |
+| Bank 31 → BRAM routing | **No** | Yes |
+| Writable mapped memory | **No** (ROM only) | Yes (PSRAM) |
+
+**Implication for Phase 8:** The PSRAM bank allocator and context-switch
+bank register writes can be tested in BlastEm (the register writes work,
+just the memory isn't writable). The actual PSRAM read/write and BRAM
+persistence require real Pro hardware.
+
+### Future prospect: EverDrive Pro USB serial testing
+
+The EverDrive Pro has a USB port. If the Pro's USB exposes a serial
+interface accessible from the 68000 side (via FIFO or a dedicated
+register), it could enable an automated real-hardware test loop:
+
+1. Flash test ROM via USB from host
+2. Boot Genix on real hardware
+3. Kernel outputs test results via USB serial
+4. Host script captures output and checks results
+
+**Status:** Not researched. The USB port is known to be used for ROM
+flashing by the krikzz firmware tool, but whether it can act as a
+bidirectional serial bridge to the 68000 is unknown. This would be
+the most impactful test infrastructure investment for Phase 7/8 work
+since it removes the "works in emulator, breaks on hardware" gap.
+
+BlastEm also has undocumented serial IO via Unix domain sockets
+(controller port configured as `"serial"`, data via Genesis serial
+registers at 0xA1000F/0xA10013, max 4800 bps). This could serve as
+a bridge until real hardware serial is available.
+
+### Recommended testing order for Phase 7
+
+1. **Host unit tests first:** FAT16 parser, block device abstraction,
+   bank allocator logic — all testable without any emulator.
+2. **BlastEm autotest:** SSF bank switching, Pro detection guard,
+   verify kernel doesn't crash when Pro is absent.
+3. **Real hardware (manual):** SD card init, file read/write, FIFO
+   protocol — test on actual EverDrive Pro.
+4. **Real hardware (automated, future):** USB serial test loop if
+   the Pro's USB supports bidirectional communication.
