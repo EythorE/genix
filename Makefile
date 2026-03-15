@@ -1,6 +1,6 @@
 # Genix top-level Makefile
 
-.PHONY: all emu kernel tools libc apps disk disk-md run test test-emu test-md test-md-auto test-md-screenshot test-md-imshow test-all megadrive clean
+.PHONY: all emu kernel tools libc apps disk disk-md run test test-opcodes test-dash test-levee test-emu test-md test-md-auto test-md-screenshot test-md-imshow test-all megadrive clean
 
 all: emu kernel tools apps disk
 
@@ -173,10 +173,24 @@ test-md-imshow: libc tools
 	@$(MAKE) -C pal/megadrive clean
 	@$(MAKE) -C pal/megadrive DISK_IMG=../../disk-md.img
 
+# Check compiled binaries for 68020 illegal opcodes.
+# Catches wrong-toolchain issues before they reach hardware.
+test-opcodes: kernel apps
+	@./scripts/check-opcodes.sh
+
+# Test dash shell boots and runs commands in the workbench emulator.
+test-dash: emu kernel disk
+	@./scripts/test-dash.sh
+
+# Test levee editor (KNOWN BROKEN — crashes with kernel panic).
+# Not included in test-all; run manually to check progress.
+test-levee: emu kernel disk
+	@./scripts/test-levee.sh
+
 # Full testing ladder — runs all automated tests in order.
 # Levels 1-3 use host/emulator, levels 4-6 use BlastEm.
 # Level 6 (test-md-auto) is the primary quality gate.
-test-all: test kernel test-emu megadrive test-md test-md-auto
+test-all: test kernel test-opcodes test-emu test-dash megadrive test-md test-md-auto
 	@echo "=== All tests passed ==="
 
 # Boot Mega Drive ROM headless in BlastEm (~5s smoke test)
