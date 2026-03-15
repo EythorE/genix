@@ -378,6 +378,13 @@ a series of commits:
 9. **Panic handler** — Enhanced to decode 68000 group 0 fault frames
    (PC, SR, access address), making all the above debugging feasible.
 
+**Toolchain dependency:** Bug #3 (libgcc 68020 opcodes) is only
+triggered when building with the distro `m68k-linux-gnu-gcc`. The
+correct toolchain (`m68k-elf-gcc` from `fetch-toolchain.sh`) has a
+68000-safe libgcc. The libc workarounds (32-bit strtoull/vsnprintf)
+are defense-in-depth but not needed with the right compiler. See
+`docs/toolchain.md` for details.
+
 See HISTORY.md section 4 for detailed root cause analysis of each bug.
 
 ---

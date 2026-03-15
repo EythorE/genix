@@ -78,18 +78,17 @@ make run       # Build everything + boot in the workbench emulator
 ```
 
 This builds the emulator, kernel, user programs, and a filesystem image,
-then boots Genix in your terminal. You'll see a `>` prompt.
+then boots Genix in your terminal. You'll see the dash `#` prompt.
 
 ### 3. Try It
 
 ```
-> ls /bin           # List available programs
-> exec /bin/hello   # Run the hello world program
-> exec /bin/echo hello world
-> echo hello | cat  # Pipes work
-> mem               # Show memory allocator state
-> help              # List all built-in commands
-> halt              # Shut down (exits the emulator)
+# echo hello world       # Run a command
+# ls /bin                 # List available programs (35 including dash)
+# echo hello | cat        # Pipes work
+# cat /etc/motd > /tmp/x  # I/O redirection
+# wc < /tmp/x             # Input redirection
+# exit                    # Exit (dash respawns automatically)
 ```
 
 Press **Ctrl+]** to force-quit the emulator at any time (like telnet).
