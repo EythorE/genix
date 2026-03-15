@@ -787,6 +787,20 @@ void schedule(void)
     }
 }
 
+/*
+ * Return the TRAP frame base address on curproc's kstack.
+ * Called by _vec_syscall after syscall_dispatch to reload SP.
+ * After vfork, curproc may point to the child — this ensures the
+ * TRAP handler restores registers from the correct process's kstack.
+ *
+ * TRAP frame is 70 bytes below kstack top:
+ *   SR+PC (6) + d0-d7/a0-a6 (60) + USP (4) = 70 bytes
+ */
+uint32_t syscall_kstack_frame(void)
+{
+    return proc_kstack_top(curproc) - 70;
+}
+
 /* ======== Syscall implementations ======== */
 
 static int sys_open(uint32_t path_addr, uint32_t flags)

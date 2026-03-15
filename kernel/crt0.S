@@ -202,6 +202,15 @@ _vec_syscall:
     jsr     syscall_dispatch
     add.l   #20, %sp            /* pop 5 args */
 
+    /* After vfork(), curproc may have changed (parent→child).
+     * Reload SP to point at the TRAP frame on curproc's kstack.
+     * This ensures each process restores its own saved registers.
+     * For non-vfork syscalls, curproc is unchanged so SP stays the same. */
+    move.l  %d0, %d2            /* save syscall return value (d2 is callee-saved) */
+    jsr     syscall_kstack_frame
+    move.l  %d0, %sp            /* switch to curproc's TRAP frame */
+    move.l  %d2, %d0            /* restore syscall return value */
+
     /* Store return value in saved d0 slot so user sees it after RTE */
     move.l  %d0, 4(%sp)
     bra     .Lsyscall_sigdeliver
