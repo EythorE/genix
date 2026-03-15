@@ -20,11 +20,17 @@ retro games, and standalone projects.
 | No network | No TCP/IP stack |
 | Existing apps | 33 coreutils + dash shell |
 
-**Key bottleneck:** The 14 KB data slot. Text size (code) is essentially
-free since it lives in ROM. But .data + .bss + heap + stack must all fit
-in 14 KB per process on the Mega Drive. (Workbench has ~117 KB slots.)
-Phase 8 (EverDrive Pro PSRAM) would give 512 KB per process but is not
-yet implemented.
+**Key bottleneck:** The 14 KB data slot on Mega Drive. Text (code) is
+free — it lives in ROM via XIP. Only .data + .bss + heap + stack must
+fit in the 14 KB slot. For reference, dash (a substantial program with
+91 KB of text) has only 6.8 KB data+bss, using 49% of a slot. Most
+programs have much less. The workbench emulator has ~117 KB slots.
+Phase 8 (EverDrive Pro PSRAM) would give 512 KB per process.
+
+**Important:** Several older comments in the codebase claim certain
+programs are "too large for Mega Drive" based on total binary size
+(text+data). With XIP, only data+bss matters. Always check the
+data+bss split, not the total size.
 
 ---
 
@@ -762,38 +768,38 @@ May need terminal output adapted to VDP/ANSI sequences.
 
 ---
 
-### Levee — vi-like Editor
+### Levee — vi-like Editor (ALREADY PORTED)
 
 | Property | Value |
 |----------|-------|
-| Source | FUZIX `Applications/levee/` |
-| Size | ~3,000+ lines across multiple files |
-| Text (ROM) | ~40-45 KB |
-| Data+BSS | ~6-8 KB |
+| Source | Already in `apps/levee/` |
+| Size | ~3,000+ lines across 15 .c files |
+| Text (ROM) | ~44 KB (XIP — runs from ROM, free) |
+| Data+BSS | Needs measurement — likely ~4-8 KB |
 | RAM needs | File buffer in heap |
-| Needs fork() | Probably (shell escape feature) |
-| Missing libc | termcap/terminfo (or VT100 hardcode) |
-| Approach | **Port after Phase 8 (PSRAM)** |
+| Status | **Already ported, currently KNOWN BROKEN** |
 | Value | ★★★★★ |
 | Cool factor | ★★★★★ |
 
 **Why:** A vi clone on the Mega Drive. Full-screen editing, modal
-interface, the real Unix editing experience. Currently too large for
-the 14 KB Mega Drive slot — needs Phase 8 PSRAM (512 KB per process).
+interface, the real Unix editing experience. Already ported to Genix
+and included in /bin. The 44 KB binary is all text (runs from ROM
+via XIP) — only data+bss goes to the 14 KB RAM slot.
 
-Works immediately on the workbench emulator (117 KB slots).
+**Current status:** Listed as KNOWN BROKEN in test-coverage.md —
+crashes with kernel panic at PC=0x30000 (outside user space, likely
+relocation or jump table corruption). The Makefile doesn't use
+`-msep-data` yet — needs updating to match the current build system.
 
-**Risk:** ~6-8 KB data+BSS plus file buffer heap. Tight even with
-PSRAM for the file buffer. Terminal control needs termcap stubs or
-VT100 hardcoding.
+**Next steps:** Fix the build to use `-msep-data`, investigate the
+crash (Bug in test-coverage.md), and measure actual data+bss. If
+data+bss is comparable to dash (~6.8 KB), levee fits in a Mega Drive
+slot with no PSRAM needed.
 
-**Alternative:** fleamacs (FUZIX's minimal emacs) is similarly sized.
-Or vile (VI Like Editor, ~1,700 lines) — needs investigation for data
-size.
-
-**Rewrite?** Consider a minimal screen editor (~500-800 lines) that
-handles insert/delete/navigate/save with hardcoded VDP output instead
-of terminal escapes. Not vi-compatible but much more feasible.
+**Note:** The Makefile and several docs claim levee is "too large for
+Mega Drive" — this assessment predates XIP and `-msep-data`. With
+text in ROM, only data+bss matters, and levee's data+bss is likely
+small enough. This needs verification.
 
 ---
 
@@ -1038,8 +1044,9 @@ Could be a Wave 6+ item if there's interest.
 
 ### Full vi/vim
 
-Way too large. Even levee (the minimal vi) is 45 KB text + 6-8 KB
-data. Need Phase 8.
+Full vim is enormous. Levee (minimal vi) is already ported and
+**should work on Mega Drive** once the crash bug is fixed — 44 KB
+text is free via XIP, only data+bss uses RAM.
 
 ### lua/python/perl
 
@@ -1119,11 +1126,14 @@ Invaders     (rewrite for VDP sprites)
 
 ### Wave 8: Phase 8 Dependent (needs PSRAM)
 ```
-levee/vile (screen editor — needs PSRAM)
 fweep      (Z-machine — needs PSRAM for story files)
 awk        (needs PSRAM for interpreter state)
 adventure  (Colossal Cave — needs PSRAM for game DB)
 ```
+
+Note: levee is already ported and should NOT need PSRAM — its text
+runs from ROM via XIP. It just needs its crash bug fixed and the
+Makefile updated to use `-msep-data`.
 
 ---
 
@@ -1146,6 +1156,7 @@ many programs need time decomposition.
 
 | App | Approach | Reason |
 |-----|----------|--------|
+| levee | Fix existing port | Already in apps/levee/, just needs -msep-data + crash fix |
 | ed | Port FUZIX | Battle-tested, correct, right size |
 | ue | Port FUZIX | Tiny screen editor, already has 68000 Makefile |
 | sort | Rewrite | FUZIX version too RAM-hungry, simple qsort version is 90% |
