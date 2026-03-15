@@ -122,10 +122,11 @@ static uint32_t slot_sz;
 void slot_init(void)
 {
     /* Choose slot count based on available user RAM.
-     * Mega Drive (~27.5 KB): 2 slots.
-     * Workbench (~704 KB): 8 slots. */
+     * Mega Drive (~27.5 KB): 2 slots (dash uses XIP — text in ROM).
+     * Workbench (~704 KB): 6 slots (~117 KB each, fits dash ~100 KB
+     * which has no XIP on workbench since disk is I/O, not memory-mapped). */
     if (USER_SIZE >= 128 * 1024)
-        num_slots = MAX_SLOTS;
+        num_slots = 6;
     else if (USER_SIZE >= 64 * 1024)
         num_slots = 4;
     else
