@@ -29,7 +29,7 @@ For the testing ladder and procedures, see
 | File | Subsystem | Assertions | Coverage notes |
 |------|-----------|-----------|----------------|
 | `test_string.c` | kernel/string.c | 60 | memset, memcpy, strcmp, strchr, etc. |
-| `test_mem.c` | kernel/mem.c | 185 | kmalloc/kfree + **slot allocator** (alloc, free, exhaustion, invalid index, sizing) |
+| `test_mem.c` | kernel/mem.c | 247 | kmalloc/kfree + **umem allocator** (alloc, free, coalesce, fragmentation, variable sizes, gap reuse, pipeline scenario, stats) |
 | `test_exec.c` | kernel/exec.c | 33 | Header validation, stack setup |
 | `test_proc.c` | kernel/proc.c | 2001 | Pipes, kstack, PID alloc, zombies, waitpid, fcntl |
 | `test_libc.c` | libc/*.c | 71 | strtol, getopt, strerror, vsnprintf, sscanf, qsort |
@@ -46,7 +46,7 @@ For the testing ladder and procedures, see
 | `test_abi.c` | ABI compat | 28 | **struct stat layout match** (kernel vs libc), field alignment |
 | `test_lineedit.c` | libc/lineedit.c | 102 | Edit ops (insert/delete/move/kill), history ring, key parsing (ANSI, MD, ctrl) |
 
-**Total: ~5,230 assertions across 17 test files**
+**Total: ~5,292 assertions across 17 test files**
 
 ---
 
@@ -74,7 +74,7 @@ These documented issues have test coverage:
 | Indirect block bmap | `test_fs.c` bmap_indirect | HISTORY.md bug 6 |
 | Inode block deallocation | `test_fs.c` iput_frees_blocks | HISTORY.md bug 10 |
 | struct stat layout (kernel = libc) | `test_abi.c` | shell-plan.md weak spot A-2 |
-| Slot allocator (alloc/free/invalid) | `test_mem.c` slot tests | PLAN.md weak spot 1 |
+| User memory allocator (alloc/free/coalesce/fragmentation) | `test_mem.c` umem tests | Replaced slot allocator |
 | Duplicate reloc offset | `test_reloc.c` (documents bug) | PLAN.md weak spot 2 |
 | Dash boot + commands | `test-dash.sh` | Post-Phase C bugs |
 | Redirection no-space parsing | `test_redir.c` | HISTORY.md bug 16 |
@@ -98,7 +98,7 @@ These documented issues have test coverage:
 | Issue | Where documented | Difficulty | Notes |
 |-------|-----------------|------------|-------|
 | GOT offset near 64 KB boundary | PLAN.md weak spot 4 | Easy | Synthetic header with got_offset=0xFFFE. Low risk (no binary is close). |
-| `do_exec` slot leak on file-not-found | PLAN.md weak spot 5 | Medium | Call `do_exec` on nonexistent path, verify `slot_alloc()` still succeeds after. |
+| `do_exec` memory leak on file-not-found | PLAN.md weak spot 5 | Low | `do_exec` now returns -ENOENT before allocating memory (header read first). No leak possible. |
 | F_GETFL internal flag leakage | shell-plan.md weak spot B-1 | Easy | Set internal flag below 0x0FFF, verify it leaks through F_GETFL. |
 | Environment variables not inherited | decisions.md limitation 7 | Easy | Confirm `export VAR; child` doesn't see VAR (documents limitation). |
 

@@ -31,8 +31,19 @@ struct genix_header {
     uint32_t reloc_count;
 };
 
+/* Re-implement exec_mem_need from exec.c for host testing */
+static uint32_t exec_mem_need(const struct genix_header *hdr)
+{
+    uint32_t stack = hdr->stack_size ? hdr->stack_size : USER_STACK_DEFAULT;
+    uint32_t reloc_bytes = hdr->reloc_count * 4;
+    uint32_t effective_bss = hdr->bss_size;
+    if (reloc_bytes > effective_bss)
+        effective_bss = reloc_bytes;
+    return hdr->load_size + effective_bss + stack;
+}
+
 /* Re-implement the validation function from exec.c for host testing */
-static int exec_validate_header(const struct genix_header *hdr)
+static int exec_validate_header(const struct genix_header *hdr, uint32_t region_size)
 {
     if (hdr->magic != GENIX_MAGIC)
         return -ENOEXEC;
@@ -48,14 +59,8 @@ static int exec_validate_header(const struct genix_header *hdr)
     if (hdr->text_size > hdr->load_size)
         return -ENOEXEC;
 
-    uint32_t stack = hdr->stack_size ? hdr->stack_size : USER_STACK_DEFAULT;
-    uint32_t reloc_bytes = hdr->reloc_count * 4;
-    uint32_t effective_bss = hdr->bss_size;
-    if (reloc_bytes > effective_bss)
-        effective_bss = reloc_bytes;
-
-    uint32_t total = hdr->load_size + effective_bss + stack;
-    if (total > USER_SIZE)
+    uint32_t total = exec_mem_need(hdr);
+    if (total > region_size)
         return -ENOMEM;
 
     return 0;
@@ -73,7 +78,7 @@ static void test_header_valid(void)
         .stack_size = 4096,
         .flags = 0
     };
-    ASSERT_EQ(exec_validate_header(&hdr), 0);
+    ASSERT_EQ(exec_validate_header(&hdr, USER_SIZE), 0);
 }
 
 static void test_header_bad_magic(void)
@@ -84,7 +89,7 @@ static void test_header_bad_magic(void)
         .bss_size = 0,
         .entry = 0,
     };
-    ASSERT_EQ(exec_validate_header(&hdr), -ENOEXEC);
+    ASSERT_EQ(exec_validate_header(&hdr, USER_SIZE), -ENOEXEC);
 }
 
 static void test_header_zero_load(void)
@@ -95,7 +100,7 @@ static void test_header_zero_load(void)
         .bss_size = 0,
         .entry = 0,
     };
-    ASSERT_EQ(exec_validate_header(&hdr), -ENOEXEC);
+    ASSERT_EQ(exec_validate_header(&hdr, USER_SIZE), -ENOEXEC);
 }
 
 static void test_header_too_large(void)
@@ -107,7 +112,7 @@ static void test_header_too_large(void)
         .entry = 0,
         .stack_size = 0,
     };
-    ASSERT_EQ(exec_validate_header(&hdr), -ENOMEM);
+    ASSERT_EQ(exec_validate_header(&hdr, USER_SIZE), -ENOMEM);
 }
 
 static void test_header_bss_too_large(void)
@@ -119,7 +124,7 @@ static void test_header_bss_too_large(void)
         .entry = 0,
         .stack_size = 4096,
     };
-    ASSERT_EQ(exec_validate_header(&hdr), -ENOMEM);
+    ASSERT_EQ(exec_validate_header(&hdr, USER_SIZE), -ENOMEM);
 }
 
 static void test_header_entry_past_load(void)
@@ -131,7 +136,7 @@ static void test_header_entry_past_load(void)
         .bss_size = 0,
         .entry = 1024,
     };
-    ASSERT_EQ(exec_validate_header(&hdr), -ENOEXEC);
+    ASSERT_EQ(exec_validate_header(&hdr, USER_SIZE), -ENOEXEC);
 }
 
 static void test_header_entry_within_load(void)
@@ -142,7 +147,7 @@ static void test_header_entry_within_load(void)
         .bss_size = 0,
         .entry = 512,
     };
-    ASSERT_EQ(exec_validate_header(&hdr), 0);
+    ASSERT_EQ(exec_validate_header(&hdr, USER_SIZE), 0);
 }
 
 static void test_header_default_stack(void)
@@ -155,11 +160,11 @@ static void test_header_default_stack(void)
         .entry = 0,
         .stack_size = 0,  /* should use USER_STACK_DEFAULT */
     };
-    ASSERT_EQ(exec_validate_header(&hdr), 0);
+    ASSERT_EQ(exec_validate_header(&hdr, USER_SIZE), 0);
 
     /* One more byte should fail */
     hdr.load_size = USER_SIZE - USER_STACK_DEFAULT + 1;
-    ASSERT_EQ(exec_validate_header(&hdr), -ENOMEM);
+    ASSERT_EQ(exec_validate_header(&hdr, USER_SIZE), -ENOMEM);
 }
 
 static void test_header_size(void)

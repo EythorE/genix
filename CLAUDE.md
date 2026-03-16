@@ -15,9 +15,10 @@ hardware. Design decisions should always consider the Mega Drive's constraints:
 ```bash
 ./scripts/fetch-toolchain.sh
 export PATH=~/buildtools-m68k-elf/bin:~/blastem:$PATH
+export CROSS=m68k-elf-
 ```
 
-All Makefiles default to `CROSS=m68k-elf-`. The distro package
+**`CROSS=m68k-elf-` is mandatory.** The distro package
 (`gcc-m68k-linux-gnu`) has 68020 libgcc that silently hangs on the
 68000. If `fetch-toolchain.sh` fails, build from source per
 `docs/toolchain.md`. Never use the distro compiler.
@@ -34,7 +35,7 @@ dependency graph and docs/apps_to_port.md for the app porting roadmap.
 
 Design choices that are LOAD-BEARING (changing these is expensive):
 - Binary format and relocation scheme (affects all 47 apps + libc + mkbin)
-- Memory layout (USER_BASE, kernel/user RAM split, process slot sizes)
+- Memory layout (USER_BASE, kernel/user RAM split, user memory allocator)
 - ROM vs RAM text placement strategy (Phase 5 core question)
 - Syscall numbers and calling convention (ABI stability across libc)
 - Linker script structure (affects both platforms)
@@ -214,6 +215,7 @@ Technical details live in docs/, not here. Key references:
 - docs/decisions.md — active design decisions
 - docs/shell-plan.md — phased plan: libc prereqs → kernel zones → userspace shell → dash port
 - docs/apps_to_port.md — app porting roadmap, tier definitions, RAM analysis
+- docs/memory-system.md — kernel heap + user memory allocator documentation
 
 Read the relevant docs/ file when working on a subsystem.
 Do not duplicate their content into this file.
