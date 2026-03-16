@@ -100,7 +100,7 @@ These documented issues have test coverage:
 | GOT offset near 64 KB boundary | PLAN.md weak spot 4 | Easy | Synthetic header with got_offset=0xFFFE. Low risk (no binary is close). |
 | `do_exec` memory leak on file-not-found | PLAN.md weak spot 5 | Low | `do_exec` now returns -ENOENT before allocating memory (header read first). No leak possible. |
 | F_GETFL internal flag leakage | shell-plan.md weak spot B-1 | Easy | Set internal flag below 0x0FFF, verify it leaks through F_GETFL. |
-| Environment variables not inherited | decisions.md limitation 7 | Easy | Confirm `export VAR; child` doesn't see VAR (documents limitation). |
+| Environment variables not inherited | plans/decisions.md limitation 7 | Easy | Confirm `export VAR; child` doesn't see VAR (documents limitation). |
 
 ### Not feasible as unit tests
 

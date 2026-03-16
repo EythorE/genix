@@ -13,7 +13,7 @@
  * relocations are consumed (reloc_count zeroed). The kernel's XIP
  * loader can then execute text directly from ROM.
  *
- * This is Strategy A from docs/relocatable-binaries.md: build-time
+ * This is Strategy A from docs/research/relocatable-binaries.md: build-time
  * resolved XIP with zero runtime relocation cost.
  */
 #include <stdio.h>

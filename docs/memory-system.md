@@ -185,16 +185,23 @@ The `struct meminfo` contains:
 
 ---
 
-## History
+## History: Fixed Slots → Variable-Size Allocation
 
 The original Phase 6 implementation used a fixed-slot allocator that
 divided user memory into equal-size slots (2 × 13,750 B on Mega Drive).
-This was replaced with variable-size allocation because:
-1. Fixed slots waste 97% of RAM for small programs like `ls` (400 B)
-2. Only 2 slots meant 3-process pipelines failed with ENOMEM
-3. Large programs were capped at slot_size even when more RAM was free
-4. The proc-table-scanned allocator is actually simpler (fewer lines,
-   no slot arrays or indices)
+Fixed slots were a deliberate design choice — each process gets a
+predictable data address, which maps cleanly onto EverDrive Pro's banked
+PSRAM model where each 512 KB bank is also a fixed-size region.
 
-See [decisions.md](decisions.md) "Fixed-Slot Allocator Oversight" for
-the full analysis.
+In practice, the dominant workload is shell pipelines with many small
+utilities on 27.5 KB of Mega Drive RAM. Fixed slots meant `ls` (400 B)
+wasted 97% of its 13,750 B slot, and 3-process pipelines like
+`ls | more` failed with ENOMEM because only 2 slots existed.
+
+The replacement (`umem_alloc`) allocates exactly what each process needs
+using the proc table as implicit metadata. The future EverDrive Pro bank
+allocator will be a separate subsystem for 512 KB text banks — it
+doesn't need the main-RAM allocator to mirror its structure.
+
+See [decisions.md](plans/decisions.md) "Fixed-Slot → Variable-Size
+Allocator" for the full rationale.

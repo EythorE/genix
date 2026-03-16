@@ -170,7 +170,7 @@ The [Mega EverDrive Pro](https://krikzz.com/our-products/cartridges/mega-everdri
 is an FPGA-based flash cartridge (Cyclone IV FPGA, 16 MB PSRAM,
 512 KB SRAM + 512 KB battery-backed BRAM).
 
-See [everdrive-pro.md](everdrive-pro.md) for full hardware analysis
+See [research/everdrive-research.md](research/everdrive-research.md) for full hardware analysis
 including FPGA source code references.
 
 **Traditional mode** (system type = `SEGA MEGA DRIVE`):
@@ -202,7 +202,7 @@ BRAM: 512 KB persistent filesystem (bank 6 → physical bank 31)
 - Setting the W bit in CTRL0 enables **writes to PSRAM** — the entire
   16 MB PSRAM becomes read-write (volatile, not saved to SD)
 - SD card access via FIFO command interface (only available in SSF mode)
-- See [everdrive-pro.md](everdrive-pro.md) for full register details
+- See [research/everdrive-research.md](research/everdrive-research.md) for full register details
 
 ### Configuration F: Mega EverDrive X-series (X3/X5/X7)
 
@@ -322,7 +322,7 @@ the Open EverDrive.
 **Note on EverDrive Pro:** The Pro's BRAM chip is always 16-bit word-wide
 (`HWC_BRAM_16B` is hardwired in the FPGA). The ROM header type byte only
 affects how the firmware serializes saves to SD — it does not change the
-FPGA's data bus width. See [everdrive-pro.md](everdrive-pro.md).
+FPGA's data bus width. See [research/everdrive-research.md](research/everdrive-research.md).
 
 **The code must handle both cases.** The current `pal_disk_read()`/
 `pal_disk_write()` in `platform.c` use 8-bit odd-byte access. Supporting

@@ -3,7 +3,7 @@
 ## Project Overview
 
 Genix is a minimal, single-user, POSIX-enough OS for the Motorola 68000,
-targeting the Sega Mega Drive (~5400 lines of kernel code).
+targeting the Sega Mega Drive (~6500 lines of kernel code).
 
 **The Mega Drive is the primary target.** The workbench emulator exists only to
 accelerate development — every feature must ultimately run on real Mega Drive
@@ -30,8 +30,9 @@ enhancements), Phase C (dash shell port), Phase D (line editing for
 dash), and Tier 1 apps (Waves 1-2 plus find/xargs) complete. The
 kernel spawns dash as the default interactive shell with arrow key
 cursor movement, command history, and in-line editing. 47 user
-programs in /bin. Next: Phase 7 (SD card). See PLAN.md for the full
-dependency graph and docs/apps_to_port.md for the app porting roadmap.
+programs in /bin. Next: Phase 9 (performance) and VDP color terminal.
+See PLAN.md for the forward plan and docs/plans/apps_to_port.md for the app
+porting roadmap.
 
 Design choices that are LOAD-BEARING (changing these is expensive):
 - Binary format and relocation scheme (affects all 47 apps + libc + mkbin)
@@ -143,9 +144,9 @@ Design choices that ARE flexible right now:
 
 ## Plan & Documentation Workflow
 
-- Research documents (docs/*-research.md, docs/relocatable-binaries.md)
-  are canonical references. Never delete or overwrite them.
-- Implementation plans (docs/*-plan.md) are companions to research,
+- Research documents (docs/research/*.md) are canonical references. Never
+  delete or overwrite them.
+- Implementation plans (docs/plans/*.md) are companions to research,
   not replacements. Both must be updated together.
 - After executing a plan, add an "## Outcome" section documenting
   what was actually implemented, deviations from the plan, and
@@ -159,11 +160,11 @@ Design choices that ARE flexible right now:
 - During implementation, document pain points and surprises as they
   arise — don't wait until the end.
 - Non-trivial analysis, research, and design decisions go in
-  `docs/decisions.md` (active) or the relevant `docs/*-plan.md`.
+  `docs/plans/decisions.md` (active) or the relevant `docs/plans/*-plan.md`.
 - Stale pain-points and resolved implementation details move to
   `HISTORY.md` — don't leave dead warnings in active docs.
 - After completing each phase, add an implementation report to the
-  relevant `docs/*-plan.md` covering: what was built, deviations
+  relevant `docs/plans/*-plan.md` covering: what was built, deviations
   from the plan, gotchas, and measured results (binary sizes, RAM
   usage, cycle counts where relevant). Also update HISTORY.md,
   PLAN.md, CLAUDE.md (pitfalls), and README.md as needed.
@@ -208,13 +209,13 @@ Technical details live in docs/, not here. Key references:
 - docs/megadrive.md — MD hardware, cartridges, SRAM, memory layout
 - docs/automated-testing.md — testing ladder, discrepancy procedures
 - docs/test-coverage.md — what is tested, what isn't, and TODOs
-- docs/relocatable-binaries.md — relocation research (1128 lines, canonical)
-- OPTIMIZATION_PLAN.md — performance gaps vs FUZIX with source refs
-- PLAN.md — forward roadmap (Phases 5-9)
+- docs/research/relocatable-binaries.md — relocation research (1128 lines, canonical)
+- docs/plans/optimization-plan.md — performance gaps vs FUZIX with source refs
+- PLAN.md — forward roadmap (Phase 9, VDP color terminal)
 - HISTORY.md — full project timeline (for human reference)
-- docs/decisions.md — active design decisions
-- docs/shell-plan.md — phased plan: libc prereqs → kernel zones → userspace shell → dash port
-- docs/apps_to_port.md — app porting roadmap, tier definitions, RAM analysis
+- docs/plans/decisions.md — active design decisions
+- docs/plans/shell-plan.md — phased plan: libc prereqs → kernel zones → userspace shell → dash port
+- docs/plans/apps_to_port.md — app porting roadmap, tier definitions, RAM analysis
 - docs/memory-system.md — kernel heap + user memory allocator documentation
 
 Read the relevant docs/ file when working on a subsystem.

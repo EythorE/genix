@@ -41,6 +41,10 @@ uint32_t exec_mem_need(const struct genix_header *hdr)
 /*
  * Compute the minimum memory needed for an XIP binary.
  * Only data + bss + stack (text stays in ROM).
+ *
+ * Phase 8 note: with EverDrive Pro PSRAM, text would live in a
+ * switchable bank instead of ROM. The memory need calculation stays
+ * the same (data+bss+stack in main RAM), but the loader path changes.
  */
 uint32_t exec_mem_need_xip(const struct genix_header *hdr)
 {

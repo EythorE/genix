@@ -6,7 +6,7 @@ project history from multiple sources for anyone who wants to understand
 why specific commits were made.
 
 For active design decisions guiding future development, see
-[docs/decisions.md](docs/decisions.md). For the forward-looking plan, see
+[docs/plans/decisions.md](docs/plans/decisions.md). For the forward-looking plan, see
 [PLAN.md](PLAN.md).
 
 ---
@@ -632,6 +632,37 @@ we extended the existing Genix header to support relocation directly.
 See [Section 5: The Relocation Story](#5-the-relocation-story) for the
 full narrative.
 
+### Phase 5: ROM Execute-in-Place (XIP) (March 2026)
+
+**Date:** 2026-03-14
+
+Enabled ROM XIP: program text executes directly from ROM, only .data
+is copied to RAM. This roughly triples the effective user memory
+budget on the Mega Drive (~27.5 KB available).
+
+**Strategy:** Build-time resolved XIP via `romfix` (Strategy A from
+[docs/research/relocatable-binaries.md](docs/research/relocatable-binaries.md)).
+After the kernel+romdisk link, `romfix` post-processes the ROM:
+text references become absolute ROM addresses, data references become
+USER_BASE addresses, and the `GENIX_FLAG_XIP` flag is set. At exec()
+time, `load_binary_xip()` detects XIP binaries and executes text
+directly from ROM — only .data is copied to RAM.
+
+**Impact:** A typical program with 4 KB text and 2 KB data previously
+used 6 KB of RAM. With XIP, only 2 KB goes to RAM.
+
+**Files implemented:**
+
+| File | Role |
+|------|------|
+| `tools/romfix.c` | Post-processes ROM to resolve XIP addresses in-place |
+| `kernel/exec.c` | `load_binary_xip()` detects XIP flag, executes from ROM |
+| `pal/pal.h` | `pal_rom_file_addr()` interface for ROM file lookup |
+| `pal/megadrive/platform.c` | ROM file address lookup implementation |
+
+**Limitation:** Data address fixed at build time (USER_BASE). Only one
+process can use RAM data at a time. Addressed in Phase 6 with `-msep-data`.
+
 ### Phase 6: `-msep-data` + Slot Allocator (March 2026)
 
 **Date:** 2026-03-14
@@ -694,6 +725,22 @@ to point at each process's data slot.
 - Workbench: 8 slots × 88 KB. Mega Drive: 2 slots × ~13.75 KB.
 - All 63 host tests pass, 31/31 workbench autotest pass, Mega Drive
   builds and runs (600 frames, no crash).
+
+**Update (2026-03-15):** Fixed-slot allocator replaced with variable-size
+user memory allocator (`umem_alloc`). The slot allocator's equal-size
+division wasted 97% of RAM for small programs and limited Mega Drive to
+2 concurrent processes. The new allocator scans proctab to find gaps,
+allocating exactly what each process needs. See
+[docs/plans/decisions.md](docs/plans/decisions.md) "Fixed-Slot Allocator Oversight"
+and [docs/memory-system.md](docs/memory-system.md) for details.
+
+**Updated measured results (with variable-size allocator):**
+
+- Workbench: variable-size regions from 704 KB pool
+- Mega Drive: variable-size regions from 27.5 KB pool (XIP: only data+bss+stack in RAM)
+- Binary size overhead: ~2-7% (GOT + extra relocs)
+- hello: 616 bytes text+data, 3 relocs (was 1 without GOT relocs)
+- levee: 46336 bytes text+data, 2560 relocs (was 2533)
 
 ### Phase A: Libc Prerequisites (March 2026)
 
@@ -1443,7 +1490,7 @@ Four binary format options were evaluated:
 | bFLT v4 | 64 bytes | Offset list | uClinux apps |
 | Raw ELF | ~52+ bytes | Full ELF relocs | Huge but complex |
 
-See [docs/relocatable-binaries.md](docs/relocatable-binaries.md) for the
+See [docs/research/relocatable-binaries.md](docs/research/relocatable-binaries.md) for the
 full 1,128-line research document covering FUZIX reference implementation,
 PIC/GOT/XIP background, bFLT analysis, ROM XIP strategies, and the
 evaluation.
@@ -1465,7 +1512,7 @@ programs.
 
 ### Implementation Phases
 
-See [docs/relocation-implementation-plan.md](docs/relocation-implementation-plan.md)
+See [docs/plans/relocation-plan.md](docs/plans/relocation-plan.md)
 for the full implementation plan with code samples.
 
 | Phase | Description | Status |
@@ -1521,7 +1568,7 @@ After relocation was complete, old fixed-address artifacts were removed:
 
 _Analysis of optimization gaps between Genix and FUZIX assembly._
 
-See [OPTIMIZATION_PLAN.md](OPTIMIZATION_PLAN.md) for the full document
+See [docs/plans/optimization-plan.md](docs/plans/optimization-plan.md) for the full document
 with FUZIX source code references and implementation plans. None of
 these optimizations have been implemented yet — all are future work.
 
@@ -1599,7 +1646,7 @@ Reused Fuzix drivers as planned.
 ### FUZIX Design Philosophy Assessment
 
 **What Genix does better than FUZIX:**
-1. Readability: 5,650 lines vs 15,000+
+1. Readability: 6,500 lines vs 15,000+
 2. Testing: 5,123+ host test assertions (FUZIX has none)
 3. Workbench emulator for rapid iteration
 4. STRICT_ALIGN emulator mode
@@ -1721,7 +1768,7 @@ _Final status snapshot (March 2026)._
 
 | Metric | Value |
 |--------|-------|
-| Kernel lines of code | ~5,650 |
+| Kernel lines of code | ~6,500 |
 | Host test assertions | 5,230+ |
 | Host test files | 17 |
 | Autotest cases | 31+ |
@@ -1853,5 +1900,5 @@ what's needed requires fewer lines of code and works better.
 ---
 
 _End of project history. For active design decisions, see
-[docs/decisions.md](docs/decisions.md). For the forward-looking
+[docs/plans/decisions.md](docs/plans/decisions.md). For the forward-looking
 development plan, see [PLAN.md](PLAN.md)._

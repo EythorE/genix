@@ -1,14 +1,14 @@
 # Genix — A Small 68000 OS for Mega Drive
 
 Genix is a minimal, single-user, POSIX-enough operating system for the Motorola 68000,
-targeting the Sega Mega Drive. It replaces the FUZIX kernel with ~5400 lines of new code
+targeting the Sega Mega Drive. It replaces the FUZIX kernel with ~6500 lines of new code
 while reusing proven Mega Drive drivers from
 [EythorE/FUZIX](https://github.com/EythorE/FUZIX/tree/megadrive).
 
 ## Current Status
 
 Genix boots and runs user programs on both the workbench emulator and real
-Mega Drive hardware. See [docs/decisions.md](docs/decisions.md) for design
+Mega Drive hardware. See [docs/plans/decisions.md](docs/plans/decisions.md) for design
 history and [HISTORY.md](HISTORY.md) for the full project timeline.
 
 | Phase | Description | Status |
@@ -28,8 +28,6 @@ history and [HISTORY.md](HISTORY.md) for the full project timeline.
 | Phase B | Kernel enhancements — fcntl F_DUPFD, waitpid WNOHANG | **Complete** |
 | Phase C | Port dash shell — POSIX scripting, variable expansion, command substitution | **Complete** |
 | Phase D | Interactive line editing — arrow keys, cursor movement, command history | **Complete** |
-| Phase 7 | SD card — load programs at runtime (Open EverDrive SPI + Mega EverDrive Pro FIFO) | Planned |
-| Phase 8 | EverDrive Pro PSRAM — banked 512 KB per process, enables large programs on MD | Planned |
 | Phase 9 | Performance — assembly memcpy/memset, DIVU.W fast path, VDP DMA scroll | Anytime |
 
 See [PLAN.md](PLAN.md) for detailed implementation plans.
@@ -208,7 +206,9 @@ genix/
 ├── apps/         # Userspace programs (47 including dash)
 ├── tools/        # Host tools (mkfs, mkbin)
 ├── tests/        # Host unit tests (17 test files, 5230+ assertions)
-└── docs/         # Technical documentation
+└── docs/         # Technical documentation, plans, and research
+    ├── plans/      # Implementation plans (how things will be)
+    └── research/   # Research and analysis (what informed decisions)
 ```
 
 ## Design
@@ -239,13 +239,14 @@ See [docs/](docs/) for detailed technical documentation:
 | [TTY & Console](docs/tty.md) | VDP console and TTY subsystem |
 | [Automated Testing](docs/automated-testing.md) | Testing ladder, AUTOTEST, discrepancy procedures |
 | [68000 Programming](docs/68000-programming.md) | ISA constraints, division, ABI |
-| [Design Decisions](docs/decisions.md) | Active design decisions guiding development |
+| [Design Decisions](docs/plans/decisions.md) | Active design decisions guiding development |
 | [Project History](HISTORY.md) | FUZIX heritage, implementation timeline, bugs, lessons |
-| [Forward Plan](PLAN.md) | Roadmap with implementation details for phases 5-9 |
-| [Relocatable Binaries](docs/relocatable-binaries.md) | Relocation research, XIP strategies, EverDrive bank-swapping |
-| [Relocation Implementation](docs/relocation-implementation-plan.md) | Relocation phases 1-7, split XIP engine |
-| [Shell Research](docs/shell-research.md) | Shell candidates for Genix (RAM budget, features, porting effort) |
-| [Shell Plan](docs/shell-plan.md) | Phased implementation plan for userspace shell + dash port |
-| [EverDrive SD Card](docs/everdrive-sd-card.md) | SD card access on Open EverDrive and Pro cartridges |
-| [Apps to Port](docs/apps_to_port.md) | App porting roadmap, tier definitions, RAM analysis |
-| [Optimization Plan](OPTIMIZATION_PLAN.md) | 68000 performance gaps vs FUZIX |
+| [Forward Plan](PLAN.md) | Roadmap: Phase 9 performance, VDP color terminal |
+| [EverDrive Research](docs/research/everdrive-research.md) | SD card access, Pro hardware, SSF mode, bank switching |
+| [Apps to Port](docs/plans/apps_to_port.md) | App porting roadmap, tier definitions, RAM analysis |
+| [Relocatable Binaries](docs/research/relocatable-binaries.md) | Relocation research, XIP strategies, EverDrive bank-swapping |
+| [Shell Research](docs/research/shell-research.md) | Shell candidates for Genix (RAM budget, features, porting effort) |
+| [VDP Research](docs/research/vdp-research.md) | VDP terminal, graphics, and curses analysis |
+| [Shell Plan](docs/plans/shell-plan.md) | Phased implementation plan for userspace shell + dash port |
+| [Relocation Plan](docs/plans/relocation-plan.md) | Relocation phases 1-7, split XIP engine |
+| [Optimization Plan](docs/plans/optimization-plan.md) | 68000 performance gaps vs FUZIX |

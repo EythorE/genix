@@ -148,6 +148,9 @@ void umem_init(void)
  *
  * Algorithm: collect all used regions from proctab, sort by address,
  * scan gaps for first fit. O(n^2) where n <= MAXPROC = 16.
+ *
+ * Phase 7/8 note: if SRAM provides a second user memory pool, this
+ * function may need a pool parameter to select main RAM vs SRAM.
  */
 uint32_t umem_alloc(uint32_t need)
 {

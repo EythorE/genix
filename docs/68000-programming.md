@@ -8,7 +8,8 @@ Motorola 68000 on the Sega Mega Drive (7.67 MHz, no MMU, no FPU).
 | Registers | Convention | Notes |
 |-----------|-----------|-------|
 | d0-d1, a0-a1 | Caller-saved | Scratch registers, clobbered by calls |
-| d2-d7, a2-a6 | Callee-saved | Must be preserved across function calls |
+| d2-d7, a2-a4, a6 | Callee-saved | Must be preserved across function calls |
+| a5 | **Reserved (GOT base)** | `-msep-data` reserves a5 for GOT-relative data access. Do not use a5 in user C code or inline asm. Assembly files (.S) that don't touch data are exempt. |
 | d0 | Return value | 32-bit return in d0 |
 | a7 (SP) | Stack pointer | Must stay even-aligned at all times |
 
@@ -234,7 +235,7 @@ At 7.67 MHz, one cycle ≈ 130 ns.
 The 68000 has no barrel shifter, no 32-bit divide, and MOVE.B is nearly
 as expensive as MOVE.L. Naive C loops that look fine on a modern CPU can
 be 4-20x slower than idiomatic 68000 assembly. Use assembly for
-performance-critical primitives. See `OPTIMIZATION_PLAN.md` for the full
+performance-critical primitives. See `plans/optimization-plan.md` for the full
 audit with FUZIX source references.
 
 ### memcpy / memset
@@ -281,7 +282,7 @@ reference implementation.
   shift-and-subtract algorithm. Same result, wildly different cost. When
   porting C code, study the algorithm — don't just copy the first
   version you find.
-- **Check `OPTIMIZATION_PLAN.md`** before writing any new memory copy,
+- **Check `plans/optimization-plan.md`** before writing any new memory copy,
   block I/O, or arithmetic routine. It documents every optimization gap
   found between FUZIX and Genix with full source references.
 

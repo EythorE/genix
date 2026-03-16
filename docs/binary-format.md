@@ -3,10 +3,15 @@
 ## Overview
 
 Genix uses a relocatable flat binary format. Programs are linked at
-address 0 with relocation entries preserved. At exec() time, the kernel
-loads text+data at USER_BASE and patches all absolute 32-bit addresses
-using the relocation table. One binary runs on both workbench
-(USER_BASE=0x040000) and Mega Drive (USER_BASE=0xFF9000).
+address 0 with relocation entries preserved. One binary runs on both
+workbench (USER_BASE=0x040000) and Mega Drive (USER_BASE=0xFF9000).
+
+Two loading modes:
+- **Contiguous** (workbench): copy text+data to RAM, apply relocations
+- **XIP** (Mega Drive): text executes from ROM, only .data copied to
+  RAM. `romfix` resolves text-segment relocations at build time; the
+  kernel applies data-segment relocations at exec() time via the GOT
+  (`-msep-data`, register a5)
 
 ## Header (32 bytes, big-endian)
 
@@ -46,11 +51,13 @@ common case for contiguous text+data layouts.
 
 ### Split mode (text_size > 0)
 
-When text and data may be loaded at different addresses (future XIP):
-- Values < text_size reference the text segment -> add text_base
-- Values >= text_size reference the data segment -> subtract text_size, add data_base
+When text and data are at different addresses (XIP, banked PSRAM):
+- Values < text_size reference the text segment → add text_base
+- Values >= text_size reference the data segment → subtract text_size, add data_base
 
-For contiguous loading, both modes produce identical results.
+For contiguous loading, both modes produce identical results. On Mega
+Drive with XIP, romfix resolves text-segment relocations at build time
+and the kernel applies data-segment relocations at runtime.
 
 ### BSS trick (zero extra RAM)
 
@@ -62,7 +69,7 @@ effective_bss >= reloc_count * 4 at header validation time.
 ## Build Flow
 
 ```
-.c  ->  .o             (m68k-elf-gcc -m68000 -c)
+.c  ->  .o             (m68k-elf-gcc -m68000 -msep-data -c)
 .o  ->  .elf           (m68k-elf-ld -T user-reloc.ld --emit-relocs)
 .elf -> genix binary   (tools/mkbin)
 ```
@@ -186,22 +193,35 @@ Both checks are applied in `apply_relocations()` and
 
 ## Loading Process (`kernel/exec.c`)
 
-`load_binary(path, argv, load_addr, &entry, &user_sp)`:
+### Contiguous load (`load_binary`)
+
+Used on workbench and for non-XIP binaries:
 
 1. Open file, read 32-byte header
-2. Validate: magic = "GENX", entry < load_size (0-based offset),
-   text_size <= load_size, total size fits in user memory,
-   effective_bss >= reloc table size
-3. Copy `load_size` bytes from file (offset 32) to `USER_BASE`
+2. Validate: magic = "GENX", entry < load_size, text_size <= load_size,
+   total size fits in allocated region, effective_bss >= reloc table size
+3. Copy `load_size` bytes from file (offset 32) to `mem_base`
 4. If `reloc_count > 0`: load relocation table into BSS area,
-   apply relocations (add USER_BASE to each 32-bit word), then
+   apply relocations (add `mem_base` to each 32-bit word), then
    zero BSS (destroying the reloc table)
-5. Set up user stack at `USER_TOP` with argc, argv, envp
-6. Compute absolute entry: `USER_BASE + hdr.entry`
+5. Set up user stack, compute entry = `mem_base + hdr.entry`
+
+### XIP load (`load_binary_xip`)
+
+Used on Mega Drive when `GENIX_FLAG_XIP` is set (by `romfix`):
+
+1. Read header from ROM file address (`pal_rom_file_addr`)
+2. Validate header against allocated region size (data+bss+stack only)
+3. Copy only `.data` from ROM to `mem_base` (text stays in ROM)
+4. Apply data-segment relocations at runtime (text-segment relocs
+   already resolved by romfix). Set up GOT base in a5.
+5. Zero BSS, set up user stack
+6. Entry point is a ROM address (not `mem_base + offset`)
 
 ### User Stack Layout
 
-Set up by `exec_setup_stack()`, growing downward from `USER_TOP`:
+Set up by `exec_setup_stack()`, growing downward from the top of the
+process's allocated region (`mem_base + mem_size`):
 
 ```
                     +----------------+
@@ -254,18 +274,17 @@ This avoids the complexity of a full context switch for single-tasking.
 
 ## Status
 
-- **Phase 5: ROM XIP** — **Done.** `load_binary_xip()` executes text
-  from ROM, copies only data+BSS to RAM. `romfix` resolves text-segment
+- **ROM XIP (Phase 5)** — Done. `load_binary_xip()` executes text from
+  ROM, copies only .data to RAM. `romfix` resolves text-segment
   relocations at build time.
-- **Phase 6: `-msep-data` + slot allocator** — **Done.** All apps
-  compile with `-msep-data`. Slot allocator divides user RAM into
-  fixed-size slots. `exec()` allocates a slot per process, sets a5 to
-  GOT base. `romfix` defers data-segment relocations for runtime.
-  mkbin generates synthetic GOT entry relocations. Concurrent pipelines.
-- **Phase 8: EverDrive Pro PSRAM** — **Future.**
-  `apply_relocations_xip()` is implemented and tested (11 host tests).
-  Hardware integration (SRAM bank detection, per-process bank tracking,
-  context switch bank register writes) deferred until EverDrive Pro
-  becomes the active target. See
-  [docs/relocatable-binaries.md](relocatable-binaries.md) for the full
-  research.
+- **`-msep-data` + variable-size allocator (Phase 6)** — Done. All
+  apps compile with `-msep-data` (a5 = GOT base). `umem_alloc` gives
+  each process exactly the RAM it needs. `romfix` defers data-segment
+  relocations for runtime. mkbin generates synthetic GOT entry
+  relocations. Concurrent pipelines work.
+- **Split XIP relocator** — Done. `apply_relocations_xip()` handles
+  text and data at separate addresses (11 host tests). Ready for
+  future banked-PSRAM use.
+
+See [research/relocatable-binaries.md](research/relocatable-binaries.md)
+for the full relocation research.
