@@ -75,6 +75,7 @@ tests/test_pipe
 tests/test_reloc
 tests/test_dash
 tests/test_abi
+tests/test_lineedit
 test-md-screenshot*.png
 test-md-imshow*.png
 _levee_source/

@@ -156,19 +156,27 @@ int puts(const char *s)
     return n + 1;
 }
 
-int fprintf(FILE *f, const char *fmt, ...)
+/*
+ * Direct-write printf engine. Writes directly to fd via write() — no
+ * buffer limit, no vsnprintf dependency.
+ *
+ * Supports: %s, %d, %u, %x, %c, %%, plus 'l' modifier (no-op on
+ * 68000 where int == long == 32 bits).
+ *
+ * Varargs via stack-casting: on 68000, all args are 32-bit words
+ * sequential on the stack after the last named parameter.
+ */
+static int do_printf(int fd, const char *fmt, const char **args)
 {
-    /* Simple fprintf — uses the same varargs trick as printf.
-     * First arg after fmt is at (&fmt + 1). */
-    const char **args = (const char **)(&fmt + 1);
     int arg_idx = 0;
     int total = 0;
     const char *p = fmt;
-    int fd = f ? f->fd : 1;
 
     while (*p) {
         if (*p == '%') {
             p++;
+            /* Skip 'l' modifier — int and long are both 32 bits on 68000 */
+            if (*p == 'l') p++;
             switch (*p) {
             case 's': {
                 const char *s = args[arg_idx++];
@@ -179,7 +187,7 @@ int fprintf(FILE *f, const char *fmt, ...)
                 break;
             }
             case 'd': {
-                int val = (int)(long)args[arg_idx++];
+                long val = (long)args[arg_idx++];
                 char buf[12];
                 char out[12];
                 int neg = 0, i = 0, j;
@@ -191,6 +199,37 @@ int fprintf(FILE *f, const char *fmt, ...)
                     val /= 10;
                 }
                 if (neg) buf[i++] = '-';
+                for (j = 0; j < i; j++) out[j] = buf[i-1-j];
+                write(fd, out, i);
+                total += i;
+                break;
+            }
+            case 'u': {
+                unsigned long val = (unsigned long)args[arg_idx++];
+                char buf[12];
+                char out[12];
+                int i = 0, j;
+                if (val == 0) buf[i++] = '0';
+                else while (val > 0) {
+                    buf[i++] = '0' + (val % 10);
+                    val /= 10;
+                }
+                for (j = 0; j < i; j++) out[j] = buf[i-1-j];
+                write(fd, out, i);
+                total += i;
+                break;
+            }
+            case 'x': {
+                unsigned long val = (unsigned long)args[arg_idx++];
+                char buf[10];
+                char out[10];
+                int i = 0, j;
+                if (val == 0) buf[i++] = '0';
+                else while (val > 0) {
+                    int d = val & 0xF;
+                    buf[i++] = d < 10 ? '0' + d : 'a' + d - 10;
+                    val >>= 4;
+                }
                 for (j = 0; j < i; j++) out[j] = buf[i-1-j];
                 write(fd, out, i);
                 total += i;
@@ -225,71 +264,15 @@ int fprintf(FILE *f, const char *fmt, ...)
     return total;
 }
 
+int fprintf(FILE *f, const char *fmt, ...)
+{
+    int fd = f ? f->fd : 1;
+    return do_printf(fd, fmt, (const char **)(&fmt + 1));
+}
+
 int printf(const char *fmt, ...)
 {
-    /* Redirect to fprintf(stdout, ...) by reconstructing args.
-     * On 68000, varargs are sequential on stack after fmt. */
-    const char **args = (const char **)(&fmt + 1);
-    int arg_idx = 0;
-    int total = 0;
-    const char *p = fmt;
-
-    while (*p) {
-        if (*p == '%') {
-            p++;
-            switch (*p) {
-            case 's': {
-                const char *s = args[arg_idx++];
-                if (!s) s = "(null)";
-                int n = strlen(s);
-                write(1, s, n);
-                total += n;
-                break;
-            }
-            case 'd': {
-                int val = (int)(long)args[arg_idx++];
-                char buf[12];
-                char out[12];
-                int neg = 0, i = 0, j;
-                if (val < 0) { neg = 1; val = -val; }
-                if (val == 0) buf[i++] = '0';
-                else while (val > 0) {
-                    buf[i++] = '0' + (val % 10);
-                    val /= 10;
-                }
-                if (neg) buf[i++] = '-';
-                for (j = 0; j < i; j++) out[j] = buf[i-1-j];
-                write(1, out, i);
-                total += i;
-                break;
-            }
-            case 'c': {
-                char c = (char)(long)args[arg_idx++];
-                write(1, &c, 1);
-                total++;
-                break;
-            }
-            case '%':
-                write(1, "%", 1);
-                total++;
-                break;
-            default:
-                write(1, "%", 1);
-                write(1, p, 1);
-                total += 2;
-                break;
-            }
-        } else {
-            const char *start = p;
-            while (*p && *p != '%') p++;
-            int n = p - start;
-            write(1, start, n);
-            total += n;
-            continue;
-        }
-        p++;
-    }
-    return total;
+    return do_printf(1, fmt, (const char **)(&fmt + 1));
 }
 
 int fputs(const char *s, FILE *f)
