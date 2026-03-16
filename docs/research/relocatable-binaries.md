@@ -1074,7 +1074,7 @@ of the text segment, each with their own data).
 
 Load binaries from EverDrive Pro/Open EverDrive SD card, relocate to
 dynamically allocated RAM, run. Depends on the SD card driver work
-(see `docs/everdrive-sd-card.md`). These programs use runtime
+(see `docs/research/everdrive-research.md`). These programs use runtime
 relocation (Step 2), not ROM XIP.
 
 ### Step 7: Bank-Swapping (Future)

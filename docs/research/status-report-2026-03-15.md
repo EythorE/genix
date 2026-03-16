@@ -251,7 +251,7 @@ These are decisions that still affect current and future work:
 
 2. **Duplicated string.c in kernel and libc.** `kernel/string.c` and
    `libc/string.c` both implement memcpy, memset, strlen, strcmp, etc.
-   When these get optimized (OPTIMIZATION_PLAN Priority 3), the assembly
+   When these get optimized ([optimization plan](../plans/optimization-plan.md) Priority 3), the assembly
    versions will need to exist in both places (or be shared). Consider
    having the kernel link against a shared `memops.S` at optimization
    time rather than maintaining two copies.
@@ -302,7 +302,7 @@ These are decisions that still affect current and future work:
 
 **These do not require real hardware to implement or test:**
 
-1. **Division fast path (OPTIMIZATION_PLAN Priority 1).** Replace the
+1. **Division fast path ([optimization plan](../plans/optimization-plan.md) Priority 1).** Replace the
    shift-and-subtract loop in `divmod.S` with the FUZIX pattern: check
    if the divisor fits in 16 bits, use hardware `DIVU.W` (~150 cycles)
    for the common case. Almost all divisors in Genix are small constants.
@@ -310,14 +310,14 @@ These are decisions that still affect current and future work:
    Testable on the workbench emulator with the existing test ladder.
    **Highest-value optimization — do this first.**
 
-2. **Assembly memcpy/memset (OPTIMIZATION_PLAN Priority 3).** The
+2. **Assembly memcpy/memset ([optimization plan](../plans/optimization-plan.md) Priority 3).** The
    byte-at-a-time C implementations are 4x slower than they need to be
    for medium/large transfers. Create `kernel/memops.S` with MOVE.L
    loops for medium sizes and MOVEM.L for large (>64 byte) transfers.
    This is a prerequisite for the pipe bulk copy optimization (Priority
    4). Testable entirely on the host and workbench.
 
-3. **Pipe bulk copy (OPTIMIZATION_PLAN Priority 4).** Replace the
+3. **Pipe bulk copy ([optimization plan](../plans/optimization-plan.md) Priority 4).** Replace the
    byte-at-a-time pipe read/write loop with contiguous-chunk memcpy.
    ~15 lines of C, 2-4x throughput improvement for shell pipelines.
    Depends on Priority 3 for maximum benefit. Testable with existing

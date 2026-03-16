@@ -1,7 +1,7 @@
 # Relocation Table Implementation Plan
 
 Concrete implementation plan for adding relocatable binaries to Genix.
-Based on the research in `docs/relocatable-binaries.md` (which is the
+Based on the research in `../research/relocatable-binaries.md` (which is the
 canonical reference — do NOT delete or overwrite that document).
 
 **Date:** 2026-03-11
@@ -42,7 +42,7 @@ canonical reference — do NOT delete or overwrite that document).
 
 After evaluating four options (extended Genix header, FUZIX a.out, PIC/GOT,
 bFLT), the choice is **Option 1: extend the existing Genix header**. The
-rationale is documented in `docs/relocatable-binaries.md` §8 and §10.
+rationale is documented in `../research/relocatable-binaries.md` §8 and §10.
 
 Key properties of the chosen approach:
 - Backward-compatible (old `flags=0` binaries load unchanged)
@@ -693,18 +693,18 @@ treats them exactly as before (no relocation applied). Mitigation:
 
 ## Protecting Existing Documentation
 
-**IMPORTANT:** `docs/relocatable-binaries.md` is the canonical research
+**IMPORTANT:** `../research/relocatable-binaries.md` is the canonical research
 document. It contains 1128 lines of carefully researched analysis
 covering FUZIX reference implementation, PIC/GOT/XIP background, bFLT
 analysis, ROM XIP strategies, relocation strategy evaluation, EverDrive
 Pro bank-swapping implications, and the recommended approach.
 
-Any PR that deletes or substantially rewrites `docs/relocatable-binaries.md`
+Any PR that deletes or substantially rewrites `../research/relocatable-binaries.md`
 should be **rejected** unless it clearly improves the document. The
 implementation plan (this file) is a companion to that research, not a
 replacement.
 
-If implementation reveals that the design in `docs/relocatable-binaries.md`
+If implementation reveals that the design in `../research/relocatable-binaries.md`
 needs changes, update both documents together with clear commit messages
 explaining what changed and why.
 

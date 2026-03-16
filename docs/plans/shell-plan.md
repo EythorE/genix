@@ -11,7 +11,7 @@ each process gets its own RAM slot and accesses data through register a5.
 The shell is just another process in its own slot — no special memory
 treatment needed.
 
-**Reference:** [docs/shell-research.md](shell-research.md) — full analysis
+**Reference:** [research/shell-research.md](../research/shell-research.md) — full analysis
 of 8 shell candidates and why dash was chosen.
 
 ---
