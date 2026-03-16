@@ -103,8 +103,9 @@ extern uint32_t USER_BASE;   /* user programs load here */
 extern uint32_t USER_TOP;    /* user stack starts here (grows down) */
 extern uint32_t USER_SIZE;   /* USER_TOP - USER_BASE */
 
-/* Default user stack size */
+/* Default user stack and heap sizes */
 #define USER_STACK_DEFAULT  4096
+#define USER_HEAP_DEFAULT   4096
 
 /* Genix binary format header (32 bytes, big-endian on disk)
  *

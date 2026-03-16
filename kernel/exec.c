@@ -35,7 +35,7 @@ uint32_t exec_mem_need(const struct genix_header *hdr)
     uint32_t effective_bss = hdr->bss_size;
     if (reloc_bytes > effective_bss)
         effective_bss = reloc_bytes;
-    return hdr->load_size + effective_bss + stack;
+    return hdr->load_size + effective_bss + USER_HEAP_DEFAULT + stack;
 }
 
 /*
@@ -51,7 +51,7 @@ uint32_t exec_mem_need_xip(const struct genix_header *hdr)
     uint32_t data_size = hdr->load_size - hdr->text_size;
     uint32_t stack = HDR_STACK_SIZE(hdr);
     if (stack == 0) stack = USER_STACK_DEFAULT;
-    return data_size + hdr->bss_size + stack;
+    return data_size + hdr->bss_size + USER_HEAP_DEFAULT + stack;
 }
 
 /*

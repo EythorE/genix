@@ -124,7 +124,8 @@ These documented issues have test coverage:
 | Gap | Notes |
 |-----|-------|
 | No userspace TRAP #0 test binary | Autotests bypass the real syscall path (supervisor mode). Need `apps/test_syscalls.c`. |
-| No Mega Drive-specific autotest for dash | `test-md-auto` runs the builtin autotest, not dash. Dash on MD requires XIP + correct slot sizing. |
+| No Mega Drive-specific autotest for dash | `test-md-auto` runs the builtin autotest, not dash. Dash on MD requires XIP + correct region sizing. |
+| **`test-dash` must be in every commit gate** | Bug 18: the variable-size allocator gave dash zero heap and the autotest didn't catch it. Only `test-dash` tests that dash actually boots. `make test-all` includes it; partial test runs do not. |
 | No emulator illegal-instruction detection | Musashi silently treats 68020 opcodes as NOPs. `check-opcodes.sh` catches at compile time instead. |
 | No CI integration | Tests run manually. A GitHub Actions workflow would catch regressions automatically. |
 

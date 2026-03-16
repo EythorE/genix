@@ -1466,6 +1466,45 @@ object files linked into the same binary must be updated. Separate
 subdirectory Makefiles are easy to miss. A build-system-level check
 (e.g., scanning all .o files for a5 usage) would catch this class of bug.
 
+### Bug 18: Variable-Size Allocator — Zero Heap Space
+
+**Symptom:** After replacing the fixed-slot allocator with `umem_alloc`,
+dash loads and prints `[exec] /bin/dash: 96892 bytes loaded` but never
+shows a prompt. The emulator hangs silently. All autotest cases pass.
+
+**Root cause:** `exec_mem_need()` computed the allocation as
+`load_size + effective_bss + stack` — the absolute minimum for the binary
+image and stack, with zero bytes left for heap. `sbrk_proc` reserves
+`USER_STACK_DEFAULT` (4 KB) from the top of the region for the stack,
+and `brk` starts at `load_size + bss_size`. With the exact-fit region,
+these two boundaries were equal: `brk == mem_top - stack`. Dash calls
+`malloc` during initialization, `sbrk` returns `(void *)-1`, and dash
+hangs.
+
+The old fixed-slot allocator masked this because slots were ~117 KB on
+workbench (vs ~106 KB needed for dash), giving ~11 KB of implicit heap
+headroom. The variable-size allocator removed all headroom.
+
+**Why tests didn't catch it:** `make test` (host unit tests) and
+`make test-emu` (autotest) don't exercise dash — autotest uses
+`do_exec` with small utilities like hello, echo, true, false, which
+don't call `malloc`. `make test-md-auto` (BlastEm autotest) also
+uses the builtin autotest path, not dash. The `make test-dash` target
+(dash integration tests) would have caught this immediately — its first
+test is "dash boots and shows prompt". But `make test-dash` was not run
+before committing the allocator change; only `make test` and
+`make test-md-auto` were run. The full `make test-all` ladder includes
+`test-dash` and would have caught this.
+
+**Lesson:** `make test-all` is the quality gate, not `make test-md-auto`.
+The autotest exercises the kernel's exec/spawn/pipe/signal machinery but
+does not test the interactive shell. `test-dash` is the only test that
+verifies dash actually boots and runs commands.
+
+**Fix:** Add `USER_HEAP_DEFAULT` (4 KB) to both `exec_mem_need()` and
+`exec_mem_need_xip()`. Every process now gets at least 4 KB of heap
+space between the end of BSS and the stack reservation.
+
 ---
 
 ## 5. The Relocation Story

@@ -103,16 +103,19 @@ This design was chosen because:
 
 ### Region sizing
 
-When a process is loaded, the kernel computes the minimum region size
-from the binary header:
+When a process is loaded, the kernel computes the region size from the
+binary header:
 
-- **Non-XIP**: `load_size + bss_size + stack`
-- **XIP**: `data_size + bss_size + stack` (text stays in ROM)
+- **Non-XIP**: `load_size + effective_bss + heap + stack`
+- **XIP**: `data_size + bss_size + heap + stack` (text stays in ROM)
 
-Where `stack` is `max(header.stack_size, USER_STACK_DEFAULT)`.
+Where `stack` is `max(header.stack_size, USER_STACK_DEFAULT)` and
+`heap` is `USER_HEAP_DEFAULT` (4 KB). The heap headroom ensures every
+process can call `malloc`/`sbrk` — without it, brk starts exactly at
+the stack reservation boundary and `sbrk` always fails (see HISTORY.md
+Bug 18).
 
-The allocated region is exactly this size. The process layout within
-its region:
+The process layout within its region:
 
 ```
 mem_base                                        mem_base + mem_size
