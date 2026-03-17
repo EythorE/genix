@@ -109,12 +109,18 @@ int pipe_read(struct pipe *p, void *buf, int len)
         p->read_waiting = 0;
     }
 
-    /* Read available data (up to len) */
+    /* Read available data (up to len) in contiguous chunks */
     while (n < len && p->count > 0) {
-        dst[n++] = p->buf[p->read_pos];
-        /* PIPE_SIZE is 512, use & (PIPE_SIZE-1) for power-of-2 wrap */
-        p->read_pos = (p->read_pos + 1) & (PIPE_SIZE - 1);
-        p->count--;
+        int avail = p->count;
+        int want = len - n;
+        int contig = PIPE_SIZE - p->read_pos;  /* bytes until wrap */
+        int chunk = avail < want ? avail : want;
+        if (chunk > contig)
+            chunk = contig;
+        memcpy(dst + n, p->buf + p->read_pos, chunk);
+        n += chunk;
+        p->read_pos = (p->read_pos + chunk) & (PIPE_SIZE - 1);
+        p->count -= chunk;
     }
 
     /* Wake blocked writer if we freed space */
@@ -156,17 +162,23 @@ int pipe_write(struct pipe *p, const void *buf, int len)
         p->write_waiting = 0;
     }
 
-    /* Write available space (up to len) */
+    /* Write available space (up to len) in contiguous chunks */
     while (n < len && p->count < PIPE_SIZE) {
         if (p->readers == 0) {
             if (curproc)
                 curproc->sig_pending |= (1u << SIGPIPE);
             return n > 0 ? n : -EPIPE;
         }
-        p->buf[p->write_pos] = src[n++];
-        /* PIPE_SIZE is 512, power-of-2 wrap */
-        p->write_pos = (p->write_pos + 1) & (PIPE_SIZE - 1);
-        p->count++;
+        int space = PIPE_SIZE - p->count;
+        int want = len - n;
+        int contig = PIPE_SIZE - p->write_pos;  /* bytes until wrap */
+        int chunk = space < want ? space : want;
+        if (chunk > contig)
+            chunk = contig;
+        memcpy(p->buf + p->write_pos, src + n, chunk);
+        n += chunk;
+        p->write_pos = (p->write_pos + chunk) & (PIPE_SIZE - 1);
+        p->count += chunk;
     }
 
     /* Wake blocked reader if we added data */

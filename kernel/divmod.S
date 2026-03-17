@@ -21,8 +21,21 @@ __udivsi3_internal:
     tst.l   %d1
     beq     .Ldiv_zero
 
-    /* Use repeated subtraction for correctness on 68000 */
-    /* Optimized: shift-and-subtract algorithm */
+    /* Fast path: if both operands fit in 16 bits, use DIVU.W (~140 cycles) */
+    move.l  %d0, %d1
+    or.l    8(%sp), %d1         /* d1 = dividend | divisor */
+    swap    %d1
+    tst.w   %d1                 /* high word of (dividend|divisor) == 0? */
+    bne     .Ludiv_slow
+    move.l  8(%sp), %d1         /* reload divisor */
+    divu.w  %d1, %d0            /* d0 = 32-bit dividend / 16-bit divisor */
+    and.l   #0xFFFF, %d0        /* keep only low word (quotient) */
+    rts
+
+.Ludiv_slow:
+    move.l  8(%sp), %d1         /* reload divisor */
+
+    /* Generic shift-and-subtract algorithm */
     movem.l %d2-%d4, -(%sp)
 
     move.l  %d0, %d2            /* dividend -> d2 */
@@ -73,6 +86,21 @@ __umodsi3:
     move.l  8(%sp), %d1         /* divisor */
     tst.l   %d1
     beq     .Lmod_zero
+
+    /* Fast path: if both operands fit in 16 bits, use DIVU.W (~140 cycles) */
+    move.l  %d0, %d1
+    or.l    8(%sp), %d1         /* d1 = dividend | divisor */
+    swap    %d1
+    tst.w   %d1                 /* high word of (dividend|divisor) == 0? */
+    bne     .Lumod_slow
+    move.l  8(%sp), %d1         /* reload divisor */
+    divu.w  %d1, %d0            /* d0 = 32-bit dividend / 16-bit divisor */
+    clr.w   %d0                 /* clear low word (quotient) */
+    swap    %d0                 /* move high word (remainder) to low word */
+    rts
+
+.Lumod_slow:
+    move.l  8(%sp), %d1         /* reload divisor */
 
     movem.l %d2-%d4, -(%sp)
 

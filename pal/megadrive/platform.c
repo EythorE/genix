@@ -74,6 +74,190 @@ void pal_vdp_set_graphics_mode(int on)
 }
 
 /* ============================================================
+ * ANSI escape sequence parser state
+ * ============================================================ */
+#define ESC_NORMAL   0
+#define ESC_SEEN     1    /* received ESC */
+#define ESC_CSI      2    /* received ESC[ */
+#define ESC_CSI_Q    3    /* received ESC[? (private mode) */
+
+static uint8_t  esc_state = ESC_NORMAL;
+static uint8_t  esc_params[4];    /* up to 4 numeric params */
+static uint8_t  esc_nparam = 0;   /* number of params collected */
+static uint8_t  esc_partial = 0;  /* partial number being accumulated */
+static uint8_t  esc_has_digit = 0;/* whether current param has digits */
+static uint16_t current_attr = 0; /* palette bits for plot_char (bits 13-12) */
+static uint8_t  saved_x = 0, saved_y = 0;
+static uint8_t  cursor_visible = 1;
+
+/* Get param with default value */
+static int esc_param(int idx, int def)
+{
+    return (idx < esc_nparam && esc_params[idx] > 0) ?
+           esc_params[idx] : def;
+}
+
+static void esc_reset(void)
+{
+    esc_state = ESC_NORMAL;
+    esc_nparam = 0;
+    esc_partial = 0;
+    esc_has_digit = 0;
+}
+
+/* Clamp cursor to screen bounds */
+static void cursor_clamp(void)
+{
+    if (cursor_x < 0) cursor_x = 0;
+    if (cursor_x >= COLS) cursor_x = COLS - 1;
+    if (cursor_y < 0) cursor_y = 0;
+    if (cursor_y >= ROWS) cursor_y = ROWS - 1;
+}
+
+/* Handle SGR (Set Graphic Rendition) — ESC[...m */
+static void handle_sgr(void)
+{
+    /* If no params, treat as reset (SGR 0) */
+    if (esc_nparam == 0) {
+        current_attr = 0;
+        return;
+    }
+    for (int i = 0; i < esc_nparam; i++) {
+        int p = esc_params[i];
+        switch (p) {
+        case 0:  current_attr = 0; break;               /* reset */
+        case 1:  current_attr = (3u << 13); break;       /* bold → palette 3 */
+        case 7:  /* reverse video — swap fg/bg concept (limited) */
+                 break;
+        case 22: current_attr = 0; break;               /* normal intensity */
+        case 27: break;                                 /* cancel reverse */
+        case 30: case 31: case 32: case 33:             /* fg colors */
+        case 34: case 35: case 36: case 37:
+                 break;  /* V3b: will map to palette+tile range */
+        case 39: current_attr = 0; break;               /* default fg */
+        case 40: case 41: case 42: case 43:             /* bg colors */
+        case 44: case 45: case 46: case 47:
+                 break;  /* V3b: background colors */
+        case 49: break;                                 /* default bg */
+        case 90: case 91: case 92: case 93:             /* bright fg */
+        case 94: case 95: case 96: case 97:
+                 current_attr = (3u << 13); break;       /* bright → palette 3 */
+        }
+    }
+}
+
+/* Handle CSI sequence final character */
+static void handle_csi(char cmd)
+{
+    int p1, p2;
+
+    switch (cmd) {
+    case 'A':  /* CUU — cursor up */
+        cursor_y -= esc_param(0, 1);
+        cursor_clamp();
+        break;
+    case 'B':  /* CUD — cursor down */
+        cursor_y += esc_param(0, 1);
+        cursor_clamp();
+        break;
+    case 'C':  /* CUF — cursor forward */
+        cursor_x += esc_param(0, 1);
+        cursor_clamp();
+        break;
+    case 'D':  /* CUB — cursor back */
+        cursor_x -= esc_param(0, 1);
+        cursor_clamp();
+        break;
+    case 'H':  /* CUP — cursor position */
+    case 'f':  /* HVP — same as CUP */
+        p1 = esc_param(0, 1);
+        p2 = esc_param(1, 1);
+        cursor_y = p1 - 1;  /* ANSI is 1-based */
+        cursor_x = p2 - 1;
+        cursor_clamp();
+        break;
+    case 'J':  /* ED — erase display */
+        p1 = esc_param(0, 0);
+        if (p1 == 0) {
+            /* Clear from cursor to end of screen */
+            clear_across(cursor_y, cursor_x, COLS - cursor_x);
+            if (cursor_y + 1 < ROWS)
+                clear_lines(cursor_y + 1, ROWS - cursor_y - 1);
+        } else if (p1 == 1) {
+            /* Clear from start to cursor */
+            if (cursor_y > 0)
+                clear_lines(0, cursor_y);
+            clear_across(cursor_y, 0, cursor_x + 1);
+        } else if (p1 == 2) {
+            /* Clear entire screen */
+            clear_lines(0, ROWS);
+            cursor_x = 0;
+            cursor_y = 0;
+        }
+        break;
+    case 'K':  /* EL — erase line */
+        p1 = esc_param(0, 0);
+        if (p1 == 0) {
+            /* Clear from cursor to end of line */
+            clear_across(cursor_y, cursor_x, COLS - cursor_x);
+        } else if (p1 == 1) {
+            /* Clear from start of line to cursor */
+            clear_across(cursor_y, 0, cursor_x + 1);
+        } else if (p1 == 2) {
+            /* Clear entire line */
+            clear_across(cursor_y, 0, COLS);
+        }
+        break;
+    case 'm':  /* SGR — set graphic rendition */
+        handle_sgr();
+        break;
+    case 's':  /* SCP — save cursor position */
+        saved_x = cursor_x;
+        saved_y = cursor_y;
+        break;
+    case 'u':  /* RCP — restore cursor position */
+        cursor_x = saved_x;
+        cursor_y = saved_y;
+        cursor_clamp();
+        break;
+    case 'n':  /* DSR — device status report */
+        if (esc_param(0, 0) == 6) {
+            /* Report cursor position: ESC[row;colR
+             * Feed response into TTY input queue */
+            extern void tty_inproc(int minor, uint8_t c);
+            tty_inproc(0, '\033');
+            tty_inproc(0, '[');
+            /* Convert row+1 and col+1 to digits */
+            int row = cursor_y + 1;
+            int col = cursor_x + 1;
+            if (row >= 10) tty_inproc(0, '0' + row / 10);
+            tty_inproc(0, '0' + row % 10);
+            tty_inproc(0, ';');
+            if (col >= 10) tty_inproc(0, '0' + col / 10);
+            tty_inproc(0, '0' + col % 10);
+            tty_inproc(0, 'R');
+        }
+        break;
+    }
+}
+
+/* Handle CSI? (private mode) sequence */
+static void handle_csi_private(char cmd)
+{
+    if (cmd == 'h' || cmd == 'l') {
+        int p = esc_param(0, 0);
+        if (p == 25) {
+            /* DECTCEM — show/hide cursor */
+            cursor_visible = (cmd == 'h') ? 1 : 0;
+            if (cursor_visible)
+                cursor_on(cursor_y, cursor_x);
+            else
+                cursor_off();
+        }
+    }
+}
+
+/* ============================================================
  * PAL interface implementation
  * ============================================================ */
 
@@ -118,25 +302,23 @@ void pal_init(void)
 int pal_console_rows(void) { return ROWS; }
 int pal_console_cols(void) { return COLS; }
 
-void pal_console_putc(char c)
+/* Output a regular character (handles control chars and printables) */
+static void putc_normal(char c)
 {
-    if (vdp_graphics_mode)
-        return;  /* suppress console output in graphics mode */
     if (c == '\n') {
         cursor_x = 0;
         cursor_y++;
     } else if (c == '\r') {
         cursor_x = 0;
     } else if (c == '\t') {
-        /* Advance to next 8-column tab stop */
         cursor_x = (cursor_x + 8) & ~7;
     } else if (c == '\b') {
         if (cursor_x > 0) {
             cursor_x--;
-            plot_char(cursor_y, cursor_x, 0);  /* Clear the character */
+            plot_char(cursor_y, cursor_x, 0);
         }
     } else {
-        plot_char(cursor_y, cursor_x, (uint16_t)c);
+        plot_char(cursor_y, cursor_x, (uint16_t)(unsigned char)c | current_attr);
         cursor_x++;
     }
 
@@ -148,6 +330,81 @@ void pal_console_putc(char c)
         scroll_up();
         clear_lines(ROWS - 1, 1);
         cursor_y = ROWS - 1;
+    }
+}
+
+void pal_console_putc(char c)
+{
+    if (vdp_graphics_mode)
+        return;
+
+    switch (esc_state) {
+    case ESC_NORMAL:
+        if (c == '\033') {
+            esc_state = ESC_SEEN;
+        } else {
+            putc_normal(c);
+        }
+        break;
+
+    case ESC_SEEN:
+        if (c == '[') {
+            esc_state = ESC_CSI;
+            esc_nparam = 0;
+            esc_partial = 0;
+            esc_has_digit = 0;
+            for (int i = 0; i < 4; i++)
+                esc_params[i] = 0;
+        } else {
+            /* Not a CSI sequence — emit ESC and the character */
+            esc_state = ESC_NORMAL;
+            putc_normal(c);
+        }
+        break;
+
+    case ESC_CSI:
+        if (c == '?') {
+            esc_state = ESC_CSI_Q;
+        } else if (c >= '0' && c <= '9') {
+            esc_partial = esc_partial * 10 + (c - '0');
+            esc_has_digit = 1;
+        } else if (c == ';') {
+            if (esc_nparam < 4)
+                esc_params[esc_nparam] = esc_partial;
+            esc_nparam++;
+            esc_partial = 0;
+            esc_has_digit = 0;
+        } else if (c >= 0x40 && c <= 0x7E) {
+            /* Final character — finish collecting params */
+            if (esc_has_digit || esc_nparam > 0) {
+                if (esc_nparam < 4)
+                    esc_params[esc_nparam] = esc_partial;
+                esc_nparam++;
+            }
+            handle_csi(c);
+            esc_reset();
+        } else {
+            /* Unexpected character — abort sequence */
+            esc_reset();
+        }
+        break;
+
+    case ESC_CSI_Q:
+        if (c >= '0' && c <= '9') {
+            esc_partial = esc_partial * 10 + (c - '0');
+            esc_has_digit = 1;
+        } else if (c >= 0x40 && c <= 0x7E) {
+            if (esc_has_digit) {
+                if (esc_nparam < 4)
+                    esc_params[esc_nparam] = esc_partial;
+                esc_nparam++;
+            }
+            handle_csi_private(c);
+            esc_reset();
+        } else {
+            esc_reset();
+        }
+        break;
     }
 }
 
