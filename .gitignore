@@ -77,6 +77,10 @@ tests/test_reloc
 tests/test_dash
 tests/test_abi
 tests/test_lineedit
+tests/test_ansi
+tests/test_curses
+tests/test_pipe_bulk
+tests/test_syscalls
 test-md-screenshot*.png
 test-md-imshow*.png
 _levee_source/
