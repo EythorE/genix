@@ -296,6 +296,13 @@ These are lessons learned from debugging sessions (documented in full in
   blocked. Any kernel state change that affects a blocking condition
   (readers/writers count) must notify waiters.
 
+- **vfork child sbrk must redirect to parent**: vfork children have
+  `mem_base=0` (no memory) but run in the parent's address space.
+  `sbrk_proc()` must detect this and use the parent's memory region
+  when the parent is P_VFORK. Without this, `malloc` in the vfork
+  child fails, breaking pipelines where dash calls `stalloc`/`ckmalloc`
+  before exec.
+
 ## Auto-Memory Rules
 
 Do NOT add reference documentation to this file. If you learn

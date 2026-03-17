@@ -125,6 +125,9 @@ run_test "4-stage pipe: echo | cat | cat | cat" \
 run_test "pipe + wc -l" \
     "echo hello | wc -l" "1"
 
+run_test "ls | more pipe (Bug 20+21)" \
+    "ls /bin | more" "dash"
+
 echo ""
 echo "--- File operations ---"
 run_test "rmdir command exists" \

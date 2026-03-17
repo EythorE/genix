@@ -694,6 +694,151 @@ static void test_umem_many_procs(void)
     ASSERT_EQ(t_proctab[p].mem_base, 0x040000);
 }
 
+/* --- sbrk_proc vfork redirect tests (Bug 21) ---
+ *
+ * vfork children have mem_base==0. When they call sbrk, sbrk_proc must
+ * redirect to the parent's region (the child shares the parent's address
+ * space). Without this, pipelines like `ls bin | more` get "Out of space"
+ * because dash's malloc can't extend the heap.
+ */
+
+#define P_VFORK   5
+#define USER_STACK_DEFAULT  4096
+
+struct sbrk_proc {
+    uint8_t  state;
+    uint8_t  pid;
+    uint8_t  ppid;
+    uint32_t mem_base;
+    uint32_t mem_size;
+    uint32_t brk;
+};
+
+static struct sbrk_proc s_proctab[MAXPROC];
+static struct sbrk_proc *s_curproc;
+
+static void *test_sbrk_proc(int32_t incr)
+{
+    struct sbrk_proc *p = s_curproc;
+    if (!p)
+        return (void *)(uintptr_t)-1;
+
+    /* vfork redirect: child has mem_base==0, parent is P_VFORK */
+    if (p->mem_base == 0 && p->ppid < MAXPROC) {
+        struct sbrk_proc *parent = &s_proctab[p->ppid];
+        if (parent->state == P_VFORK)
+            p = parent;
+    }
+
+    if (p->mem_base == 0)
+        return (void *)(uintptr_t)-1;
+
+    uint32_t old_brk = p->brk;
+    uint32_t new_brk = old_brk + incr;
+    uint32_t mem_top = p->mem_base + p->mem_size;
+
+    if (new_brk > mem_top - USER_STACK_DEFAULT || new_brk < p->mem_base)
+        return (void *)(uintptr_t)-1;
+
+    p->brk = new_brk;
+    return (void *)(uintptr_t)old_brk;
+}
+
+static void test_sbrk_normal_proc(void)
+{
+    memset(s_proctab, 0, sizeof(s_proctab));
+    s_proctab[0].state = P_RUNNING;
+    s_proctab[0].pid = 0;
+    s_proctab[0].ppid = 0;
+    s_proctab[0].mem_base = 0x40000;
+    s_proctab[0].mem_size = 0x20000;
+    s_proctab[0].brk = 0x40000 + 0x1000;  /* brk at base + 4K */
+    s_curproc = &s_proctab[0];
+
+    void *r = test_sbrk_proc(256);
+    ASSERT(r != (void *)(uintptr_t)-1);
+    ASSERT_EQ((uint32_t)(uintptr_t)r, 0x40000 + 0x1000);
+    ASSERT_EQ(s_proctab[0].brk, 0x40000 + 0x1000 + 256);
+}
+
+static void test_sbrk_vfork_child_redirects(void)
+{
+    memset(s_proctab, 0, sizeof(s_proctab));
+    /* Parent: PID 0, P_VFORK (frozen) */
+    s_proctab[0].state = P_VFORK;
+    s_proctab[0].pid = 0;
+    s_proctab[0].ppid = 0;
+    s_proctab[0].mem_base = 0x40000;
+    s_proctab[0].mem_size = 0x20000;
+    s_proctab[0].brk = 0x40000 + 0x1000;
+
+    /* Child: PID 1, no memory, parent = 0 */
+    s_proctab[1].state = P_RUNNING;
+    s_proctab[1].pid = 1;
+    s_proctab[1].ppid = 0;
+    s_proctab[1].mem_base = 0;
+    s_proctab[1].mem_size = 0;
+    s_proctab[1].brk = 0;
+    s_curproc = &s_proctab[1];
+
+    /* sbrk from vfork child should succeed using parent's region */
+    void *r = test_sbrk_proc(256);
+    ASSERT(r != (void *)(uintptr_t)-1);
+    ASSERT_EQ((uint32_t)(uintptr_t)r, 0x40000 + 0x1000);
+    /* Parent's brk should be updated */
+    ASSERT_EQ(s_proctab[0].brk, 0x40000 + 0x1000 + 256);
+}
+
+static void test_sbrk_vfork_child_no_parent(void)
+{
+    memset(s_proctab, 0, sizeof(s_proctab));
+    /* Child with no vfork parent — sbrk should fail */
+    s_proctab[1].state = P_RUNNING;
+    s_proctab[1].pid = 1;
+    s_proctab[1].ppid = 0;
+    s_proctab[1].mem_base = 0;
+    s_proctab[1].mem_size = 0;
+    s_proctab[1].brk = 0;
+
+    /* Parent is P_RUNNING, not P_VFORK — no redirect */
+    s_proctab[0].state = P_RUNNING;
+    s_curproc = &s_proctab[1];
+
+    void *r = test_sbrk_proc(256);
+    ASSERT(r == (void *)(uintptr_t)-1);
+}
+
+static void test_sbrk_vfork_child_updates_parent_brk(void)
+{
+    memset(s_proctab, 0, sizeof(s_proctab));
+    /* Parent with some existing heap usage */
+    s_proctab[0].state = P_VFORK;
+    s_proctab[0].pid = 0;
+    s_proctab[0].ppid = 0;
+    s_proctab[0].mem_base = 0x40000;
+    s_proctab[0].mem_size = 0x20000;
+    s_proctab[0].brk = 0x40000 + 0x8000;  /* 32K of heap already used */
+
+    s_proctab[1].state = P_RUNNING;
+    s_proctab[1].pid = 1;
+    s_proctab[1].ppid = 0;
+    s_proctab[1].mem_base = 0;
+    s_proctab[1].mem_size = 0;
+    s_curproc = &s_proctab[1];
+
+    /* Multiple sbrk calls from child, all extend parent's brk */
+    void *r1 = test_sbrk_proc(512);
+    ASSERT(r1 != (void *)(uintptr_t)-1);
+    void *r2 = test_sbrk_proc(512);
+    ASSERT(r2 != (void *)(uintptr_t)-1);
+    ASSERT_EQ(s_proctab[0].brk, 0x40000 + 0x8000 + 1024);
+
+    /* Exhaustion: try to sbrk past the stack reserve */
+    uint32_t remaining = s_proctab[0].mem_size - (s_proctab[0].brk - s_proctab[0].mem_base) - USER_STACK_DEFAULT;
+    void *r3 = test_sbrk_proc(remaining + 1);
+    ASSERT(r3 == (void *)(uintptr_t)-1);  /* should fail */
+}
+
 int main(void)
 {
     printf("test_mem:\n");
@@ -733,6 +878,12 @@ int main(void)
     RUN_TEST(test_umem_stats_fragmented);
     RUN_TEST(test_umem_alloc_zero);
     RUN_TEST(test_umem_many_procs);
+
+    printf("\n--- sbrk_proc vfork redirect ---\n");
+    RUN_TEST(test_sbrk_normal_proc);
+    RUN_TEST(test_sbrk_vfork_child_redirects);
+    RUN_TEST(test_sbrk_vfork_child_no_parent);
+    RUN_TEST(test_sbrk_vfork_child_updates_parent_brk);
 
     TEST_REPORT();
 }

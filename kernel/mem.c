@@ -87,18 +87,31 @@ void kfree(void *ptr)
 /* Process brk/sbrk — uses per-process mem_base/mem_size from slot */
 void *sbrk_proc(int32_t incr)
 {
-    if (!curproc || curproc->mem_base == 0)
+    struct proc *p = curproc;
+    if (!p)
         return (void *)-1;
 
-    uint32_t old_brk = curproc->brk;
+    /* vfork child shares parent's address space — use parent's region.
+     * The child has mem_base==0 until exec allocates its own memory.
+     * Parent is frozen in P_VFORK so there's no concurrent access. */
+    if (p->mem_base == 0 && p->ppid < MAXPROC) {
+        struct proc *parent = &proctab[p->ppid];
+        if (parent->state == P_VFORK)
+            p = parent;
+    }
+
+    if (p->mem_base == 0)
+        return (void *)-1;
+
+    uint32_t old_brk = p->brk;
     uint32_t new_brk = old_brk + incr;
-    uint32_t mem_top = curproc->mem_base + curproc->mem_size;
+    uint32_t mem_top = p->mem_base + p->mem_size;
 
     /* Leave at least USER_STACK_DEFAULT bytes for the stack at the top */
-    if (new_brk > mem_top - USER_STACK_DEFAULT || new_brk < curproc->mem_base)
+    if (new_brk > mem_top - USER_STACK_DEFAULT || new_brk < p->mem_base)
         return (void *)-1;
 
-    curproc->brk = new_brk;
+    p->brk = new_brk;
     return (void *)old_brk;
 }
 

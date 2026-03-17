@@ -2073,6 +2073,50 @@ end — it's not just bookkeeping. Any time a blocking condition variable
 changes (readers/writers count), all waiters on that condition must be
 woken. This is a classic missed-wakeup bug.
 
+### Bug 21: vfork child sbrk fails — `ls bin | more` "Out of space"
+
+**Symptom**: After fixing the pipe close wakeup (Bug 20), `ls bin | more`
+no longer hangs but instead prints `/bin/dash: 1: Out of space`. Any
+pipeline with two external commands that requires dash to allocate memory
+(via `stalloc` → `ckmalloc` → `malloc` → `sbrk`) in the second vfork
+child would fail.
+
+**Root cause**: `do_vfork()` sets the child's `mem_base = 0` and
+`mem_size = 0` because the child has no memory of its own yet (it runs
+in the parent's address space). When the vfork child evaluates a command
+(before calling `execve`), dash's `evalcommand` allocates memory via
+`stalloc` → `ckmalloc` → `malloc`. If `malloc`'s free list is empty,
+it calls `sbrk()`. The kernel's `sbrk_proc()` checks
+`curproc->mem_base` — which is 0 for the vfork child — and returns
+`(void *)-1`. `malloc` returns NULL, `ckmalloc` calls
+`sh_error("Out of space")`.
+
+The first pipeline child (`ls`) often works because dash's stack
+allocator has a pre-allocated 504-byte block (`stackbase.space`). But
+the second child (`more`) finds that block exhausted by the first child's
+argument expansion, so `stalloc` needs a new block from `malloc`, which
+needs `sbrk`, which fails.
+
+**Why simple pipelines worked**: `echo hi | cat` works because `echo`
+and `cat` are simple commands whose argument expansion fits within the
+existing 504-byte stack block. No new `malloc` is needed, so `sbrk` is
+never called.
+
+**Fix**: In `sbrk_proc()` (`kernel/mem.c`), detect when curproc is a
+vfork child (mem_base == 0 and parent is P_VFORK) and redirect the sbrk
+to the parent's memory region. This is safe because:
+1. The child is running in the parent's address space anyway
+2. The parent is frozen in P_VFORK (no concurrent access)
+3. When the child execs, it gets its own memory region
+4. When the child exits, `do_exit` zeroes the child's mem_base (which
+   is already 0), not the parent's
+
+**Lesson**: vfork children sharing the parent's address space must also
+share the parent's sbrk region. Any kernel service that checks
+`curproc->mem_base` to decide whether to proceed needs a vfork fallback
+to the parent. This applies to sbrk but could also apply to future
+kernel services that reference per-process memory bounds.
+
 ---
 
 _End of project history. For active design decisions, see

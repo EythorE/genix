@@ -29,7 +29,7 @@ For the testing ladder and procedures, see
 | File | Subsystem | Assertions | Coverage notes |
 |------|-----------|-----------|----------------|
 | `test_string.c` | kernel/string.c | 847 | memset, memcpy, strcmp, strchr, **memmove overlap** (forward/backward/no-overlap), **large buffer** (512/48 bytes), sentinel checks |
-| `test_mem.c` | kernel/mem.c | 247 | kmalloc/kfree + **umem allocator** (alloc, free, coalesce, fragmentation, variable sizes, gap reuse, pipeline scenario, stats) |
+| `test_mem.c` | kernel/mem.c | 258 | kmalloc/kfree + **umem allocator** (alloc, free, coalesce, fragmentation, variable sizes, gap reuse, pipeline scenario, stats) + **sbrk_proc vfork redirect** (Bug 21: normal sbrk, vfork child redirects to parent, no-parent fails, parent brk updated, exhaustion) |
 | `test_exec.c` | kernel/exec.c | 33 | Header validation, stack setup |
 | `test_proc.c` | kernel/proc.c | 2026 | Pipes, kstack, PID alloc, zombies, waitpid, fcntl, **pipe close wakeup** (Bug 20: close_read wakes writer, close_write wakes reader, no-waiter safety, last-reader/writer, already-ready) |
 | `test_libc.c` | libc/*.c | 71 | strtol, getopt, strerror, vsnprintf, sscanf, qsort |
@@ -51,7 +51,7 @@ For the testing ladder and procedures, see
 | `test_syscalls.c` | FD management | 120 | F_GETFD/F_SETFD, F_GETFL mask, MAXFD limit, **FD_CLOEXEC propagation**, dup/dup2 clears cloexec, F_DUPFD, EBADF, ofile exhaustion |
 | `test_divmod.c` | Division logic | 378 | **DIVU.W fast path** (16-bit boundary), slow path (32-bit), **consistency check** (q*b+r==a), kernel-relevant values (INODES_PER_BLK, base 10/16) |
 
-**Total: ~7,342 assertions across 22 test files**
+**Total: ~7,353 assertions across 22 test files**
 
 ---
 
@@ -60,7 +60,7 @@ For the testing ladder and procedures, see
 | Test | Command | What it tests |
 |------|---------|---------------|
 | `check-opcodes.sh` | `make test-opcodes` | Scan .elf files for 68020 MULU.L/DIVU.L/EXTB.L/RTD |
-| `test-dash.sh` | `make test-dash` | 15 tests: boot, echo, exit status, ls, pipes, redirection, variables, non-interactive bypass, error absence |
+| `test-dash.sh` | `make test-dash` | 22 tests: boot, echo, exit status, ls, pipes (2/3/4-stage + **ls\|more**), redirection, variables, non-interactive bypass, error absence |
 | `test-levee.sh` | `make test-levee` | Smoke test: levee starts, displays editor, accepts :q! |
 
 ---
@@ -98,6 +98,7 @@ These documented issues have test coverage:
 | Curses printw, A_REVERSE, color fg+bg | `test_curses.c` | d43bc50 curses.c |
 | Winsize edge cases (0, 255, pixel roundtrip) | `test_tty.c` | 7153582 tty.c |
 | Pipe close wakeup (Bug 20) | `test_proc.c` pipe_close_* tests | proc.c pipe_close_read/write |
+| vfork child sbrk redirect (Bug 21) | `test_mem.c` sbrk_proc tests + `test-dash.sh` ls\|more | mem.c sbrk_proc |
 
 ---
 
