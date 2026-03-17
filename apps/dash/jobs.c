@@ -949,11 +949,20 @@ forkshell(struct job *jp, union node *n, int mode)
 	int pid;
 
 	TRACE(("forkshell(%%%d, %p, %d) called\n", jobno(jp), n, mode));
+
+	/* Set vforked before fork() (which is really vfork() on Genix).
+	 * This tells forkchild() to take the early-return path, skipping
+	 * forkreset() and freejob() which would corrupt the parent's heap
+	 * since vfork children share the parent's address space.
+	 * Same pattern as vforkexec(). */
+	vforked++;
 	pid = fork();
-	if (pid == 0)
+	if (pid == 0) {
 		forkchild(jp, n, mode);
-	else
+	} else {
+		vforked = 0;
 		forkparent(jp, n, mode, pid);
+	}
 
 	return pid;
 }

@@ -33,7 +33,7 @@ CORE_BINS = apps/hello apps/echo apps/cat apps/wc apps/head apps/true apps/false
             apps/ls apps/sleep apps/strings apps/fold apps/expand apps/unexpand \
             apps/paste apps/comm apps/seq apps/tac \
             apps/grep apps/od apps/env apps/expr \
-            apps/cp apps/mv apps/rm apps/mkdir apps/touch \
+            apps/cp apps/mv apps/rm apps/mkdir apps/rmdir apps/touch \
             apps/kill apps/which apps/uname apps/clear \
             apps/more apps/sort apps/find apps/xargs apps/meminfo \
             apps/dash/dash
