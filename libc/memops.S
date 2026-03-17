@@ -54,7 +54,9 @@ mcpy_fwd:
 
 	/* Both pointers long-aligned? */
 	move.l	%a0,%d0
-	or.l	%a1,%d0
+	move.l	%a1,%d1			/* temporarily borrow d1 */
+	or.l	%d1,%d0			/* d0 = dest | src */
+	move.l	12(%sp),%d1		/* restore count */
 	andi.l	#3,%d0
 	bne.s	.mc_align
 
@@ -128,12 +130,12 @@ memset:
 
 	/* Replicate low byte across all 4 bytes: 0xVV → 0xVVVVVVVV */
 	andi.l	#0xFF,%d0
-	move.l	%d0,%a1			/* stash in a1 temporarily */
+	move.l	%d0,%d1			/* stash copy */
 	lsl.l	#8,%d0
-	or.l	%a1,%d0			/* 0x0000VVVV */
-	move.l	%d0,%a1
+	or.l	%d1,%d0			/* 0x0000VVVV */
+	move.l	%d0,%d1
 	swap	%d0
-	or.l	%a1,%d0			/* 0xVVVVVVVV */
+	or.l	%d1,%d0			/* 0xVVVVVVVV */
 
 	/* Align dest to long boundary */
 	move.l	%a0,%a1
