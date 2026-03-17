@@ -719,6 +719,183 @@ static void test_waitpid_specific_pid(void)
     ASSERT_EQ((status >> 8) & 0xFF, 5);
 }
 
+/* ======== Pipe close wakeup tests (Bug 20) ========
+ *
+ * When a pipe endpoint closes, any process sleeping on the other end
+ * must be woken.  Without this, pipelines like `ls bin | more` deadlock
+ * when one end exits while the other is blocked on a full/empty pipe.
+ */
+
+static void pipe_close_read(struct pipe *p)
+{
+    if (p->readers > 0)
+        p->readers--;
+    if (p->readers == 0 && p->write_waiting && p->write_waiting <= MAXPROC) {
+        struct proc *wp = &proctab[p->write_waiting - 1];
+        if (wp->state == P_SLEEPING)
+            wp->state = P_READY;
+        p->write_waiting = 0;
+    }
+}
+
+static void pipe_close_write(struct pipe *p)
+{
+    if (p->writers > 0)
+        p->writers--;
+    if (p->writers == 0 && p->read_waiting && p->read_waiting <= MAXPROC) {
+        struct proc *rp = &proctab[p->read_waiting - 1];
+        if (rp->state == P_SLEEPING)
+            rp->state = P_READY;
+        p->read_waiting = 0;
+    }
+}
+
+/* Close read end wakes a blocked writer (→ writer returns EPIPE) */
+static void test_pipe_close_read_wakes_writer(void)
+{
+    proc_init_test();
+    /* Set up PID 1 as a sleeping writer */
+    proctab[1].state = P_SLEEPING;
+    proctab[1].pid = 1;
+    nproc = 2;
+
+    struct pipe p = {0};
+    p.readers = 1;
+    p.writers = 1;
+    p.count = PIPE_SIZE;        /* pipe full — writer would block */
+    p.write_waiting = 2;        /* 1-based: PID 1 → slot 1 → waiting value 2 */
+
+    pipe_close_read(&p);
+
+    ASSERT_EQ(p.readers, 0);
+    ASSERT_EQ(proctab[1].state, P_READY);   /* writer woken */
+    ASSERT_EQ(p.write_waiting, 0);          /* cleared */
+}
+
+/* Close write end wakes a blocked reader (→ reader returns EOF) */
+static void test_pipe_close_write_wakes_reader(void)
+{
+    proc_init_test();
+    /* Set up PID 2 as a sleeping reader */
+    proctab[2].state = P_SLEEPING;
+    proctab[2].pid = 2;
+    nproc = 3;
+
+    struct pipe p = {0};
+    p.readers = 1;
+    p.writers = 1;
+    p.count = 0;                /* pipe empty — reader would block */
+    p.read_waiting = 3;         /* 1-based: PID 2 → slot 2 → waiting value 3 */
+
+    pipe_close_write(&p);
+
+    ASSERT_EQ(p.writers, 0);
+    ASSERT_EQ(proctab[2].state, P_READY);   /* reader woken */
+    ASSERT_EQ(p.read_waiting, 0);           /* cleared */
+}
+
+/* Close read end with no blocked writer — no crash */
+static void test_pipe_close_read_no_waiter(void)
+{
+    struct pipe p = {0};
+    p.readers = 1;
+    p.writers = 1;
+    p.write_waiting = 0;  /* nobody waiting */
+
+    pipe_close_read(&p);
+
+    ASSERT_EQ(p.readers, 0);
+    ASSERT_EQ(p.write_waiting, 0);
+}
+
+/* Close write end with no blocked reader — no crash */
+static void test_pipe_close_write_no_waiter(void)
+{
+    struct pipe p = {0};
+    p.readers = 1;
+    p.writers = 1;
+    p.read_waiting = 0;  /* nobody waiting */
+
+    pipe_close_write(&p);
+
+    ASSERT_EQ(p.writers, 0);
+    ASSERT_EQ(p.read_waiting, 0);
+}
+
+/* Multiple writers: closing one reader still wakes blocked writer */
+static void test_pipe_close_last_reader_wakes_writer(void)
+{
+    proc_init_test();
+    proctab[1].state = P_SLEEPING;
+    proctab[1].pid = 1;
+    nproc = 2;
+
+    struct pipe p = {0};
+    p.readers = 2;
+    p.writers = 1;
+    p.count = PIPE_SIZE;
+    p.write_waiting = 2;
+
+    /* First close: readers 2→1, still has readers, no wakeup */
+    pipe_close_read(&p);
+    ASSERT_EQ(p.readers, 1);
+    ASSERT_EQ(proctab[1].state, P_SLEEPING);  /* NOT woken */
+    ASSERT_EQ(p.write_waiting, 2);            /* still set */
+
+    /* Second close: readers 1→0, must wake writer */
+    pipe_close_read(&p);
+    ASSERT_EQ(p.readers, 0);
+    ASSERT_EQ(proctab[1].state, P_READY);     /* woken */
+    ASSERT_EQ(p.write_waiting, 0);
+}
+
+/* Multiple readers: closing one writer still wakes blocked reader */
+static void test_pipe_close_last_writer_wakes_reader(void)
+{
+    proc_init_test();
+    proctab[2].state = P_SLEEPING;
+    proctab[2].pid = 2;
+    nproc = 3;
+
+    struct pipe p = {0};
+    p.readers = 1;
+    p.writers = 2;
+    p.count = 0;
+    p.read_waiting = 3;
+
+    /* First close: writers 2→1, still has writers, no wakeup */
+    pipe_close_write(&p);
+    ASSERT_EQ(p.writers, 1);
+    ASSERT_EQ(proctab[2].state, P_SLEEPING);  /* NOT woken */
+    ASSERT_EQ(p.read_waiting, 3);             /* still set */
+
+    /* Second close: writers 1→0, must wake reader */
+    pipe_close_write(&p);
+    ASSERT_EQ(p.writers, 0);
+    ASSERT_EQ(proctab[2].state, P_READY);     /* woken */
+    ASSERT_EQ(p.read_waiting, 0);
+}
+
+/* Writer was already P_READY (spurious): close_read doesn't change it */
+static void test_pipe_close_read_writer_already_ready(void)
+{
+    proc_init_test();
+    proctab[1].state = P_READY;  /* not sleeping */
+    proctab[1].pid = 1;
+    nproc = 2;
+
+    struct pipe p = {0};
+    p.readers = 1;
+    p.writers = 1;
+    p.write_waiting = 2;
+
+    pipe_close_read(&p);
+
+    ASSERT_EQ(p.readers, 0);
+    ASSERT_EQ(proctab[1].state, P_READY);   /* unchanged */
+    ASSERT_EQ(p.write_waiting, 0);          /* still cleared */
+}
+
 /* ======== Main ======== */
 
 int main(void)
@@ -765,6 +942,15 @@ int main(void)
     RUN_TEST(test_waitpid_wnohang_no_children);
     RUN_TEST(test_waitpid_blocking_reaps_zombie);
     RUN_TEST(test_waitpid_specific_pid);
+
+    /* Pipe close wakeup tests (Bug 20) */
+    RUN_TEST(test_pipe_close_read_wakes_writer);
+    RUN_TEST(test_pipe_close_write_wakes_reader);
+    RUN_TEST(test_pipe_close_read_no_waiter);
+    RUN_TEST(test_pipe_close_write_no_waiter);
+    RUN_TEST(test_pipe_close_last_reader_wakes_writer);
+    RUN_TEST(test_pipe_close_last_writer_wakes_reader);
+    RUN_TEST(test_pipe_close_read_writer_already_ready);
 
     TEST_REPORT();
 }

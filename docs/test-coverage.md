@@ -31,7 +31,7 @@ For the testing ladder and procedures, see
 | `test_string.c` | kernel/string.c | 847 | memset, memcpy, strcmp, strchr, **memmove overlap** (forward/backward/no-overlap), **large buffer** (512/48 bytes), sentinel checks |
 | `test_mem.c` | kernel/mem.c | 247 | kmalloc/kfree + **umem allocator** (alloc, free, coalesce, fragmentation, variable sizes, gap reuse, pipeline scenario, stats) |
 | `test_exec.c` | kernel/exec.c | 33 | Header validation, stack setup |
-| `test_proc.c` | kernel/proc.c | 2001 | Pipes, kstack, PID alloc, zombies, waitpid, fcntl |
+| `test_proc.c` | kernel/proc.c | 2026 | Pipes, kstack, PID alloc, zombies, waitpid, fcntl, **pipe close wakeup** (Bug 20: close_read wakes writer, close_write wakes reader, no-waiter safety, last-reader/writer, already-ready) |
 | `test_libc.c` | libc/*.c | 71 | strtol, getopt, strerror, vsnprintf, sscanf, qsort |
 | `test_vdp.c` | VDP driver | 63 | VRAM/CRAM addresses, sprite layout, tab stops |
 | `test_signal.c` | Signals | 94 | Handlers, delivery, SIGTSTP/SIGCONT, pgrp |
@@ -51,7 +51,7 @@ For the testing ladder and procedures, see
 | `test_syscalls.c` | FD management | 120 | F_GETFD/F_SETFD, F_GETFL mask, MAXFD limit, **FD_CLOEXEC propagation**, dup/dup2 clears cloexec, F_DUPFD, EBADF, ofile exhaustion |
 | `test_divmod.c` | Division logic | 378 | **DIVU.W fast path** (16-bit boundary), slow path (32-bit), **consistency check** (q*b+r==a), kernel-relevant values (INODES_PER_BLK, base 10/16) |
 
-**Total: ~7,317 assertions across 22 test files**
+**Total: ~7,342 assertions across 22 test files**
 
 ---
 
@@ -97,6 +97,7 @@ These documented issues have test coverage:
 | memcpy/memset large buffers (512+ bytes) | `test_string.c` | 789a8ca memops.S |
 | Curses printw, A_REVERSE, color fg+bg | `test_curses.c` | d43bc50 curses.c |
 | Winsize edge cases (0, 255, pixel roundtrip) | `test_tty.c` | 7153582 tty.c |
+| Pipe close wakeup (Bug 20) | `test_proc.c` pipe_close_* tests | proc.c pipe_close_read/write |
 
 ---
 
