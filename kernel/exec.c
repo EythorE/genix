@@ -598,6 +598,7 @@ int do_exec(const char *path, const char **argv)
             uint32_t need2 = exec_mem_need(&hdr);
             if (need2 > need) {
                 /* Need a larger region for non-XIP; free and re-allocate */
+                umem_free(data_addr);
                 curproc->mem_base = 0;
                 data_addr = umem_alloc(need2);
                 if (data_addr == 0)

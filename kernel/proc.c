@@ -475,6 +475,8 @@ int do_waitpid(int pid, int *status, int options)
 /* Next PID to allocate (wraps around, skips 0) */
 static uint8_t next_pid = 1;
 
+_Static_assert((MAXPROC & (MAXPROC - 1)) == 0, "MAXPROC must be power of 2");
+
 static uint8_t alloc_pid(void)
 {
     /* MAXPROC fits in uint8_t (16), so PIDs 1..MAXPROC-1 */
@@ -700,10 +702,10 @@ int do_spawn_fd(const char *path, const char **argv,
                 int stdin_fd, int stdout_fd, int stderr_fd)
 {
     int pid = do_spawn(path, argv);
-    if (pid < 0)
-        return pid;
+    if (pid < 0 || pid >= MAXPROC)
+        return pid < 0 ? pid : -EAGAIN;
 
-    struct proc *child = &proctab[(uint8_t)pid];
+    struct proc *child = &proctab[pid];
 
     /* Replace stdin (fd 0) */
     if (stdin_fd >= 0 && stdin_fd < MAXFD && curproc->fd[stdin_fd]) {
@@ -820,6 +822,7 @@ void schedule(void)
     if (curproc->kstack[0] != KSTACK_CANARY) {
         kputs("*** PANIC: kstack overflow (pid ");
         kprintf("%d)\n", (uint32_t)curproc->pid);
+        __asm__ volatile("or.w #0x0700, %sr"); /* disable interrupts */
         for (;;) ;
     }
 }
