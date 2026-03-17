@@ -20,6 +20,8 @@ uint32_t pal_user_top(void);
 void     pal_timer_init(int hz);
 uint32_t pal_timer_ticks(void);
 void     pal_halt(void);
+int      pal_console_rows(void);
+int      pal_console_cols(void);
 
 /* ROM XIP support: return the memory-mapped ROM address of a file's data,
  * or 0 if the disk is not memory-mapped (workbench) or blocks aren't

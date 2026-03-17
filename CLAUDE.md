@@ -30,7 +30,10 @@ enhancements), Phase C (dash shell port), Phase D (line editing for
 dash), and Tier 1 apps (Waves 1-2 plus find/xargs) complete. The
 kernel spawns dash as the default interactive shell with arrow key
 cursor movement, command history, and in-line editing. 47 user
-programs in /bin. Next: Phase 9 (performance) and VDP color terminal.
+programs in /bin. VDP color terminal (ANSI parser, bold palette, curses
+library) and core performance optimizations (DIVU.W, assembly memcpy,
+pipe bulk copy) are complete. Next: Tier 2 TUI games (curses apps),
+V3b 8-color support, remaining hardware-dependent optimizations.
 See PLAN.md for the forward plan and docs/plans/apps_to_port.md for the app
 porting roadmap.
 

@@ -1466,6 +1466,53 @@ object files linked into the same binary must be updated. Separate
 subdirectory Makefiles are easy to miss. A build-system-level check
 (e.g., scanning all .o files for a5 usage) would catch this class of bug.
 
+### Bug 19: memops.S — Illegal OR.L with Address Register
+
+**Symptom:** `libc/memops.S` failed to assemble with m68k-elf-gcc:
+```
+memops.S:57: Error: operands mismatch -- statement `or.l %a1,%d0' ignored
+memops.S:133: Error: operands mismatch -- statement `or.l %a1,%d0' ignored
+memops.S:136: Error: operands mismatch -- statement `or.l %a1,%d0' ignored
+```
+Three call sites: the memcpy alignment check and two places in the
+memset byte-replication sequence.
+
+**Root cause:** The 68000 `OR` instruction does not accept an address
+register (An) as a source or destination operand. Only data registers
+(Dn) are valid. The code used `or.l %a1,%d0` to OR two pointer values
+together and to combine byte-replicated fill values. This is a legal
+instruction on the 68020+ but not on the 68000.
+
+**Underlying mis-assumption:** The author was likely thinking in terms
+of "register" generically — on many architectures (ARM, x86, RISC-V),
+all general-purpose registers are interchangeable for ALU operations.
+The 68000's split between address registers (An) and data registers
+(Dn) is unusual: address registers support MOVE, ADD, SUB, CMP, and
+addressing modes, but NOT bitwise operations (AND, OR, EOR) or shifts.
+The assembler accepted `move.l %a1,%d0` (legal) but rejected
+`or.l %a1,%d0` (illegal), which made it easy to assume all operations
+work on all registers.
+
+**Why it wasn't caught earlier:** The host test suite compiles
+memops.S with the native x86 compiler — the host tests use C
+implementations from string.c, not the 68000 assembly. The assembly
+is only compiled during `make kernel` / `make megadrive` / libc
+cross-compilation. If the cross-toolchain wasn't installed in the
+development environment, the bug was invisible.
+
+**Fix:** Replaced all `or.l %a1,%d0` with data-register equivalents:
+- memcpy: `move.l %a1,%d1; or.l %d1,%d0` (borrow d1, restore count
+  from stack afterward)
+- memset: `move.l %d0,%d1; ... or.l %d1,%d0` (use d1 as temp —
+  count is re-fetched from the stack later in the alignment section)
+
+**Lesson:** On the 68000, address registers are NOT general-purpose.
+Bitwise operations (AND, OR, EOR, NOT) and shifts only work on data
+registers. When writing 68000 assembly, always route values through a
+data register before applying bitwise logic. The assembler catches
+this, but only during cross-compilation — ensure the cross-build step
+runs before committing any assembly changes.
+
 ### Bug 18: Variable-Size Allocator — Zero Heap Space
 
 **Symptom:** After replacing the fixed-slot allocator with `umem_alloc`,
@@ -1935,6 +1982,67 @@ headers. ~25 lines of allocator code replace ~70 lines of slot code.
 from 400 B to 15 KB, a fixed-size allocator is the wrong abstraction.
 The "simplest" approach (equal slots) was the most wasteful. Allocating
 what's needed requires fewer lines of code and works better.
+
+### VDP Color Terminal + Curses + Performance (Phases V1-V5, 9)
+
+**Date:** 2026-03-17
+
+Implemented the full VDP terminal plan: ANSI escape parser, bold text
+palette, minimal curses library, device driver fixes, and three of five
+performance optimizations. Also fixed four kernel bugs as prerequisites
+(PID bounds check, XIP memory leak, fs overflow, kstack panic).
+
+**Key changes:**
+
+- `pal/megadrive/platform.c`: ANSI escape sequence parser (~200 lines).
+  State machine with 4 states (NORMAL, ESC_SEEN, CSI_PARAM, CSI_PRIVATE).
+  Handles CUP, cursor movement, ED/EL clear, SGR bold/reset/bright fg,
+  save/restore cursor, DSR report, DECTCEM show/hide cursor. Parser lives
+  in the PAL layer because workbench passes ANSI through to the host
+  terminal natively — no parsing needed there.
+
+- `pal/megadrive/vdp.S`: Palette 3 configured for bold text (color 1 =
+  black, color 2 = bright white 0x0EEE). Zero VRAM cost — uses palette
+  select bits (13-12) already present in nametable entries.
+
+- `libc/curses.c` + `libc/include/curses.h`: Minimal curses (~460 + 107
+  lines). Emit-as-you-go via write(1,...) — no shadow buffer. Covers
+  initscr/endwin, move/addch/addstr, attron/attroff, color pairs,
+  clear/clrtoeol, getch with arrow key decoding, raw/cbreak modes.
+  Option A from the plan (ANSI escape output, portable across platforms).
+
+- `libc/memops.S`: Assembly memcpy/memset/memmove for 68000 (~205 lines).
+  MOVEM.L bulk transfers (8 regs = 32 bytes/iteration). Handles alignment,
+  >64K counts. Replaces C implementations in string.c.
+
+- `kernel/divmod.S`: DIVU.W fast path for 16-bit operands in __udivsi3
+  and __umodsi3. ORs both operands, checks high word == 0, uses DIVU.W
+  (~150 cycles vs ~300-600 for shift-and-subtract).
+
+- `kernel/proc.c`: Device open/close dispatch in sys_open/sys_close/do_exit.
+  FD_CLOEXEC support (fd_flags array in proc struct, enforced in do_exec).
+  Pipe bulk copy via memcpy of contiguous chunks. PID bounds check.
+
+- `kernel/exec.c`: XIP memory leak fix. FD_CLOEXEC enforcement loop.
+
+- `kernel/fs.c`: Integer overflow guards in fs_read/fs_write.
+
+- `kernel/tty.c`: TTY winsize initialized from pal_console_rows/cols.
+
+- `libc/gfx.c`: Ctrl-Z safety — saves termios, disables ISIG in gfx_open.
+
+**Testing:** 20 test suites, 5,962 assertions, 0 failures.
+New test files: test_ansi.c (108 tests for parser), test_curses.c (36+
+assertions for curses API), test_pipe_bulk.c (523 assertions for bulk copy).
+
+**Lesson:** The 2-color approach (normal + bold via palette select) delivers
+90% of the terminal value at zero VRAM cost. Full 8-color would require
+multiple font copies eating ~21 KB VRAM — not worth it until an app
+specifically needs it. The emit-as-you-go curses (no shadow buffer) works
+well at 40x28 resolution; at 7.67 MHz even a full screen redraw takes only
+~15ms. Performance optimizations at the assembly level (MOVEM.L, DIVU.W)
+are straightforward to test on host — the test files mock the kernel
+environment and exercise the logic directly.
 
 ---
 

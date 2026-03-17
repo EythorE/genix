@@ -58,6 +58,7 @@ apps/sort
 apps/find
 apps/xargs
 apps/meminfo
+apps/vdptest
 apps/levee/levee
 apps/dash/dash
 tests/test_string
@@ -77,7 +78,13 @@ tests/test_reloc
 tests/test_dash
 tests/test_abi
 tests/test_lineedit
+tests/test_ansi
+tests/test_curses
+tests/test_pipe_bulk
+tests/test_syscalls
+tests/test_divmod
 test-md-screenshot*.png
 test-md-imshow*.png
+test-md-vdptest*.png
 _levee_source/
 .plan

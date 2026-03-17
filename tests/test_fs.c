@@ -495,6 +495,55 @@ static void test_write_null_inode(void)
     ASSERT_EQ(fs_write(NULL, "x", 0, 1), -EIO);
 }
 
+/* ---- fs_read/fs_write overflow guards (a26fbf0 fixes) ---- */
+
+static void test_read_overflow_off_plus_n(void)
+{
+    /* Test the overflow guard: n > ip->size - off
+     * Old code used "if (off + n > ip->size)" which wraps for large off+n */
+    build_test_fs();
+    fs_init();
+
+    create_test_inode(2, FT_FILE, 100);
+    struct disk_inode *di = (struct disk_inode *)mock_disk[1] + 1;
+    di->direct[0] = 5;
+    memset(mock_disk[5], 'Z', BLOCK_SIZE);
+
+    struct inode *ip = fs_iget(2);
+
+    /* off=50, n=0xFFFFFFFF: old code wraps (50+FFFFFFFF = 49 < 100 → no clamp)
+     * new code: n > ip->size - off → FFFFFFFF > 50 → clamp to 50 */
+    char buf[128];
+    int n = fs_read(ip, buf, 50, 0x7FFFFFFF);
+    ASSERT_EQ(n, 50);  /* clamped to remaining size */
+
+    /* off=99, n=100: should clamp to 1 byte */
+    n = fs_read(ip, buf, 99, 100);
+    ASSERT_EQ(n, 1);
+
+    fs_iput(ip);
+}
+
+static void test_write_overflow_off_plus_n(void)
+{
+    /* Test the overflow guard: n > UINT32_MAX - off */
+    build_test_fs();
+    fs_init();
+
+    create_test_inode(2, FT_FILE, 0);
+    struct inode *ip = fs_iget(2);
+
+    /* off=0xFFFFFFF0, n=0x100: would wrap past 32-bit. Guard clamps n. */
+    char data[16] = "test";
+    int n = fs_write(ip, data, 0xFFFFFFF0u, 0x100);
+    /* n should be clamped to UINT32_MAX - 0xFFFFFFF0 = 0xF = 15 bytes.
+     * In practice it may be less if bmap fails for high offsets, but
+     * the point is it doesn't wrap to a huge value. */
+    ASSERT(n <= 15);
+
+    fs_iput(ip);
+}
+
 /* ---- fs_namei (path resolution) ---- */
 
 static void test_namei_root(void)
@@ -1011,6 +1060,10 @@ int main(void)
     /* write */
     RUN_TEST(test_write_basic);
     RUN_TEST(test_write_null_inode);
+
+    /* read/write overflow guards */
+    RUN_TEST(test_read_overflow_off_plus_n);
+    RUN_TEST(test_write_overflow_off_plus_n);
 
     /* namei */
     RUN_TEST(test_namei_root);

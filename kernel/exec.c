@@ -598,6 +598,7 @@ int do_exec(const char *path, const char **argv)
             uint32_t need2 = exec_mem_need(&hdr);
             if (need2 > need) {
                 /* Need a larger region for non-XIP; free and re-allocate */
+                umem_free(data_addr);
                 curproc->mem_base = 0;
                 data_addr = umem_alloc(need2);
                 if (data_addr == 0)
@@ -615,6 +616,24 @@ int do_exec(const char *path, const char **argv)
         curproc->mem_base = 0;
         curproc->mem_size = 0;
         return err;
+    }
+
+    /* Close FD_CLOEXEC file descriptors */
+    for (int i = 0; i < MAXFD; i++) {
+        if (curproc->fd_flags[i] & 1) {
+            if (curproc->fd[i]) {
+                struct ofile *of = curproc->fd[i];
+                curproc->fd[i] = NULL;
+                curproc->fd_flags[i] = 0;
+                of->refcount--;
+                if (of->refcount == 0 && of->inode) {
+                    if (of->inode->type == FT_DEV && of->inode->dev_major < NDEV)
+                        devtab[of->inode->dev_major].close(of->inode->dev_minor);
+                    fs_iput(of->inode);
+                    of->inode = NULL;
+                }
+            }
+        }
     }
 
     /* Vfork child doing exec: become an independent schedulable process

@@ -5,22 +5,7 @@
 
 #include <stddef.h>
 
-void *memset(void *s, int c, unsigned int n)
-{
-    unsigned char *p = s;
-    while (n--)
-        *p++ = (unsigned char)c;
-    return s;
-}
-
-void *memcpy(void *dest, const void *src, unsigned int n)
-{
-    unsigned char *d = dest;
-    const unsigned char *s = src;
-    while (n--)
-        *d++ = *s++;
-    return dest;
-}
+/* memset, memcpy, memmove are in memops.S (optimized 68000 assembly) */
 
 unsigned int strlen(const char *s)
 {
@@ -109,22 +94,6 @@ int memcmp(const void *s1, const void *s2, unsigned int n)
         p2++;
     }
     return 0;
-}
-
-void *memmove(void *dest, const void *src, unsigned int n)
-{
-    unsigned char *d = dest;
-    const unsigned char *s = src;
-    if (d < s) {
-        while (n--)
-            *d++ = *s++;
-    } else {
-        d += n;
-        s += n;
-        while (n--)
-            *--d = *--s;
-    }
-    return dest;
 }
 
 char *strtok(char *s, const char *delim)

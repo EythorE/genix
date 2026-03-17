@@ -109,12 +109,18 @@ int pipe_read(struct pipe *p, void *buf, int len)
         p->read_waiting = 0;
     }
 
-    /* Read available data (up to len) */
+    /* Read available data (up to len) in contiguous chunks */
     while (n < len && p->count > 0) {
-        dst[n++] = p->buf[p->read_pos];
-        /* PIPE_SIZE is 512, use & (PIPE_SIZE-1) for power-of-2 wrap */
-        p->read_pos = (p->read_pos + 1) & (PIPE_SIZE - 1);
-        p->count--;
+        int avail = p->count;
+        int want = len - n;
+        int contig = PIPE_SIZE - p->read_pos;  /* bytes until wrap */
+        int chunk = avail < want ? avail : want;
+        if (chunk > contig)
+            chunk = contig;
+        memcpy(dst + n, p->buf + p->read_pos, chunk);
+        n += chunk;
+        p->read_pos = (p->read_pos + chunk) & (PIPE_SIZE - 1);
+        p->count -= chunk;
     }
 
     /* Wake blocked writer if we freed space */
@@ -156,17 +162,23 @@ int pipe_write(struct pipe *p, const void *buf, int len)
         p->write_waiting = 0;
     }
 
-    /* Write available space (up to len) */
+    /* Write available space (up to len) in contiguous chunks */
     while (n < len && p->count < PIPE_SIZE) {
         if (p->readers == 0) {
             if (curproc)
                 curproc->sig_pending |= (1u << SIGPIPE);
             return n > 0 ? n : -EPIPE;
         }
-        p->buf[p->write_pos] = src[n++];
-        /* PIPE_SIZE is 512, power-of-2 wrap */
-        p->write_pos = (p->write_pos + 1) & (PIPE_SIZE - 1);
-        p->count++;
+        int space = PIPE_SIZE - p->count;
+        int want = len - n;
+        int contig = PIPE_SIZE - p->write_pos;  /* bytes until wrap */
+        int chunk = space < want ? space : want;
+        if (chunk > contig)
+            chunk = contig;
+        memcpy(p->buf + p->write_pos, src + n, chunk);
+        n += chunk;
+        p->write_pos = (p->write_pos + chunk) & (PIPE_SIZE - 1);
+        p->count += chunk;
     }
 
     /* Wake blocked reader if we added data */
@@ -371,6 +383,9 @@ void do_exit(int code)
                         pipe_close_write(p);
                     of->inode = NULL;
                 } else if (of->inode) {
+                    /* Call device close handler */
+                    if (of->inode->type == FT_DEV && of->inode->dev_major < NDEV)
+                        devtab[of->inode->dev_major].close(of->inode->dev_minor);
                     fs_iput(of->inode);
                     of->inode = NULL;
                 }
@@ -474,6 +489,8 @@ int do_waitpid(int pid, int *status, int options)
 
 /* Next PID to allocate (wraps around, skips 0) */
 static uint8_t next_pid = 1;
+
+_Static_assert((MAXPROC & (MAXPROC - 1)) == 0, "MAXPROC must be power of 2");
 
 static uint8_t alloc_pid(void)
 {
@@ -620,9 +637,10 @@ int do_spawn(const char *path, const char **argv)
     for (int i = 0; i < NSIG; i++)
         child->sig_handler[i] = SIG_DFL;
 
-    /* Copy and refcount file descriptors */
+    /* Copy and refcount file descriptors (including per-fd flags) */
     for (int i = 0; i < MAXFD; i++) {
         child->fd[i] = curproc->fd[i];
+        child->fd_flags[i] = curproc->fd_flags[i];
         if (child->fd[i])
             child->fd[i]->refcount++;
     }
@@ -700,10 +718,10 @@ int do_spawn_fd(const char *path, const char **argv,
                 int stdin_fd, int stdout_fd, int stderr_fd)
 {
     int pid = do_spawn(path, argv);
-    if (pid < 0)
-        return pid;
+    if (pid < 0 || pid >= MAXPROC)
+        return pid < 0 ? pid : -EAGAIN;
 
-    struct proc *child = &proctab[(uint8_t)pid];
+    struct proc *child = &proctab[pid];
 
     /* Replace stdin (fd 0) */
     if (stdin_fd >= 0 && stdin_fd < MAXFD && curproc->fd[stdin_fd]) {
@@ -820,6 +838,7 @@ void schedule(void)
     if (curproc->kstack[0] != KSTACK_CANARY) {
         kputs("*** PANIC: kstack overflow (pid ");
         kprintf("%d)\n", (uint32_t)curproc->pid);
+        __asm__ volatile("or.w #0x0700, %sr"); /* disable interrupts */
         for (;;) ;
     }
 }
@@ -851,6 +870,17 @@ static int sys_open(uint32_t path_addr, uint32_t flags)
             if (!ip) return -EIO;
         } else {
             return -ENOENT;
+        }
+    }
+
+    /* Call device open handler for device files */
+    if (ip->type == FT_DEV) {
+        if (ip->dev_major < NDEV) {
+            int err = devtab[ip->dev_major].open(ip->dev_minor);
+            if (err < 0) {
+                fs_iput(ip);
+                return err;
+            }
         }
     }
 
@@ -897,6 +927,9 @@ static int sys_close(uint32_t fd)
                 pipe_close_write(p);
             of->inode = NULL;
         } else if (of->inode) {
+            /* Call device close handler */
+            if (of->inode->type == FT_DEV && of->inode->dev_major < NDEV)
+                devtab[of->inode->dev_major].close(of->inode->dev_minor);
             fs_iput(of->inode);
             of->inode = NULL;
         }
@@ -1454,9 +1487,10 @@ int32_t syscall_dispatch(uint32_t num, uint32_t a1, uint32_t a2,
                 fcntl_of->refcount--;
             return fcntl_fd;
         }
-        case 1: /* F_GETFD: no cloexec support yet */
-            return 0;
-        case 2: /* F_SETFD: accept but ignore */
+        case 1: /* F_GETFD */
+            return curproc->fd_flags[a1];
+        case 2: /* F_SETFD */
+            curproc->fd_flags[a1] = (uint8_t)(a3 & 1);
             return 0;
         case 3: /* F_GETFL: return open flags */
             return fcntl_of->flags & 0x0FFF; /* mask out internal pipe bits */

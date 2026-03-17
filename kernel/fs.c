@@ -277,7 +277,7 @@ int fs_read(struct inode *ip, void *buf, uint32_t off, uint32_t n)
 {
     if (!ip || off >= ip->size)
         return 0;
-    if (off + n > ip->size)
+    if (n > ip->size - off)
         n = ip->size - off;
 
     uint32_t total = 0;
@@ -307,6 +307,9 @@ int fs_read(struct inode *ip, void *buf, uint32_t off, uint32_t n)
 int fs_write(struct inode *ip, const void *buf, uint32_t off, uint32_t n)
 {
     if (!ip) return -EIO;
+    /* Guard against off+n overflow */
+    if (n > UINT32_MAX - off)
+        n = UINT32_MAX - off;
 
     uint32_t total = 0;
     const uint8_t *src = (const uint8_t *)buf;

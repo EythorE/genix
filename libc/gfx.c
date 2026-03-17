@@ -6,6 +6,7 @@
 #include "include/gfx.h"
 #include "include/unistd.h"
 #include "include/fcntl.h"
+#include "include/termios.h"
 
 /* ioctl prototype from syscalls.S */
 extern int ioctl(int fd, int cmd, void *arg);
@@ -54,6 +55,7 @@ struct vdp_scroll_arg {
 };
 
 static int vdp_fd = -1;
+static struct termios gfx_saved_termios;
 
 int gfx_open(void)
 {
@@ -62,6 +64,11 @@ int gfx_open(void)
     vdp_fd = open("/dev/vdp", O_RDWR);
     if (vdp_fd < 0)
         return vdp_fd;
+    /* Disable ISIG to prevent Ctrl-Z/Ctrl-C in graphics mode */
+    tcgetattr(0, &gfx_saved_termios);
+    struct termios t = gfx_saved_termios;
+    t.c_lflag &= ~ISIG;
+    tcsetattr(0, TCSANOW, &t);
     /* Clear screen on open */
     ioctl(vdp_fd, VDP_IOC_CLEAR, (void *)0);
     return 0;
@@ -72,6 +79,8 @@ void gfx_close(void)
     if (vdp_fd >= 0) {
         close(vdp_fd);
         vdp_fd = -1;
+        /* Restore terminal settings */
+        tcsetattr(0, TCSANOW, &gfx_saved_termios);
     }
 }
 

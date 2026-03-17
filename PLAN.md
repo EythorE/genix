@@ -6,18 +6,19 @@ see [HISTORY.md](HISTORY.md).
 Current state: Genix is a working preemptive multitasking OS with 47
 user programs (including dash shell and 13 tier-1 utilities),
 relocatable binaries, pipes, signals, job control, and a TTY
-subsystem. It runs on both the workbench emulator and real Mega Drive
-hardware. ROM XIP is working on Mega Drive (text executes from ROM,
-only .data copied to RAM). Phase 6 (`-msep-data` + variable-size user
-memory allocator) is complete: multiple processes can reside in memory
-simultaneously with shared ROM text and per-process data regions.
-Pipelines execute concurrently. Phase A (libc prerequisites), Phase B
-(kernel enhancements: fcntl F_DUPFD, waitpid WNOHANG), Phase C (dash
-shell port), Phase D (line editing for dash), and Tier 1 apps (cp, mv,
-rm, mkdir, touch, kill, which, uname, clear, more, sort, find, xargs)
-are complete. The kernel spawns dash as the default interactive shell
-with arrow key cursor movement, command history (up/down), and in-line
-editing. See [docs/plans/apps_to_port.md](docs/plans/apps_to_port.md) for the app
+subsystem with ANSI escape sequence support and a minimal curses
+library for TUI apps. It runs on both the workbench emulator and real
+Mega Drive hardware. ROM XIP is working on Mega Drive (text executes
+from ROM, only .data copied to RAM). Phase 6 (`-msep-data` +
+variable-size user memory allocator) is complete. Pipelines execute
+concurrently with bulk memcpy optimization. Phases A-D (libc, kernel
+enhancements, dash shell, line editing), Tier 1 apps, VDP color
+terminal (V1-V4), and core performance optimizations (Phase 9) are
+complete. The kernel spawns dash as the default interactive shell with
+arrow key cursor movement, command history, and in-line editing. The
+VDP console supports bold text, cursor positioning, and screen
+clearing via ANSI escapes. See
+[docs/plans/apps_to_port.md](docs/plans/apps_to_port.md) for the app
 porting roadmap.
 
 For completed phase outcomes (Phases 5, 6, A, B, C, D), see
@@ -26,167 +27,147 @@ PSRAM), see [docs/plans/](docs/plans/).
 
 ---
 
-## Phase 9: Performance Optimizations
+## NEXT: BlastEm Visual Review & Hardware Validation
+
+**Priority:** CRITICAL — must be done before any new feature work.
+**Status:** Not started.
+
+The VDP terminal (ANSI parser, bold palette, curses) and performance
+optimizations (DIVU.W, assembly memcpy, pipe bulk copy) were all
+validated via host unit tests only. **None of this has been visually
+verified in BlastEm.** The host tests prove logic correctness but
+cannot detect:
+
+- VDP nametable palette bit corruption (wrong colors)
+- ANSI cursor positioning rendering incorrectly
+- Bold text visually indistinguishable from normal
+- Scroll/clear leaving artifacts
+- Assembly memcpy/memset causing alignment faults on 68000
+- Division fast path DIVU.W edge cases on real CPU
+- Pipe bulk copy corrupting data through memcpy alignment issues
+
+### Step 1: Create `apps/vdptest.c` — VDP terminal test program
+
+A dedicated test app that exercises every ANSI sequence and curses
+feature, then holds the display for screenshot capture. Pattern after
+`apps/imshow.c` (use `-n` flag for no-wait automated mode).
+
+**What it must test (visually):**
+1. Normal text output — "Hello World" at default position
+2. Bold text — `ESC[1m` should render in bright white (palette 3)
+3. Bold reset — `ESC[0m` back to normal gray (palette 0)
+4. Cursor positioning — `ESC[5;10H` place text at specific row/col
+5. Screen clear — `ESC[2J` should blank the entire display
+6. Line clear — `ESC[K` should clear to end of current line
+7. Cursor movement — `ESC[A/B/C/D` should move in 4 directions
+8. Scroll — fill screen with text, verify scroll behavior
+9. Cursor show/hide — `ESC[?25l` / `ESC[?25h`
+10. Word wrap — long lines should wrap at column 40
+
+**Implementation notes:**
+- Create `apps/vdptest.c` with `-n` flag (automated: hold ~2s then exit)
+- Add to `apps/Makefile` PROGRAMS list and top-level `CORE_BINS`
+- Add `apps/vdptest` to `.gitignore`
+- Add `VDP_TEST` kernel mode (like `IMSHOW_TEST`) that spawns the test
+- Add `make test-md-vdptest` target that captures screenshot
+
+**Where to look:**
+- apps/imshow.c — reference for `-n` flag pattern
+- kernel/main.c lines 813-839 — IMSHOW_TEST pattern
+- Makefile lines 142-177 — test-md-imshow screenshot capture pattern
+- pal/megadrive/platform.c lines 76-400 — the ANSI parser being tested
+- pal/megadrive/vdp.S — palette data (verify palette 3 = bright white)
+
+### Step 2: Run BlastEm autotest
+
+```bash
+make test-md-auto          # Crash check (existing 28 tests)
+make test-md-screenshot    # Visual: autotest output on VDP
+make test-md-vdptest       # Visual: VDP terminal test patterns
+make test-md-imshow        # Visual: graphics stack (existing)
+```
+
+Inspect each screenshot for rendering correctness.
+
+### Step 3: Validate assembly optimizations
+
+The autotest already exercises pipes, exec, and filesystem — all of
+which use the new assembly memcpy and DIVU.W fast path. If autotest
+passes, the optimizations are correct on 68000.
+
+Additional validation:
+- Run `cat /bin/hello | wc` in dash to exercise pipe bulk copy
+- Run `ls /bin` to exercise kprintf division (formats numbers)
+- Run levee to exercise ANSI cursor positioning end-to-end
+
+### Step 4: Review and fix any issues found
+
+Document findings in the vdp-terminal-plan.md Outcome section.
+
+---
+
+## Phase 9: Performance Optimizations — mostly done
 
 **Goal:** Bring 68000-specific assembly optimizations to hot paths.
 
-These are performance gaps identified by comparing Genix's C
-implementations against FUZIX's hand-optimized 68000 assembly. None
-are correctness issues — Genix works correctly today. These are pure
-speed improvements for when performance matters.
+**Status (2026-03-17):** 3 of 5 optimizations complete. Division fast
+path (DIVU.W), assembly memcpy/memset/memmove (MOVEM.L), and pipe bulk
+copy are implemented and tested. SRAM 16-bit I/O and VDP DMA clear are
+deferred to hardware testing.
 
-### Key Optimizations
-
-| Optimization | Expected Speedup | Lines |
-|-------------|-----------------|-------|
-| Division fast path (DIVU.W for 16-bit divisors) | 2-5x division | ~20 |
-| Assembly memcpy/memset (MOVEM.L bulk) | 4x block ops | ~40 |
-| SRAM 16-bit I/O (word writes vs byte writes) | ~20x SRAM | ~10 |
-| Pipe bulk copy (replace byte loop) | 2-4x pipe throughput | ~15 |
-| VDP DMA for scroll/clear | ~10x scroll | ~30 |
-
-### Approach
-
-Measure first, optimize only hot paths. The workbench emulator
-provides cycle counting for profiling. Optimize the inner loops that
-show up in traces, leave cold paths in C.
+| Optimization | Status | Lines |
+|-------------|--------|-------|
+| Division fast path (DIVU.W for 16-bit divisors) | **Done** | ~26 |
+| Assembly memcpy/memset (MOVEM.L bulk) | **Done** | ~192 |
+| Pipe bulk copy (replace byte loop) | **Done** | ~15 |
+| SRAM 16-bit I/O (word writes vs byte writes) | Deferred | — |
+| VDP DMA for scroll/clear | Deferred | — |
 
 ### Reference
 
 [docs/plans/optimization-plan.md](docs/plans/optimization-plan.md) — full analysis with
-FUZIX source references, cycle counts, and implementation notes for
-each optimization.
+FUZIX source references, cycle counts, implementation report, and
+lessons learned.
 
 ---
 
-## VDP Color Terminal + Curses
+## VDP Color Terminal + Curses — done
 
-**Goal:** ANSI color support in the VDP console, and a minimal curses
-library for full-screen apps.
+**Status (2026-03-17):** Complete. ANSI escape parser, bold palette,
+and curses library are implemented and tested on host. **Awaiting
+BlastEm visual validation** (see "NEXT" section above).
 
-**Difficulty:** Moderate (~200 lines kernel, ~300-500 lines curses).
-The VDP hardware already supports color — we're just not using it.
+**What shipped:**
+- ANSI escape parser in pal/megadrive/platform.c (~200 lines, 4-state machine)
+- VDP palette 3 for bold text (bright white on black, 0 VRAM cost)
+- Minimal curses library: libc/curses.c (~460 lines) + curses.h (~119 lines)
+- Device open/close dispatch, console suppression, FD_CLOEXEC
+- 108 ANSI parser tests, 36+ curses tests, 523 pipe bulk assertions, 120 syscall tests
 
-### Why
+**What's deferred:**
+- V3b: 8-color support (requires multiple font copies in VRAM, ~21 KB)
+- VDP DMA clear and SRAM 16-bit I/O (need hardware testing)
+- curses getch() timeout (VTIME support in tty_read)
 
-Color makes the terminal usable for real work: syntax-highlighted
-editors, colored ls output, shell prompts, status bars, games with
-visual distinction. A curses library unlocks full-screen TUI apps
-(tetris, snake, adventure, editors with status lines) without every
-app reimplementing screen management.
+### Reference
 
-### VDP Color: What's Needed
+[docs/plans/vdp-terminal-plan.md](docs/plans/vdp-terminal-plan.md) — full plan,
+implementation report, deviations, and remaining work.
 
-The nametable entry is a 16-bit word with palette select bits already
-present but unused:
-
-```
-Bit 15:    Priority
-Bit 13-12: Palette select (0-3) ← currently always 0
-Bit 11:    V-flip
-Bit 10:    H-flip
-Bit 9-0:   Tile index
-```
-
-**1. Palette data (~16 words in vdp.S):** Fill the 13 unused color
-slots in palette 0 with the 8 standard ANSI colors (black, red, green,
-yellow, blue, magenta, cyan, white). Use palette 3 (currently reserved)
-for the 8 bright/bold variants. That gives 16 foreground colors using
-2 palettes.
-
-**2. Attribute tracking (~5 lines in platform.c):** Add a
-`current_attr` word that `pal_console_putc()` ORs into the tile index
-before calling `plot_char()`. Palette bits encode the current color.
-
-**3. ANSI escape sequence parser (~150-200 lines in tty.c):** The TTY
-layer currently has **no escape sequence parsing** — characters go
-straight through. Need a state machine that intercepts:
-- `ESC[...m` (SGR) — set foreground/background color, bold, reset
-- `ESC[...H` (CUP) — cursor positioning (levee already emits these)
-- `ESC[J` / `ESC[K` — clear screen / clear line
-- `ESC[...A/B/C/D` — cursor movement
-
-This is independently valuable: levee already emits ANSI sequences
-for cursor positioning, and they currently go nowhere on the VDP.
-
-**4. Emulator (free):** The workbench emulator uses UART → host
-stdout. ANSI escapes pass through to the host terminal, which renders
-colors natively. No emulator changes needed.
-
-### Curses Library
-
-A minimal curses implementation for Genix (~300-500 lines in
-`libc/curses.c`):
-
-**Core API:**
-- `initscr()` / `endwin()` — setup/teardown (raw mode, clear screen)
-- `move(y, x)` / `addch(c)` / `addstr(s)` / `mvaddstr()` — output
-- `attron()` / `attroff()` / `attrset()` — color/bold attributes
-- `clear()` / `clrtoeol()` / `refresh()` — screen management
-- `getch()` — input (raw mode, escape sequence decoding)
-- `init_pair()` / `COLOR_PAIR()` — color pair management
-- `getmaxy()` / `getmaxx()` — terminal size (40×28 on MD, from env)
-
-**What we skip:** Windows/subwindows, scrolling regions, mouse,
-wide characters. One stdscr, one physical screen. This is closer
-to "minicurses" than full ncurses.
-
-**Implementation approach:** On Mega Drive, curses can either:
-- (A) Emit ANSI escapes through the TTY (works on both platforms), or
-- (B) Write directly to VDP nametable via `/dev/vdp` ioctls (faster,
-  MD-only, would need a fallback path for workbench)
-
-Option A is simpler and portable. Option B avoids the escape
-parser overhead for apps that do heavy screen updates (games).
-Decision deferred until implementation.
-
-**RAM cost:** Minimal — curses state is ~20 bytes (cursor pos,
-current attr, window size). No screen buffer needed if using
-option A (emit-as-you-go). With option B (direct VDP), a 40×28
-= 1120-byte shadow buffer would enable `refresh()` diffing.
-
-### Palette Budget
-
-```
-Palette 0: Console text (currently 3 used, 13 free → ANSI normal)
-Palette 1: Debug overlay (3 used, 13 free)
-Palette 2: Cursor sprite (3 used, 13 free)
-Palette 3: Reserved (16 free → ANSI bright/bold)
-```
-
-The font is 1bpp expanded to 4bpp at boot. Each pixel is either
-color index 1 (background) or color index 2 (foreground) within
-the selected palette. Changing palette select bits per-character
-gives different fg/bg color pairs at zero CPU cost — the VDP
-hardware does all the work.
-
-**Limitation:** With 2-color font tiles, we get colored foreground
-on black background, or inverse (colored background with black
-foreground). True arbitrary fg+bg pairs would require multiple
-copies of the font with different color indices, eating VRAM. Not
-worth it for a text terminal.
-
-### Implementation Order
-
-1. ANSI escape parser in TTY (biggest independent value)
-2. Palette data + attribute tracking (enables color on MD)
-3. Curses library (enables TUI apps)
-
-### Dependencies
-
-- No hard dependencies on other phases
-- Soft dependency: games (Tier 2) and editors benefit from curses
-- The escape parser benefits levee immediately (cursor positioning)
+---
 
 ## Remaining Optional Work
 
 Not prioritized, but would improve the system:
 
-- **Tier 2 games**: hamurabi, dopewars, startrek, adventure, tetris, snake
+- **Tier 2 games**: hamurabi, dopewars, startrek, adventure, tetris, snake (curses ready)
 - **Tier 3 text processing**: sed, diff, cal, date (needs localtime libc), ed (likely skip — levee covers the editor use case)
 - **Tier 4 languages**: BASIC interpreter, Forth, fweep (Z-machine)
 - **Development tools**: ar, make, small C compiler (from FUZIX)
 - **SA_RESTART**: auto-retry syscalls interrupted by signals
+- **V3b 8-color terminal**: 7 extra font copies for ANSI color (stubs in SGR handler ready)
+- **VDP DMA clear**: ~10x screen clear speedup (deferred to hardware)
+- **SRAM 16-bit I/O**: ~20x SRAM disk speedup (deferred to hardware)
 
 See [docs/plans/apps_to_port.md](docs/plans/apps_to_port.md) for the complete
 app porting roadmap with RAM analysis and wave breakdown.
@@ -208,8 +189,11 @@ dash Shell Port (Phase C) .... done
     |
 Line Editing (Phase D) ....... done
     |
-Phase 9 (Performance) ......... independent, can happen anytime
+Phase 9 (Performance) ......... mostly done (3/5 optimizations)
+    |
+VDP Color Terminal + Curses .. done (V1-V4 complete, host-tested)
+    |
+BlastEm Visual Review ....... ← NEXT (critical before new features)
+    |
+Tier 2 TUI Games ............ unblocked (curses ready)
 ```
-
-Phase 9 (performance) can happen anytime. VDP Color Terminal + Curses
-has no hard dependencies.

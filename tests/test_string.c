@@ -199,6 +199,119 @@ static void test_strrchr_nul(void)
     ASSERT_EQ(p - s, 2);
 }
 
+/* --- memmove overlap tests (tests assembly memmove correctness) --- */
+
+static void test_memmove_forward_overlap(void)
+{
+    /* src < dst, overlapping: copy backward needed */
+    char buf[16] = "ABCDEFGHIJKLMNOP";
+    memmove(buf + 2, buf, 10);
+    /* buf[2..11] should be "ABCDEFGHIJ", original buf[0..1] untouched */
+    ASSERT_EQ(buf[2], 'A');
+    ASSERT_EQ(buf[3], 'B');
+    ASSERT_EQ(buf[11], 'J');
+}
+
+static void test_memmove_backward_overlap(void)
+{
+    /* dst < src, overlapping: forward copy safe */
+    char buf[16] = "ABCDEFGHIJKLMNOP";
+    memmove(buf, buf + 3, 10);
+    ASSERT_EQ(buf[0], 'D');
+    ASSERT_EQ(buf[1], 'E');
+    ASSERT_EQ(buf[9], 'M');
+}
+
+static void test_memmove_no_overlap(void)
+{
+    char src[] = "hello";
+    char dst[8] = {0};
+    memmove(dst, src, 6);
+    ASSERT_STR_EQ(dst, "hello");
+}
+
+static void test_memmove_zero_length(void)
+{
+    char buf[4] = "ABC";
+    memmove(buf + 1, buf, 0);
+    ASSERT_STR_EQ(buf, "ABC");
+}
+
+static void test_memmove_returns_dest(void)
+{
+    char s[8], d[8];
+    ASSERT(memmove(d, s, 4) == d);
+}
+
+/* --- large buffer tests (exercises MOVEM.L paths on 68000) --- */
+
+static void test_memcpy_large(void)
+{
+    /* 512 bytes — the common block size, triggers bulk copy path */
+    char src[512], dst[512];
+    for (int i = 0; i < 512; i++)
+        src[i] = (char)(i & 0xFF);
+    memcpy(dst, src, 512);
+    ASSERT_EQ(memcmp(dst, src, 512), 0);
+}
+
+static void test_memcpy_medium(void)
+{
+    /* 48 bytes — between byte and MOVEM.L thresholds */
+    char src[48], dst[48];
+    for (int i = 0; i < 48; i++)
+        src[i] = (char)(i + 0x41);
+    memcpy(dst, src, 48);
+    ASSERT_EQ(memcmp(dst, src, 48), 0);
+}
+
+static void test_memset_large(void)
+{
+    char buf[512];
+    memset(buf, 0xAA, 512);
+    for (int i = 0; i < 512; i++)
+        ASSERT_EQ((unsigned char)buf[i], 0xAA);
+}
+
+static void test_memset_zero_large(void)
+{
+    char buf[256];
+    memset(buf, 0xFF, 256);  /* poison */
+    memset(buf, 0, 256);
+    for (int i = 0; i < 256; i++)
+        ASSERT_EQ(buf[i], 0);
+}
+
+static void test_memcpy_one_byte(void)
+{
+    char src = 'X', dst = 0;
+    memcpy(&dst, &src, 1);
+    ASSERT_EQ(dst, 'X');
+}
+
+static void test_memset_one_byte(void)
+{
+    char buf = 0;
+    memset(&buf, 'Z', 1);
+    ASSERT_EQ(buf, 'Z');
+}
+
+static void test_memcpy_sentinel(void)
+{
+    /* Verify memcpy doesn't write past the end */
+    char buf[20];
+    memset(buf, 0xCC, 20);
+    char src[10];
+    memset(src, 'A', 10);
+    memcpy(buf + 2, src, 10);
+    ASSERT_EQ((unsigned char)buf[0], 0xCC);
+    ASSERT_EQ((unsigned char)buf[1], 0xCC);
+    ASSERT_EQ(buf[2], 'A');
+    ASSERT_EQ(buf[11], 'A');
+    ASSERT_EQ((unsigned char)buf[12], 0xCC);
+    ASSERT_EQ((unsigned char)buf[19], 0xCC);
+}
+
 /* --- main --- */
 int main(void)
 {
@@ -232,6 +345,22 @@ int main(void)
     RUN_TEST(test_strrchr_found);
     RUN_TEST(test_strrchr_not_found);
     RUN_TEST(test_strrchr_nul);
+
+    /* memmove overlap tests */
+    RUN_TEST(test_memmove_forward_overlap);
+    RUN_TEST(test_memmove_backward_overlap);
+    RUN_TEST(test_memmove_no_overlap);
+    RUN_TEST(test_memmove_zero_length);
+    RUN_TEST(test_memmove_returns_dest);
+
+    /* large buffer tests (exercises 68000 MOVEM.L paths on cross-build) */
+    RUN_TEST(test_memcpy_large);
+    RUN_TEST(test_memcpy_medium);
+    RUN_TEST(test_memset_large);
+    RUN_TEST(test_memset_zero_large);
+    RUN_TEST(test_memcpy_one_byte);
+    RUN_TEST(test_memset_one_byte);
+    RUN_TEST(test_memcpy_sentinel);
 
     TEST_REPORT();
 }
