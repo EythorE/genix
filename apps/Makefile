@@ -21,7 +21,7 @@ PROGRAMS = hello echo cat wc head true false \
            strings fold expand unexpand paste comm seq tac \
            grep od env expr \
            cp mv rm mkdir rmdir touch kill which uname clear \
-           more sort find xargs meminfo
+           more sort find xargs meminfo vdptest
 
 # Cancel make's built-in rule that compiles .c directly to executable
 %: %.c

@@ -1,6 +1,6 @@
 # Genix top-level Makefile
 
-.PHONY: all emu kernel tools libc apps disk disk-md run test test-opcodes test-dash test-levee test-emu test-md test-md-auto test-md-screenshot test-md-imshow test-all megadrive clean
+.PHONY: all emu kernel tools libc apps disk disk-md run test test-opcodes test-dash test-levee test-emu test-md test-md-auto test-md-screenshot test-md-vdptest test-md-imshow test-all megadrive clean
 
 all: emu kernel tools apps disk
 
@@ -36,6 +36,7 @@ CORE_BINS = apps/hello apps/echo apps/cat apps/wc apps/head apps/true apps/false
             apps/cp apps/mv apps/rm apps/mkdir apps/rmdir apps/touch \
             apps/kill apps/which apps/uname apps/clear \
             apps/more apps/sort apps/find apps/xargs apps/meminfo \
+            apps/vdptest \
             apps/dash/dash
 
 # All app binaries (levee is workbench-only — too large for MD 31KB user space)
@@ -170,6 +171,43 @@ test-md-imshow: libc tools
 	kill $$xvfb_pid 2>/dev/null; wait $$xvfb_pid 2>/dev/null; \
 	if [ -f test-md-imshow.png ]; then \
 		echo "=== imshow screenshot saved to test-md-imshow.png ==="; \
+	else \
+		echo "=== WARNING: no screenshot captured (missing xdotool/scrot?) ==="; \
+	fi
+	@$(MAKE) -C pal/megadrive clean
+	@$(MAKE) -C pal/megadrive DISK_IMG=../../disk-md.img
+
+# VDP terminal test — spawn vdptest in no-wait mode, capture the ANSI
+# escape sequence test pattern. Validates the VDP terminal parser,
+# bold palette, cursor positioning, screen/line clear, and scroll.
+# Produces test-md-vdptest.png for visual inspection.
+# Requires: Xvfb, xdotool, scrot, BlastEm.
+# Always restores the normal ROM when done, even on failure.
+test-md-vdptest: libc tools
+	@$(MAKE) -C apps
+	@tools/mkfs.minifs disk-md.img 512 $(CORE_BINS)
+	@$(MAKE) -C pal/megadrive clean
+	@$(MAKE) -C pal/megadrive DISK_IMG=../../disk-md.img EXTRA_CFLAGS=-DVDP_TEST
+	@echo "=== test-md-vdptest: booting VDP test ROM under Xvfb ==="
+	@mkdir -p $(BLASTEM_CFG_DIR); \
+	printf '$(BLASTEM_HEADLESS_CFG)' > $(BLASTEM_CFG_DIR)/blastem.cfg; \
+	Xvfb :60 -screen 0 640x480x24 >/dev/null 2>&1 & xvfb_pid=$$!; \
+	sleep 1; \
+	HOME=/tmp/blastem-test-home DISPLAY=:60 LIBGL_ALWAYS_SOFTWARE=1 SDL_AUDIODRIVER=dummy \
+		timeout -k 3 15 $(BLASTEM) pal/megadrive/genix-md.bin >/dev/null 2>&1 & blastem_pid=$$!; \
+	sleep 7; \
+	wid=$$(DISPLAY=:60 xdotool search --name "BlastEm" 2>/dev/null | tail -1); \
+	if [ -n "$$wid" ]; then \
+		DISPLAY=:60 xdotool windowfocus --sync "$$wid" 2>/dev/null; sleep 0.5; \
+		DISPLAY=:60 scrot -u test-md-vdptest.png 2>/dev/null || \
+		DISPLAY=:60 scrot test-md-vdptest.png 2>/dev/null || true; \
+	else \
+		DISPLAY=:60 scrot test-md-vdptest.png 2>/dev/null || true; \
+	fi; \
+	kill $$blastem_pid 2>/dev/null; kill -9 $$blastem_pid 2>/dev/null; wait $$blastem_pid 2>/dev/null; \
+	kill $$xvfb_pid 2>/dev/null; wait $$xvfb_pid 2>/dev/null; \
+	if [ -f test-md-vdptest.png ]; then \
+		echo "=== VDP test screenshot saved to test-md-vdptest.png ==="; \
 	else \
 		echo "=== WARNING: no screenshot captured (missing xdotool/scrot?) ==="; \
 	fi

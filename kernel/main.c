@@ -15,6 +15,9 @@ static void autotest(void);
 #ifdef IMSHOW_TEST
 static void imshow_test(void);
 #endif
+#ifdef VDP_TEST
+static void vdp_test(void);
+#endif
 
 /* Timer frequency */
 #define TIMER_HZ 100
@@ -112,7 +115,11 @@ void kmain(void)
 
     kputs("Starting shell...\n");
 
-#ifdef IMSHOW_TEST
+#ifdef VDP_TEST
+    vdp_test();
+    for (;;)
+        __asm__ volatile("nop");
+#elif defined(IMSHOW_TEST)
     imshow_test();
     for (;;)
         __asm__ volatile("nop");
@@ -834,6 +841,34 @@ static void imshow_test(void)
     } else {
         kprintf("imshow spawn failed: %d\n", pid);
         kputs("IMSHOW_TEST FAILED\n");
+    }
+}
+#endif
+
+#ifdef VDP_TEST
+/*
+ * VDP_TEST — spawn vdptest in no-wait mode for screenshot capture.
+ * Used by `make test-md-vdptest` to validate the VDP terminal ANSI
+ * escape parser, bold palette, cursor positioning, and screen clearing.
+ * Produces test-md-vdptest.png for visual inspection.
+ */
+static void vdp_test(void)
+{
+    kputs("=== VDP_TEST: spawning vdptest -n ===\n");
+    const char *argv[] = { "/bin/vdptest", "-n", NULL };
+    int pid = do_spawn("/bin/vdptest", argv);
+    if (pid > 0) {
+        int status = -1;
+        do_waitpid(pid, &status, 0);
+        int exitcode = (status >> 8) & 0xFF;
+        kprintf("vdptest exited with code %d\n", exitcode);
+        if (exitcode == 0)
+            kputs("VDP_TEST PASSED\n");
+        else
+            kputs("VDP_TEST FAILED\n");
+    } else {
+        kprintf("vdptest spawn failed: %d\n", pid);
+        kputs("VDP_TEST FAILED\n");
     }
 }
 #endif
