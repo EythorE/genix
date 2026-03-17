@@ -113,6 +113,31 @@ run_test "echo | cat pipe" \
 run_test "echo | wc pipe" \
     "echo hello | wc" "1"
 
+run_test "3-stage pipe: echo | cat | cat" \
+    "echo three_stage | cat | cat" "three_stage"
+
+run_test "3-stage pipe: echo | cat | grep" \
+    "echo greppable | cat | grep greppable" "greppable"
+
+run_test "4-stage pipe: echo | cat | cat | cat" \
+    "echo four_stage | cat | cat | cat" "four_stage"
+
+run_test "pipe + wc -l" \
+    "echo hello | wc -l" "1"
+
+echo ""
+echo "--- File operations ---"
+run_test "rmdir command exists" \
+    "rmdir --help 2>&1; echo done" "done"
+
+run_test "mkdir + rmdir" \
+    "mkdir /tmp/testrmdir
+rmdir /tmp/testrmdir
+echo ok" "ok"
+
+run_test "cat error includes filename" \
+    "cat nonexistent_file 2>&1" "nonexistent_file"
+
 echo ""
 echo "--- I/O redirection ---"
 run_test "output redirection >" \

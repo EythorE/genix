@@ -47,6 +47,7 @@ apps/cp
 apps/mv
 apps/rm
 apps/mkdir
+apps/rmdir
 apps/touch
 apps/kill
 apps/which

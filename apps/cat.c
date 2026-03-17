@@ -1,12 +1,9 @@
 /*
  * cat — concatenate and print files
  */
-int open(const char *path, int flags);
-int read(int fd, void *buf, int count);
-int write(int fd, const void *buf, int count);
-int close(int fd);
-
-#define O_RDONLY 0
+#include <stdio.h>
+#include <fcntl.h>
+#include <unistd.h>
 
 static void cat_fd(int fd)
 {
@@ -24,15 +21,16 @@ int main(int argc, char **argv)
         return 0;
     }
 
+    int ret = 0;
     for (int i = 1; i < argc; i++) {
         int fd = open(argv[i], O_RDONLY);
         if (fd < 0) {
-            const char *msg = "cat: cannot open file\n";
-            write(2, msg, 22);
-            return 1;
+            fprintf(stderr, "cat: %s: No such file or directory\n", argv[i]);
+            ret = 1;
+            continue;
         }
         cat_fd(fd);
         close(fd);
     }
-    return 0;
+    return ret;
 }
