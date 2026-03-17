@@ -976,3 +976,101 @@ V5.5 SRAM 16-bit I/O               ← perf, independent
 
 V1 and V2 are the critical path. Everything else can be reordered
 or deferred without impact.
+
+---
+
+## Outcome
+
+**Date:** 2026-03-17
+**Status:** V1-V4 complete, V5 partially complete
+
+All five phases were implemented in a single session. The implementation
+closely followed the plan with minor deviations noted below.
+
+### What was built
+
+**V1 — Device driver fixes (all 3 items):**
+- Device open/close dispatch added to sys_open(), sys_close(), and do_exit()
+  in kernel/proc.c (~30 lines)
+- Console output suppression via `vdp_graphics_mode` flag in platform.c
+  and dev_vdp.c (~10 lines)
+- Ctrl-Z safety: gfx_open() now saves termios and disables ISIG; gfx_close()
+  restores it (~10 lines in libc/gfx.c)
+
+**V2 — ANSI escape parser:**
+- Full state machine in pal/megadrive/platform.c (~200 lines)
+- States: NORMAL → ESC_SEEN → CSI_PARAM → CSI_PRIVATE
+- All sequences from the plan implemented: CUP, CUU/CUD/CUF/CUB, ED, EL,
+  SGR (bold, reset, bright fg), SCP/RCP, DSR, DECTCEM show/hide cursor
+- Parser location: platform.c as recommended (MD-only, workbench passes
+  ANSI through to host terminal natively)
+
+**V3a — Normal + bold palettes:**
+- Palette 3 updated in vdp.S: color 1 = black, color 2 = bright white (0x0EEE)
+- SGR bold maps to palette 3 via `current_attr = 3u << 13`
+- 0 VRAM cost as predicted
+
+**V4 — Minimal curses library:**
+- libc/curses.c: ~460 lines (larger than estimated 300-400)
+- libc/include/curses.h: ~107 lines
+- Full API as planned: initscr/endwin, move/addch/addstr/mvaddstr,
+  attron/attroff/attrset, start_color/init_pair/COLOR_PAIR,
+  clear/clrtoeol/clrtobot, getch with arrow key decoding,
+  raw/noraw/cbreak/nocbreak/noecho/echo_curses/keypad, curs_set
+- Implementation: Option A (emit ANSI escapes via write(1,...)) as decided
+- Added WINDOW struct with keypad_on field (not in original design)
+
+**V5 — Performance optimizations:**
+- V5.2 Division fast path: DIVU.W fast path added to __udivsi3 and __umodsi3
+  in kernel/divmod.S (~13 lines each). Checks if both operands fit in 16 bits.
+- V5.3 Assembly memcpy/memset: New libc/memops.S (~205 lines) with MOVEM.L
+  bulk transfers (8 regs = 32 bytes/iter). Handles alignment, >64K counts.
+  Replaced C implementations in libc/string.c. Also includes assembly memmove.
+- V5.4 Pipe bulk copy: Replaced byte-at-a-time loop with contiguous-chunk
+  memcpy in kernel/proc.c pipe_read/pipe_write.
+- V5.1 VDP DMA clear: **Deferred** — requires 68000 assembly that can't be
+  tested on host. Better to implement alongside real hardware testing.
+- V5.5 SRAM 16-bit I/O: **Deferred** — hardware-dependent, SRAM uses
+  byte-accessible odd addresses only, needs real hardware verification.
+
+### Additional work (from roadmap Tier 0 and 1)
+
+Bug fixes implemented as prerequisites:
+- PID bounds check in do_spawn (Tier 0.1)
+- XIP memory leak fix in do_exec (Tier 0.2)
+- fs_read/fs_write overflow guards (Tier 0.3)
+- Kstack canary panic interrupt disable (Tier 0.4)
+- Static assert for MAXPROC power-of-2 (Tier 1.5)
+- FD_CLOEXEC implementation in proc struct + do_exec (Tier 4.3)
+- TTY winsize from PAL functions (Tier 4.2)
+- PAL console_rows/console_cols functions added to pal.h
+
+### Testing
+
+- tests/test_ansi.c: 108 tests exercising the ANSI parser state machine
+  with mock VDP functions (plot_char, clear_across, clear_lines, scroll_up,
+  cursor_on, cursor_off). Tests plain text, newlines, tabs, backspace,
+  CSI sequences, SGR attributes, word wrap, scroll, bounds clamping.
+- tests/test_curses.c: 12 test functions with 36+ assertions. Mocks
+  write(), tcgetattr(), tcsetattr(), ioctl() to capture and verify ANSI
+  escape output.
+- tests/test_pipe_bulk.c: 6 test functions with 523 assertions testing
+  pipe bulk copy correctness (basic, large, partial, wraparound, full
+  boundary, single byte).
+- All 20 test suites pass: 5,962 total assertions, 0 failures.
+
+### Deviations from plan
+
+1. **Parser in platform.c, not tty.c:** Matched the plan's recommendation
+   (Section V2 "Recommendation: Parser in pal_console_putc()"). Q2 resolved.
+2. **Curses larger than estimated:** 460 lines vs 300-400 estimated. The
+   getch() escape sequence decoder and color pair management added bulk.
+3. **V3b (8-color) not implemented:** Only V3a (normal + bold) shipped.
+   Q1 resolved: start with V3a as recommended.
+4. **memops.S much larger than estimated:** 205 lines vs 40 estimated.
+   Includes full memmove with backward copy, alignment handling, and
+   >64K count support via subi.l #0x10000 loop.
+5. **Q3 (getch timeout) deferred:** curses getch() does simple blocking
+   read with escape sequence detection. No VTIME support added.
+6. **Q4 resolved:** V5 optimizations were included in this plan execution
+   rather than split into a separate effort.

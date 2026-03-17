@@ -2,7 +2,7 @@
 CC = gcc
 CFLAGS = -Wall -Wextra -g -O0 -Wno-builtin-declaration-mismatch -I../pal
 
-TESTS = test_string test_mem test_exec test_proc test_libc test_vdp test_signal test_redir test_tty test_fs test_buf test_kprintf test_pipe test_reloc test_dash test_abi test_lineedit test_ansi test_curses test_pipe_bulk
+TESTS = test_string test_mem test_exec test_proc test_libc test_vdp test_signal test_redir test_tty test_fs test_buf test_kprintf test_pipe test_reloc test_dash test_abi test_lineedit test_ansi test_curses test_pipe_bulk test_syscalls
 
 all: $(TESTS)
 
@@ -65,6 +65,9 @@ test_curses: test_curses.c testutil.h ../libc/curses.c ../libc/include/curses.h
 
 test_pipe_bulk: test_pipe_bulk.c testutil.h
 	$(CC) $(CFLAGS) -o $@ test_pipe_bulk.c
+
+test_syscalls: test_syscalls.c testutil.h
+	$(CC) $(CFLAGS) -o $@ test_syscalls.c
 
 check: $(TESTS)
 	@fail=0; \
