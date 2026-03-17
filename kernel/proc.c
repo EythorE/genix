@@ -371,6 +371,9 @@ void do_exit(int code)
                         pipe_close_write(p);
                     of->inode = NULL;
                 } else if (of->inode) {
+                    /* Call device close handler */
+                    if (of->inode->type == FT_DEV && of->inode->dev_major < NDEV)
+                        devtab[of->inode->dev_major].close(of->inode->dev_minor);
                     fs_iput(of->inode);
                     of->inode = NULL;
                 }
@@ -622,9 +625,10 @@ int do_spawn(const char *path, const char **argv)
     for (int i = 0; i < NSIG; i++)
         child->sig_handler[i] = SIG_DFL;
 
-    /* Copy and refcount file descriptors */
+    /* Copy and refcount file descriptors (including per-fd flags) */
     for (int i = 0; i < MAXFD; i++) {
         child->fd[i] = curproc->fd[i];
+        child->fd_flags[i] = curproc->fd_flags[i];
         if (child->fd[i])
             child->fd[i]->refcount++;
     }
@@ -857,6 +861,17 @@ static int sys_open(uint32_t path_addr, uint32_t flags)
         }
     }
 
+    /* Call device open handler for device files */
+    if (ip->type == FT_DEV) {
+        if (ip->dev_major < NDEV) {
+            int err = devtab[ip->dev_major].open(ip->dev_minor);
+            if (err < 0) {
+                fs_iput(ip);
+                return err;
+            }
+        }
+    }
+
     if (flags & O_TRUNC && ip->type == FT_FILE) {
         ip->size = 0;
         ip->dirty = 1;
@@ -900,6 +915,9 @@ static int sys_close(uint32_t fd)
                 pipe_close_write(p);
             of->inode = NULL;
         } else if (of->inode) {
+            /* Call device close handler */
+            if (of->inode->type == FT_DEV && of->inode->dev_major < NDEV)
+                devtab[of->inode->dev_major].close(of->inode->dev_minor);
             fs_iput(of->inode);
             of->inode = NULL;
         }
@@ -1457,9 +1475,10 @@ int32_t syscall_dispatch(uint32_t num, uint32_t a1, uint32_t a2,
                 fcntl_of->refcount--;
             return fcntl_fd;
         }
-        case 1: /* F_GETFD: no cloexec support yet */
-            return 0;
-        case 2: /* F_SETFD: accept but ignore */
+        case 1: /* F_GETFD */
+            return curproc->fd_flags[a1];
+        case 2: /* F_SETFD */
+            curproc->fd_flags[a1] = (uint8_t)(a3 & 1);
             return 0;
         case 3: /* F_GETFL: return open flags */
             return fcntl_of->flags & 0x0FFF; /* mask out internal pipe bits */

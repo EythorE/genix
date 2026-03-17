@@ -65,6 +65,14 @@ static int cursor_y = 0;
 /* Tick counter — incremented by VBlank interrupt */
 static volatile uint32_t md_ticks = 0;
 
+/* Graphics mode flag — suppress console output when user owns VDP */
+static int vdp_graphics_mode = 0;
+
+void pal_vdp_set_graphics_mode(int on)
+{
+    vdp_graphics_mode = on;
+}
+
 /* ============================================================
  * PAL interface implementation
  * ============================================================ */
@@ -107,8 +115,13 @@ void pal_init(void)
     cursor_y = 0;
 }
 
+int pal_console_rows(void) { return ROWS; }
+int pal_console_cols(void) { return COLS; }
+
 void pal_console_putc(char c)
 {
+    if (vdp_graphics_mode)
+        return;  /* suppress console output in graphics mode */
     if (c == '\n') {
         cursor_x = 0;
         cursor_y++;

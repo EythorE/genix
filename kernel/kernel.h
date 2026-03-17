@@ -400,6 +400,7 @@ struct proc {
     uint32_t sig_pending;  /* bitmask of pending signals */
     uint32_t sig_handler[NSIG]; /* signal handlers (0=SIG_DFL, 1=SIG_IGN, else addr) */
     struct ofile *fd[MAXFD];
+    uint8_t  fd_flags[MAXFD];     /* per-fd flags (FD_CLOEXEC) */
     uint32_t kstack[KSTACK_WORDS]; /* per-process kernel stack */
 };
 

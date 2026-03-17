@@ -41,8 +41,8 @@ void tty_init(void)
         struct tty *t = &tty_table[i];
         t->termios = default_termios;
         memcpy(t->termios.c_cc, default_cc, NCCS);
-        t->winsize.ws_row = 28;   /* Mega Drive VDP: 28 rows */
-        t->winsize.ws_col = 40;   /* Mega Drive VDP: 40 cols */
+        t->winsize.ws_row = pal_console_rows();
+        t->winsize.ws_col = pal_console_cols();
         t->winsize.ws_xpixel = 0;
         t->winsize.ws_ypixel = 0;
         t->inq_head = 0;

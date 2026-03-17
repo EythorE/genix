@@ -58,6 +58,9 @@ static void wait_vblank(void)
 extern void VDP_reinit(void);
 extern void VDP_clear(void);
 
+/* Console suppression — defined in platform.c */
+extern void pal_vdp_set_graphics_mode(int on);
+
 int vdp_open(int minor)
 {
     (void)minor;
@@ -71,6 +74,7 @@ int vdp_open(int minor)
     else
         vdp_owner = 1;  /* kernel context */
 
+    pal_vdp_set_graphics_mode(1);
     return 0;
 }
 
@@ -79,6 +83,7 @@ int vdp_close(int minor)
     (void)minor;
 
     /* Restore text console on close */
+    pal_vdp_set_graphics_mode(0);
     VDP_reinit();
     vdp_owner = 0;
 

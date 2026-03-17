@@ -41,6 +41,9 @@ void pal_init(void)
     /* Nothing to do — emulator handles HW init */
 }
 
+int pal_console_rows(void) { return 24; }  /* standard terminal */
+int pal_console_cols(void) { return 80; }
+
 void pal_console_putc(char c)
 {
     /* Wait for TX ready (always ready in emu, but be correct) */
