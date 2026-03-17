@@ -196,12 +196,26 @@ void pipe_close_read(struct pipe *p)
 {
     if (p->readers > 0)
         p->readers--;
+    /* Wake any blocked writer so it sees readers==0 and returns EPIPE */
+    if (p->readers == 0 && p->write_waiting && p->write_waiting <= MAXPROC) {
+        struct proc *wp = &proctab[p->write_waiting - 1];
+        if (wp->state == P_SLEEPING)
+            wp->state = P_READY;
+        p->write_waiting = 0;
+    }
 }
 
 void pipe_close_write(struct pipe *p)
 {
     if (p->writers > 0)
         p->writers--;
+    /* Wake any blocked reader so it sees writers==0 and returns EOF (0) */
+    if (p->writers == 0 && p->read_waiting && p->read_waiting <= MAXPROC) {
+        struct proc *rp = &proctab[p->read_waiting - 1];
+        if (rp->state == P_SLEEPING)
+            rp->state = P_READY;
+        p->read_waiting = 0;
+    }
 }
 
 int do_pipe(int *fds)

@@ -290,6 +290,12 @@ These are lessons learned from debugging sessions (documented in full in
   new flags. Assembly files (crt0.S, syscalls.S) are exempt — they don't
   touch a5.
 
+- **Pipe close must wake blocked processes**: `pipe_close_read()` and
+  `pipe_close_write()` must wake any process sleeping on the other end.
+  Without this, pipelines hang when one end exits while the other is
+  blocked. Any kernel state change that affects a blocking condition
+  (readers/writers count) must notify waiters.
+
 ## Auto-Memory Rules
 
 Do NOT add reference documentation to this file. If you learn
