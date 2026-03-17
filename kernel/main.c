@@ -333,7 +333,7 @@ static void autotest(void)
     {
         struct winsize ws;
         int32_t r = tty_ioctl(0, TIOCGWINSZ, &ws);
-        if (r == 0 && ws.ws_row == 28 && ws.ws_col == 40) {
+        if (r == 0 && ws.ws_row == pal_console_rows() && ws.ws_col == pal_console_cols()) {
             kputs("PASS\n");
             pass++;
         } else {
