@@ -1466,6 +1466,53 @@ object files linked into the same binary must be updated. Separate
 subdirectory Makefiles are easy to miss. A build-system-level check
 (e.g., scanning all .o files for a5 usage) would catch this class of bug.
 
+### Bug 19: memops.S — Illegal OR.L with Address Register
+
+**Symptom:** `libc/memops.S` failed to assemble with m68k-elf-gcc:
+```
+memops.S:57: Error: operands mismatch -- statement `or.l %a1,%d0' ignored
+memops.S:133: Error: operands mismatch -- statement `or.l %a1,%d0' ignored
+memops.S:136: Error: operands mismatch -- statement `or.l %a1,%d0' ignored
+```
+Three call sites: the memcpy alignment check and two places in the
+memset byte-replication sequence.
+
+**Root cause:** The 68000 `OR` instruction does not accept an address
+register (An) as a source or destination operand. Only data registers
+(Dn) are valid. The code used `or.l %a1,%d0` to OR two pointer values
+together and to combine byte-replicated fill values. This is a legal
+instruction on the 68020+ but not on the 68000.
+
+**Underlying mis-assumption:** The author was likely thinking in terms
+of "register" generically — on many architectures (ARM, x86, RISC-V),
+all general-purpose registers are interchangeable for ALU operations.
+The 68000's split between address registers (An) and data registers
+(Dn) is unusual: address registers support MOVE, ADD, SUB, CMP, and
+addressing modes, but NOT bitwise operations (AND, OR, EOR) or shifts.
+The assembler accepted `move.l %a1,%d0` (legal) but rejected
+`or.l %a1,%d0` (illegal), which made it easy to assume all operations
+work on all registers.
+
+**Why it wasn't caught earlier:** The host test suite compiles
+memops.S with the native x86 compiler — the host tests use C
+implementations from string.c, not the 68000 assembly. The assembly
+is only compiled during `make kernel` / `make megadrive` / libc
+cross-compilation. If the cross-toolchain wasn't installed in the
+development environment, the bug was invisible.
+
+**Fix:** Replaced all `or.l %a1,%d0` with data-register equivalents:
+- memcpy: `move.l %a1,%d1; or.l %d1,%d0` (borrow d1, restore count
+  from stack afterward)
+- memset: `move.l %d0,%d1; ... or.l %d1,%d0` (use d1 as temp —
+  count is re-fetched from the stack later in the alignment section)
+
+**Lesson:** On the 68000, address registers are NOT general-purpose.
+Bitwise operations (AND, OR, EOR, NOT) and shifts only work on data
+registers. When writing 68000 assembly, always route values through a
+data register before applying bitwise logic. The assembler catches
+this, but only during cross-compilation — ensure the cross-build step
+runs before committing any assembly changes.
+
 ### Bug 18: Variable-Size Allocator — Zero Heap Space
 
 **Symptom:** After replacing the fixed-slot allocator with `umem_alloc`,

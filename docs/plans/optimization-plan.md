@@ -684,7 +684,18 @@ Not Applicable" sections remain accurate — no changes needed there.
    code. The plan's 40-line estimate was for a minimal version without
    these features. In practice, you need all of them.
 
-3. **Pipe bulk copy is a bigger win than expected.** Shell pipelines
+3. **68000 address registers reject bitwise operations.** memops.S
+   shipped with `or.l %a1,%d0` in three places — legal on 68020+ but
+   rejected by the 68000 assembler. The underlying mistake was treating
+   An and Dn as interchangeable for ALU ops. On the 68000, AND/OR/EOR/
+   NOT/shifts only accept data registers. The bug was invisible during
+   development because the cross-toolchain wasn't always installed in
+   the dev environment, and host tests use C implementations, not the
+   68000 assembly. **Rule: always run `make kernel` (cross-build) before
+   committing any assembly changes.** See HISTORY.md Bug 19 for full
+   details.
+
+4. **Pipe bulk copy is a bigger win than expected.** Shell pipelines
    like `cat file | grep pattern` transfer hundreds of bytes per
    syscall. The 4x memcpy speedup compounds with the 2-4x reduction
    in loop iterations.
