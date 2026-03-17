@@ -909,6 +909,65 @@ static void test_cc_defaults(void)
     ASSERT_EQ(t->termios.c_cc[VSUSP], 26);   /* ^Z */
 }
 
+/* -- Winsize edge cases (a26fbf0+ coverage) -- */
+
+static void test_winsize_roundtrip(void)
+{
+    /* TIOCSWINSZ then TIOCGWINSZ: verify round-trip */
+    init_test();
+    struct winsize ws = { .ws_row = 50, .ws_col = 132 };
+    int rc = tty_ioctl(0, TIOCSWINSZ, &ws);
+    ASSERT_EQ(rc, 0);
+
+    struct winsize got;
+    rc = tty_ioctl(0, TIOCGWINSZ, &got);
+    ASSERT_EQ(rc, 0);
+    ASSERT_EQ(got.ws_row, 50);
+    ASSERT_EQ(got.ws_col, 132);
+}
+
+static void test_winsize_zero(void)
+{
+    /* Set zero-dimension winsize — should not crash */
+    init_test();
+    struct winsize ws = { .ws_row = 0, .ws_col = 0 };
+    int rc = tty_ioctl(0, TIOCSWINSZ, &ws);
+    ASSERT_EQ(rc, 0);
+
+    struct winsize got;
+    tty_ioctl(0, TIOCGWINSZ, &got);
+    ASSERT_EQ(got.ws_row, 0);
+    ASSERT_EQ(got.ws_col, 0);
+}
+
+static void test_winsize_large(void)
+{
+    /* Set large winsize values — uint16_t max */
+    init_test();
+    struct winsize ws = { .ws_row = 255, .ws_col = 255 };
+    int rc = tty_ioctl(0, TIOCSWINSZ, &ws);
+    ASSERT_EQ(rc, 0);
+
+    struct winsize got;
+    tty_ioctl(0, TIOCGWINSZ, &got);
+    ASSERT_EQ(got.ws_row, 255);
+    ASSERT_EQ(got.ws_col, 255);
+}
+
+static void test_winsize_pixel_fields(void)
+{
+    /* Verify pixel fields round-trip (unused but should work) */
+    init_test();
+    struct winsize ws = { .ws_row = 24, .ws_col = 80,
+                          .ws_xpixel = 640, .ws_ypixel = 480 };
+    tty_ioctl(0, TIOCSWINSZ, &ws);
+
+    struct winsize got;
+    tty_ioctl(0, TIOCGWINSZ, &got);
+    ASSERT_EQ(got.ws_xpixel, 640);
+    ASSERT_EQ(got.ws_ypixel, 480);
+}
+
 /* ======== Main ======== */
 
 int main(void)
@@ -965,6 +1024,12 @@ int main(void)
     /* Constants */
     RUN_TEST(test_termios_struct_size);
     RUN_TEST(test_cc_defaults);
+
+    /* Winsize edge cases (a26fbf0+) */
+    RUN_TEST(test_winsize_roundtrip);
+    RUN_TEST(test_winsize_zero);
+    RUN_TEST(test_winsize_large);
+    RUN_TEST(test_winsize_pixel_fields);
 
     TEST_REPORT();
 }

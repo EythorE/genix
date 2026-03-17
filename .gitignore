@@ -82,6 +82,7 @@ tests/test_ansi
 tests/test_curses
 tests/test_pipe_bulk
 tests/test_syscalls
+tests/test_divmod
 test-md-screenshot*.png
 test-md-imshow*.png
 test-md-vdptest*.png

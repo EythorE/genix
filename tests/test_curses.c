@@ -315,6 +315,115 @@ static void test_endwin(void)
     ASSERT(output_contains("\033[?25h"));
 }
 
+/* ---- Additional tests for a26fbf0+ coverage ---- */
+
+static void test_printw(void)
+{
+    reset_output();
+    initscr();
+    reset_output();
+
+    /* printw emits the format string literally (no real formatting) */
+    printw("Score: %d");
+    ASSERT(output_contains("Score: %d"));
+
+    endwin();
+}
+
+static void test_attron_reverse(void)
+{
+    reset_output();
+    initscr();
+    reset_output();
+
+    attron(A_REVERSE);
+    ASSERT(stdscr->attrs & A_REVERSE);
+    /* Should emit SGR 7 for reverse */
+    ASSERT(output_contains(";7m") || output_contains("7m"));
+
+    endwin();
+}
+
+static void test_attrset(void)
+{
+    reset_output();
+    initscr();
+    attron(A_BOLD);
+    reset_output();
+
+    attrset(A_NORMAL);
+    ASSERT_EQ(stdscr->attrs, A_NORMAL);
+    ASSERT(output_contains("\033[0m"));
+
+    endwin();
+}
+
+static void test_color_pair_fg_bg(void)
+{
+    reset_output();
+    initscr();
+    start_color();
+    init_pair(2, COLOR_GREEN, COLOR_BLUE);
+    reset_output();
+
+    attron(COLOR_PAIR(2));
+    /* COLOR_GREEN = 2 → SGR 32; COLOR_BLUE = 4 → SGR 44 */
+    ASSERT(output_contains(";32"));
+    ASSERT(output_contains(";44"));
+
+    endwin();
+}
+
+static void test_move_out_of_bounds(void)
+{
+    reset_output();
+    initscr();
+    reset_output();
+
+    /* Move to negative → should clamp or return ERR */
+    int ret = move(-1, -1);
+    /* Implementation may clamp or reject; verify no crash */
+    (void)ret;
+    /* Move to (0,0) should work */
+    ret = move(0, 0);
+    ASSERT_EQ(ret, OK);
+    ASSERT_EQ(stdscr->cur_y, 0);
+    ASSERT_EQ(stdscr->cur_x, 0);
+
+    endwin();
+}
+
+static void test_init_pair_and_has_colors(void)
+{
+    reset_output();
+    initscr();
+
+    int ret = start_color();
+    ASSERT_EQ(ret, OK);
+    ASSERT(has_colors());
+
+    ret = init_pair(1, COLOR_RED, COLOR_BLACK);
+    ASSERT_EQ(ret, OK);
+
+    endwin();
+}
+
+static void test_mvaddch(void)
+{
+    reset_output();
+    initscr();
+    reset_output();
+
+    int ret = mvaddch(2, 5, 'X');
+    ASSERT_EQ(ret, OK);
+    ASSERT_EQ(stdscr->cur_y, 2);
+    /* cur_x should be 6 (5 + 1 after addch) */
+    ASSERT_EQ(stdscr->cur_x, 6);
+    ASSERT(output_contains("X"));
+
+    endwin();
+}
+
 /* ---- Main ---- */
 int main(void)
 {
@@ -332,6 +441,15 @@ int main(void)
     RUN_TEST(test_color_pair);
     RUN_TEST(test_curs_set);
     RUN_TEST(test_endwin);
+
+    /* Additional tests for a26fbf0+ */
+    RUN_TEST(test_printw);
+    RUN_TEST(test_attron_reverse);
+    RUN_TEST(test_attrset);
+    RUN_TEST(test_color_pair_fg_bg);
+    RUN_TEST(test_move_out_of_bounds);
+    RUN_TEST(test_init_pair_and_has_colors);
+    RUN_TEST(test_mvaddch);
 
     TEST_REPORT();
 }

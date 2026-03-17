@@ -28,7 +28,7 @@ For the testing ladder and procedures, see
 
 | File | Subsystem | Assertions | Coverage notes |
 |------|-----------|-----------|----------------|
-| `test_string.c` | kernel/string.c | 60 | memset, memcpy, strcmp, strchr, etc. |
+| `test_string.c` | kernel/string.c | 847 | memset, memcpy, strcmp, strchr, **memmove overlap** (forward/backward/no-overlap), **large buffer** (512/48 bytes), sentinel checks |
 | `test_mem.c` | kernel/mem.c | 247 | kmalloc/kfree + **umem allocator** (alloc, free, coalesce, fragmentation, variable sizes, gap reuse, pipeline scenario, stats) |
 | `test_exec.c` | kernel/exec.c | 33 | Header validation, stack setup |
 | `test_proc.c` | kernel/proc.c | 2001 | Pipes, kstack, PID alloc, zombies, waitpid, fcntl |
@@ -36,17 +36,22 @@ For the testing ladder and procedures, see
 | `test_vdp.c` | VDP driver | 63 | VRAM/CRAM addresses, sprite layout, tab stops |
 | `test_signal.c` | Signals | 94 | Handlers, delivery, SIGTSTP/SIGCONT, pgrp |
 | `test_redir.c` | Shell redir | 61 | Parse, redirect, pipes, SIGPIPE |
-| `test_tty.c` | TTY subsystem | 78 | Canon/raw mode, termios, ICRNL, signal chars |
-| `test_fs.c` | Filesystem | 118 | Inodes, bmap, read/write, namei, mkdir, indirect blocks |
+| `test_tty.c` | TTY subsystem | 90 | Canon/raw mode, termios, ICRNL, signal chars, **winsize edge cases** (roundtrip, zero, large, pixel fields) |
+| `test_fs.c` | Filesystem | 121 | Inodes, bmap, read/write, namei, mkdir, indirect blocks, **fs_read/fs_write overflow guards** |
 | `test_buf.c` | Buffer cache | 36 | bread/bwrite/brelse, eviction, dirty writeback |
 | `test_kprintf.c` | kprintf | 24 | Format strings, hex, char, percent |
 | `test_pipe.c` | Pipes | 2170 | Fill, wrap, overflow, EOF, stress |
 | `test_reloc.c` | Relocations | 64 | Simple/split reloc, XIP, **duplicate offset (known bug)** |
-| `test_dash.c` | Dash semantics | 44 | errno conversion, waitpid, execve, PATH search |
+| `test_dash.c` | Dash semantics | 45 | errno conversion, waitpid, execve, PATH search |
 | `test_abi.c` | ABI compat | 28 | **struct stat layout match** (kernel vs libc), field alignment |
 | `test_lineedit.c` | libc/lineedit.c | 102 | Edit ops (insert/delete/move/kill), history ring, key parsing (ANSI, MD, ctrl) |
+| `test_ansi.c` | ANSI parser | 146 | Cursor movement (CUP/CUU/CUD/CUF/CUB), clear (ED/EL), SGR (**bold, bright FG 90-97, normal FG/BG, multi-param, reset, default FG, normal intensity**), save/restore cursor, DSR report, hide/show cursor, word wrap, scroll, **CUP 'f' alias, ED clear-above, invalid CSI abort, tab alignment** |
+| `test_curses.c` | Curses library | 53 | initscr, move, addch, addstr, clear, clrtoeol, **printw, A_REVERSE, attrset, color pair fg+bg, mvaddch, has_colors, init_pair** |
+| `test_pipe_bulk.c` | Pipe bulk copy | 523 | Contiguous-chunk memcpy, wrap-around, pattern verification, full/partial/single-byte |
+| `test_syscalls.c` | FD management | 120 | F_GETFD/F_SETFD, F_GETFL mask, MAXFD limit, **FD_CLOEXEC propagation**, dup/dup2 clears cloexec, F_DUPFD, EBADF, ofile exhaustion |
+| `test_divmod.c` | Division logic | 378 | **DIVU.W fast path** (16-bit boundary), slow path (32-bit), **consistency check** (q*b+r==a), kernel-relevant values (INODES_PER_BLK, base 10/16) |
 
-**Total: ~5,292 assertions across 17 test files**
+**Total: ~7,317 assertions across 22 test files**
 
 ---
 
@@ -79,6 +84,19 @@ These documented issues have test coverage:
 | Dash boot + commands | `test-dash.sh` | Post-Phase C bugs |
 | Redirection no-space parsing | `test_redir.c` | HISTORY.md bug 16 |
 | STRICT_ALIGN enforcement | `make test-emu` | HISTORY.md bug 2 |
+| FD_CLOEXEC propagation + exec close | `test_syscalls.c` | a26fbf0 kernel/proc.c + exec.c |
+| F_GETFL masks internal pipe bits | `test_syscalls.c` | a26fbf0 proc.c fcntl F_GETFL |
+| TTY winsize from PAL | `test_tty.c` + autotest | a26fbf0 tty.c pal_console_rows/cols |
+| ANSI parser SGR multi-param, bright FG | `test_ansi.c` | d43bc50 VDP ANSI parser |
+| ANSI parser CUP 'f' alias, ED clear-above | `test_ansi.c` | d43bc50 VDP ANSI parser |
+| fs_read overflow guard (off+n wrap) | `test_fs.c` | a26fbf0 fs.c |
+| fs_write overflow guard (off+n > UINT32_MAX) | `test_fs.c` | a26fbf0 fs.c |
+| Pipe bulk copy (contiguous memcpy) | `test_pipe_bulk.c` | 789a8ca proc.c |
+| DIVU.W fast path logic (16-bit check) | `test_divmod.c` | 789a8ca divmod.S |
+| memmove overlap correctness | `test_string.c` | 789a8ca memops.S |
+| memcpy/memset large buffers (512+ bytes) | `test_string.c` | 789a8ca memops.S |
+| Curses printw, A_REVERSE, color fg+bg | `test_curses.c` | d43bc50 curses.c |
+| Winsize edge cases (0, 255, pixel roundtrip) | `test_tty.c` | 7153582 tty.c |
 
 ---
 
@@ -199,7 +217,7 @@ Added 2026-03-17 after discovering multi-stage pipe corruption
 |-------|-----------------|------------|-------|
 | Full TRAP #0 syscall path | automated-testing.md | Medium | Autotests call kernel directly in supervisor mode. Need a userspace `apps/test_syscalls.c` that exercises the real TRAP → libc stub → kernel path. |
 | `sigaction()` read-restore correctness | shell-plan.md weak spot A-1 | Easy | Verify `sigaction(sig, NULL, &oact)` reads old handler without corrupting it. |
-| FD_CLOEXEC silently ignored | proc.c:1374 | Easy | Dash sets it but kernel doesn't honor it. Test should document this gap. |
+| FD_CLOEXEC propagation + exec close | proc.c + exec.c | **Tested** | `test_syscalls.c` covers F_GETFD/F_SETFD roundtrip, propagation to child, exec close. |
 | Levee crash root cause | test-levee.sh | **Fixed** | Was missing `-msep-data` in levee Makefile. a5 (GOT pointer) was clobbered by compiler using it as scratch register. |
 
 ### Medium priority
@@ -208,7 +226,7 @@ Added 2026-03-17 after discovering multi-stage pipe corruption
 |-------|-----------------|------------|-------|
 | GOT offset near 64 KB boundary | PLAN.md weak spot 4 | Easy | Synthetic header with got_offset=0xFFFE. Low risk (no binary is close). |
 | `do_exec` memory leak on file-not-found | PLAN.md weak spot 5 | Low | `do_exec` now returns -ENOENT before allocating memory (header read first). No leak possible. |
-| F_GETFL internal flag leakage | shell-plan.md weak spot B-1 | Easy | Set internal flag below 0x0FFF, verify it leaks through F_GETFL. |
+| F_GETFL internal flag leakage | shell-plan.md weak spot B-1 | **Tested** | `test_syscalls.c` verifies F_GETFL masks OFILE_PIPE_READ/WRITE bits. |
 | Environment variables not inherited | plans/decisions.md limitation 7 | Easy | Confirm `export VAR; child` doesn't see VAR (documents limitation). |
 
 ### Not feasible as unit tests

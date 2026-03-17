@@ -802,6 +802,150 @@ static void test_escape_not_csi(void)
     ASSERT_EQ(esc_state, ESC_NORMAL);
 }
 
+/* ---- Tests added for a26fbf0+ coverage ---- */
+
+static void test_sgr_normal_fg_colors(void)
+{
+    /* SGR 30-37 set normal foreground colors.
+     * In this minimal parser they don't change current_attr (no palette
+     * mapping for normal colors), but they should not corrupt state. */
+    reset_all();
+    feed("\033[31m");  /* red fg */
+    /* Should not set bold/bright palette bits */
+    ASSERT_EQ(current_attr, 0);
+    /* State should be normal */
+    ASSERT_EQ(esc_state, ESC_NORMAL);
+}
+
+static void test_sgr_normal_bg_colors(void)
+{
+    /* SGR 40-47 set normal background colors. */
+    reset_all();
+    feed("\033[42m");  /* green bg */
+    ASSERT_EQ(current_attr, 0);
+    ASSERT_EQ(esc_state, ESC_NORMAL);
+}
+
+static void test_sgr_bright_fg_all(void)
+{
+    /* SGR 90-97 all set bright foreground (palette bits 3<<13). */
+    for (int code = 90; code <= 97; code++) {
+        reset_all();
+        char seq[16];
+        snprintf(seq, sizeof(seq), "\033[%dm", code);
+        feed(seq);
+        ASSERT_EQ(current_attr, (3u << 13));
+    }
+}
+
+static void test_sgr_multi_param(void)
+{
+    /* Multiple SGR params in one sequence: ESC[1;31m = bold + red */
+    reset_all();
+    feed("\033[1;31m");
+    /* Bold should be set (param 1 processed first). Normal fg 31 is a no-op. */
+    ASSERT_EQ(current_attr, (3u << 13));
+}
+
+static void test_sgr_reset_in_multi(void)
+{
+    /* ESC[0;1m — reset then bold */
+    reset_all();
+    feed("\033[97m");  /* set bright */
+    ASSERT_EQ(current_attr, (3u << 13));
+    feed("\033[0;1m");  /* reset then bold */
+    ASSERT_EQ(current_attr, (3u << 13));
+}
+
+static void test_sgr_bold_then_reset(void)
+{
+    /* ESC[1;0m — bold then reset → should be reset */
+    reset_all();
+    feed("\033[1;0m");
+    ASSERT_EQ(current_attr, 0);
+}
+
+static void test_sgr_default_fg(void)
+{
+    /* SGR 39 — default foreground: resets attr */
+    reset_all();
+    feed("\033[1m");
+    ASSERT_EQ(current_attr, (3u << 13));
+    feed("\033[39m");
+    ASSERT_EQ(current_attr, 0);
+}
+
+static void test_sgr_normal_intensity(void)
+{
+    /* SGR 22 — normal intensity: clears bold */
+    reset_all();
+    feed("\033[1m");
+    ASSERT_EQ(current_attr, (3u << 13));
+    feed("\033[22m");
+    ASSERT_EQ(current_attr, 0);
+}
+
+static void test_csi_cup_f_alias(void)
+{
+    /* 'f' is an alias for CUP (same as 'H') */
+    reset_all();
+    feed("\033[5;10f");
+    ASSERT_EQ(cursor_y, 4);
+    ASSERT_EQ(cursor_x, 9);
+}
+
+static void test_csi_ed_clear_above(void)
+{
+    /* ED 1: ESC[1J — clear from start of screen to cursor */
+    reset_all();
+    cursor_x = 5;
+    cursor_y = 3;
+    feed("\033[1J");
+    /* Should clear lines 0 to cursor_y-1, then partial line up to cursor */
+    ASSERT_EQ(clrl_count, 1);
+    ASSERT_EQ(clrl_log[0].y, 0);
+    ASSERT_EQ(clrl_log[0].num, 3);  /* lines 0-2 */
+    ASSERT_EQ(clra_count, 1);
+    ASSERT_EQ(clra_log[0].y, 3);
+    ASSERT_EQ(clra_log[0].x, 0);
+    ASSERT_EQ(clra_log[0].num, 6);  /* cursor_x + 1 */
+}
+
+static void test_invalid_csi_char(void)
+{
+    /* Non-digit, non-semicolon, non-final char in CSI → abort.
+     * '=' aborts CSI, then 'H' is printed as a normal character. */
+    reset_all();
+    feed("\033[=H");
+    ASSERT_EQ(esc_state, ESC_NORMAL);
+    /* 'H' is printed at (0,0) after abort, advancing cursor_x to 1 */
+    ASSERT_EQ(cursor_x, 1);
+    ASSERT_EQ(cursor_y, 0);
+    ASSERT_EQ(plot_count, 1);
+    ASSERT_EQ(plot_log[0].c, 'H');
+}
+
+static void test_scroll_multiple_newlines(void)
+{
+    /* Fill screen with newlines → should scroll multiple times */
+    reset_all();
+    for (int i = 0; i < ROWS + 3; i++)
+        pal_console_putc('\n');
+    ASSERT(scroll_count >= 3);
+    ASSERT_EQ(cursor_y, ROWS - 1);
+}
+
+static void test_tab_alignment(void)
+{
+    /* Tab at column 7 → column 8; tab at column 8 → column 16 */
+    reset_all();
+    cursor_x = 7;
+    feed("\t");
+    ASSERT_EQ(cursor_x, 8);
+    feed("\t");
+    ASSERT_EQ(cursor_x, 16);
+}
+
 /* ============================================================
  * Main
  * ============================================================ */
@@ -841,6 +985,21 @@ int main(void)
     RUN_TEST(test_cuf_clamp_at_right);
     RUN_TEST(test_backspace_at_col0);
     RUN_TEST(test_escape_not_csi);
+
+    /* Additional coverage for a26fbf0+ changes */
+    RUN_TEST(test_sgr_normal_fg_colors);
+    RUN_TEST(test_sgr_normal_bg_colors);
+    RUN_TEST(test_sgr_bright_fg_all);
+    RUN_TEST(test_sgr_multi_param);
+    RUN_TEST(test_sgr_reset_in_multi);
+    RUN_TEST(test_sgr_bold_then_reset);
+    RUN_TEST(test_sgr_default_fg);
+    RUN_TEST(test_sgr_normal_intensity);
+    RUN_TEST(test_csi_cup_f_alias);
+    RUN_TEST(test_csi_ed_clear_above);
+    RUN_TEST(test_invalid_csi_char);
+    RUN_TEST(test_scroll_multiple_newlines);
+    RUN_TEST(test_tab_alignment);
 
     TEST_REPORT();
 }
