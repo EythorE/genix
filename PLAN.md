@@ -3,7 +3,7 @@
 What remains to be built. For project history and completed phases,
 see [HISTORY.md](HISTORY.md).
 
-Current state: Genix is a working preemptive multitasking OS with 47
+Current state: Genix is a working preemptive multitasking OS with 48
 user programs (including dash shell and 13 tier-1 utilities),
 relocatable binaries, pipes, signals, job control, and a TTY
 subsystem with ANSI escape sequence support and a minimal curses
@@ -30,7 +30,7 @@ PSRAM), see [docs/plans/](docs/plans/).
 ## NEXT: BlastEm Visual Review & Hardware Validation
 
 **Priority:** CRITICAL — must be done before any new feature work.
-**Status:** Not started.
+**Status:** Step 1 complete (vdptest app + make target exist). Steps 2-4 not started.
 
 The VDP terminal (ANSI parser, bold palette, curses) and performance
 optimizations (DIVU.W, assembly memcpy, pipe bulk copy) were all
@@ -142,7 +142,7 @@ BlastEm visual validation** (see "NEXT" section above).
 - VDP palette 3 for bold text (bright white on black, 0 VRAM cost)
 - Minimal curses library: libc/curses.c (~460 lines) + curses.h (~119 lines)
 - Device open/close dispatch, console suppression, FD_CLOEXEC
-- 108 ANSI parser tests, 36+ curses tests, 523 pipe bulk assertions, 120 syscall tests
+- 7,317 total test assertions (108 ANSI parser, 36+ curses, 523 pipe bulk, 120 syscall, and more)
 
 **What's deferred:**
 - V3b: 8-color support (requires multiple font copies in VRAM, ~21 KB)
@@ -193,7 +193,7 @@ Phase 9 (Performance) ......... mostly done (3/5 optimizations)
     |
 VDP Color Terminal + Curses .. done (V1-V4 complete, host-tested)
     |
-BlastEm Visual Review ....... ← NEXT (critical before new features)
+BlastEm Visual Review ....... ← NEXT (step 1 done, steps 2-4 pending)
     |
 Tier 2 TUI Games ............ unblocked (curses ready)
 ```

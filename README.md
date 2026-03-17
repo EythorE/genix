@@ -28,9 +28,14 @@ history and [HISTORY.md](HISTORY.md) for the full project timeline.
 | Phase B | Kernel enhancements — fcntl F_DUPFD, waitpid WNOHANG | **Complete** |
 | Phase C | Port dash shell — POSIX scripting, variable expansion, command substitution | **Complete** |
 | Phase D | Interactive line editing — arrow keys, cursor movement, command history | **Complete** |
-| Phase 9 | Performance — assembly memcpy/memset, DIVU.W fast path, VDP DMA scroll | Anytime |
+| Tier 1 Apps | Wave 1-2 utilities + find/xargs — 13 new programs ported | **Complete** |
+| VDP Terminal | ANSI escape parser, bold palette, curses library (V1-V4) | **Complete** |
+| Phase 9 | Performance — assembly memcpy/memset, DIVU.W fast path, pipe bulk copy | **3/5 done** |
+| BlastEm Review | Visual validation of VDP terminal + performance optimizations | Next |
+| Tier 2 Games | TUI games using curses (hamurabi, dopewars, tetris, snake, etc.) | Planned |
 
-See [PLAN.md](PLAN.md) for detailed implementation plans.
+See [PLAN.md](PLAN.md) for the forward roadmap and
+[docs/plans/apps_to_port.md](docs/plans/apps_to_port.md) for the app porting roadmap.
 
 ### What works today
 
@@ -45,7 +50,7 @@ All the shell features you'd expect: pipes (`|`), I/O redirection
 substitution (`` `cmd` ``), control flow (`if`/`then`/`else`, `for`,
 `while`, `case`), functions, traps, and full POSIX scripting.
 
-**47 user programs in `/bin`.** `ls`, `cat`, `grep`, `sort`, `find`,
+**48 user programs in `/bin`.** `ls`, `cat`, `grep`, `sort`, `find`,
 `xargs`, `cp`, `mv`, `rm`, `mkdir`, `more`, `wc`, `tr`, `cut`,
 `uniq`, `comm`, `expr`, `env`, `seq`, `od`, `touch`, `kill`,
 `which`, `uname` — plus `levee` (a vi clone) and `dash` itself. Every
@@ -68,7 +73,13 @@ Saturn keyboard on controller port 2.
 hard links. Create files, make directories, rename, unlink — it's all
 there.
 
-**Tested.** 5,230+ host test assertions across 17 test files, 31
+**A VDP color terminal.** On the Mega Drive, the VDP console parses
+ANSI escape sequences: cursor positioning (`ESC[H`), screen/line
+clearing (`ESC[2J`, `ESC[K`), bold text via a bright-white palette,
+and cursor show/hide. A minimal curses library (~460 lines) enables
+TUI apps like levee and future games.
+
+**Tested.** 7,317+ host test assertions across 17 test files, 31
 automated guest tests on the workbench emulator, 15 dash integration
 tests, BlastEm Mega Drive autotest, and a 68020 opcode scan that
 catches wrong-toolchain bugs at compile time. Every change runs the
@@ -203,7 +214,7 @@ genix/
 │   ├── workbench/  # Emulated SBC
 │   └── megadrive/  # Sega Mega Drive
 ├── libc/         # Minimal C library + syscall stubs (for user programs)
-├── apps/         # Userspace programs (47 including dash)
+├── apps/         # Userspace programs (48 including dash)
 ├── tools/        # Host tools (mkfs, mkbin)
 ├── tests/        # Host unit tests (17 test files, 5230+ assertions)
 └── docs/         # Technical documentation, plans, and research
@@ -241,7 +252,7 @@ See [docs/](docs/) for detailed technical documentation:
 | [68000 Programming](docs/68000-programming.md) | ISA constraints, division, ABI |
 | [Design Decisions](docs/plans/decisions.md) | Active design decisions guiding development |
 | [Project History](HISTORY.md) | FUZIX heritage, implementation timeline, bugs, lessons |
-| [Forward Plan](PLAN.md) | Roadmap: Phase 9 performance, VDP color terminal |
+| [Forward Plan](PLAN.md) | Roadmap: BlastEm visual review, Tier 2 games |
 | [EverDrive Research](docs/research/everdrive-research.md) | SD card access, Pro hardware, SSF mode, bank switching |
 | [Apps to Port](docs/plans/apps_to_port.md) | App porting roadmap, tier definitions, RAM analysis |
 | [Relocatable Binaries](docs/research/relocatable-binaries.md) | Relocation research, XIP strategies, EverDrive bank-swapping |
