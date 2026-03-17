@@ -2044,6 +2044,35 @@ well at 40x28 resolution; at 7.67 MHz even a full screen redraw takes only
 are straightforward to test on host — the test files mock the kernel
 environment and exercise the logic directly.
 
+### Pipe close missing wakeup — `ls bin | more` hangs
+
+**Symptom**: `ls bin | more` hangs indefinitely after `ls` outputs data.
+Any pipeline where the writer produces more than 512 bytes (PIPE_SIZE)
+or where one end exits while the other is blocked would hang.
+
+**Root cause**: `pipe_close_read()` and `pipe_close_write()` in
+`kernel/proc.c` decremented the reader/writer count but did NOT wake
+any process sleeping on the other end of the pipe. When `ls` filled the
+512-byte pipe buffer, it blocked in `pipe_write()` waiting for space.
+If `more` then exited (closing the read end), `pipe_close_read()`
+decremented `p->readers` to 0 but left `ls` in `P_SLEEPING` state
+forever. The shell was waiting for both children → three-way deadlock
+with no runnable process.
+
+The same bug applied symmetrically: if a writer exited while a reader
+was blocked waiting for data, the reader would never see EOF.
+
+**Fix**: Added wakeup logic to both `pipe_close_read()` (wakes blocked
+writer so it sees `readers==0` and returns `EPIPE`) and
+`pipe_close_write()` (wakes blocked reader so it sees `writers==0` and
+returns 0/EOF). This matches the existing wakeup pattern already used
+inside `pipe_read()` and `pipe_write()` themselves.
+
+**Lesson**: Pipe close is a state transition that must notify the other
+end — it's not just bookkeeping. Any time a blocking condition variable
+changes (readers/writers count), all waiters on that condition must be
+woken. This is a classic missed-wakeup bug.
+
 ---
 
 _End of project history. For active design decisions, see
