@@ -808,6 +808,58 @@ static void autotest(void)
         }
     }
 
+    /* Test 29: spawn ls /bin | more (exercises pipe + pager passthrough) */
+    kputs("[test] spawn pipe ls|more: ");
+    {
+        int pfd[2];
+        rc = do_pipe(pfd);
+        if (rc < 0) {
+            kprintf("FAIL (pipe returned %d)\n", rc);
+            fail++;
+        } else {
+            /* Open /dev/null for more's stdout so isatty() returns false
+             * and more acts as a passthrough (not interactive pager) */
+            int nullfd = syscall_dispatch(SYS_OPEN,
+                            (uint32_t)"/dev/null", O_WRONLY, 0, 0);
+
+            /* Run ls /bin with stdout → pipe */
+            const char *ls_argv[] = { "/bin/ls", "/bin", NULL };
+            int ls_pid = do_spawn_fd("/bin/ls", ls_argv,
+                                      -1, pfd[1], -1);
+            syscall_dispatch(SYS_CLOSE, pfd[1], 0, 0, 0);
+
+            int ok = 1;
+            if (ls_pid > 0) {
+                int status;
+                do_waitpid(ls_pid, &status, 0);
+            } else { ok = 0; }
+
+            /* Run more with stdin ← pipe, stdout → /dev/null */
+            const char *more_argv[] = { "/bin/more", NULL };
+            int more_pid = do_spawn_fd("/bin/more", more_argv,
+                                        pfd[0],
+                                        nullfd >= 0 ? nullfd : -1,
+                                        -1);
+            syscall_dispatch(SYS_CLOSE, pfd[0], 0, 0, 0);
+            if (nullfd >= 0)
+                syscall_dispatch(SYS_CLOSE, nullfd, 0, 0, 0);
+
+            if (more_pid > 0) {
+                int status;
+                do_waitpid(more_pid, &status, 0);
+            } else { ok = 0; }
+
+            if (ok) {
+                kputs("PASS\n");
+                pass++;
+            } else {
+                kprintf("FAIL (ls_pid=%d more_pid=%d)\n",
+                        ls_pid, more_pid);
+                fail++;
+            }
+        }
+    }
+
     /* Summary */
     kprintf("\n=== AUTOTEST DONE: %d passed, %d failed ===\n", pass, fail);
     if (fail > 0)
