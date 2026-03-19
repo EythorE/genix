@@ -428,6 +428,8 @@ void do_exit(int code)
     if (curproc->ppid < MAXPROC) {
         struct proc *parent = &proctab[curproc->ppid];
         if (parent->state == P_VFORK) {
+            /* Restore parent's brk — vfork child's sbrk modified it */
+            parent->brk = parent->saved_brk;
             uint8_t child_pid = curproc->pid;
             parent->state = P_RUNNING;
             curproc = parent;
@@ -567,6 +569,11 @@ int do_vfork(void)
     }
 
     nproc++;
+
+    /* Save parent's brk so we can restore it after the vfork child
+     * execs or exits.  The child's malloc/sbrk modifies the parent's
+     * brk (via sbrk_proc redirect); restoring it prevents heap leak. */
+    parent->saved_brk = parent->brk;
 
     /* Block parent until child calls exec() or _exit() */
     parent->state = P_VFORK;

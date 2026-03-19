@@ -645,6 +645,9 @@ int do_exec(const char *path, const char **argv)
             proc_setup_kstack(curproc, entry, user_sp, curproc->data_a5);
             curproc->state = P_READY;
 
+            /* Restore parent's brk — vfork child's sbrk modified it */
+            parent->brk = parent->saved_brk;
+
             uint8_t child_pid = curproc->pid;
             parent->state = P_RUNNING;
             curproc = parent;

@@ -418,10 +418,10 @@ int main(int argc, char *argv[])
 
     fprintf(stderr, "[emu] Running...\n");
 
-    unsigned int cycles_until_tick = CYCLES_PER_TICK;
+    int cycles_until_tick = CYCLES_PER_TICK;
 
     while (!g_quit) {
-        unsigned int cycles = m68k_execute(1000);
+        int cycles = m68k_execute(1000);
         cycles_until_tick -= cycles;
 
         /* Idle throttle: if the CPU is just polling UART with no data,

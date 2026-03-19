@@ -395,6 +395,7 @@ struct proc {
     uint32_t data_bss;     /* data+bss size loaded into slot */
     uint16_t cwd;          /* current working directory inode */
     uint32_t vfork_ctx[13]; /* vfork_save context (d2-d7,a2-a6,sp,retaddr) */
+    uint32_t saved_brk;    /* parent brk before vfork (restored on child exec/exit) */
     uint8_t  pgrp;         /* process group ID (for job control) */
     uint8_t  _pad2;        /* align to even boundary */
     uint32_t sig_pending;  /* bitmask of pending signals */
