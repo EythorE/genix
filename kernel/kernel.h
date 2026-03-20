@@ -105,7 +105,7 @@ extern uint32_t USER_SIZE;   /* USER_TOP - USER_BASE */
 
 /* Default user stack and heap sizes */
 #define USER_STACK_DEFAULT  4096
-#define USER_HEAP_DEFAULT   4096
+#define USER_HEAP_DEFAULT   8192
 
 /* Genix binary format header (32 bytes, big-endian on disk)
  *
@@ -375,8 +375,10 @@ void sys_sigreturn(uint32_t *frame);
 /* Per-process kernel stack size in bytes.
  * Must hold: exception frame (6) + saved regs (60) + USP (4) +
  * syscall args (20) + C call chain (~120) = ~210 bytes minimum.
- * The deepest path is TRAP→syscall_dispatch→sys_write→con_write→kputc→pal_putc.
- * 512 bytes gives comfortable headroom for nested timer ISR. */
+ * The deepest path is TRAP→syscall_dispatch→fs_mkdir→fs_create→
+ * fs_namei_parent→fs_namei→dir_lookup + possible timer ISR (22 bytes).
+ * 512 bytes is tight; filesystem functions use static buffers for
+ * large locals (PATH_MAX, NAME_MAX) to avoid overflowing. */
 #define KSTACK_SIZE   512
 #define KSTACK_WORDS  (KSTACK_SIZE / 4)  /* 64 uint32_t entries */
 #define KSTACK_CANARY 0xDEADBEEF         /* overflow detection */

@@ -44,7 +44,7 @@ APP_BINS = $(CORE_BINS) $(wildcard apps/levee/levee)
 
 # Create a filesystem image with user programs
 disk: tools apps
-	tools/mkfs.minifs disk.img 512 $(APP_BINS)
+	tools/mkfs.minifs disk.img 768 $(APP_BINS)
 
 # Create Mega Drive filesystem image (same relocatable binaries)
 disk-md: tools apps
@@ -68,7 +68,7 @@ test:
 test-emu: emu libc tools
 	@$(MAKE) -C apps clean
 	@$(MAKE) -C apps
-	@tools/mkfs.minifs disk.img 512 $(CORE_BINS)
+	@tools/mkfs.minifs disk.img 768 $(CORE_BINS)
 	@$(MAKE) -C kernel clean
 	@$(MAKE) -C kernel EXTRA_CFLAGS=-DAUTOTEST
 	@echo "=== test-emu: workbench autotest ==="

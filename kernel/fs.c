@@ -350,7 +350,7 @@ static struct inode *dir_lookup(struct inode *dp, const char *name, int namelen)
     if (dp->type != FT_DIR)
         return NULL;
 
-    struct dirent_disk de;
+    static struct dirent_disk de;
     for (uint32_t off = 0; off < dp->size; off += sizeof(de)) {
         if (fs_read(dp, &de, off, sizeof(de)) != sizeof(de))
             break;
@@ -374,7 +374,7 @@ static int dir_link(struct inode *dp, const char *name, uint16_t inum)
     }
 
     /* Find a free slot or append */
-    struct dirent_disk de;
+    static struct dirent_disk de;
     uint32_t off;
     for (off = 0; off < dp->size; off += sizeof(de)) {
         if (fs_read(dp, &de, off, sizeof(de)) != sizeof(de))
@@ -400,7 +400,7 @@ found:
 /* Remove a directory entry by name */
 static int dir_unlink(struct inode *dp, const char *name)
 {
-    struct dirent_disk de;
+    static struct dirent_disk de;
     for (uint32_t off = 0; off < dp->size; off += sizeof(de)) {
         if (fs_read(dp, &de, off, sizeof(de)) != sizeof(de))
             break;
@@ -476,8 +476,11 @@ static struct inode *fs_namei_parent(const char *path, char *name_out)
         strncpy(name_out, path + 1, NAME_MAX - 1);
         name_out[NAME_MAX - 1] = '\0';
     } else {
-        /* Copy parent path */
-        char parent[PATH_MAX];
+        /* Copy parent path.  Use a static buffer to avoid blowing the
+         * 512-byte per-process kstack (PATH_MAX = 256 bytes is too
+         * much for a stack local).  Safe because the kernel is
+         * non-preemptive — no concurrent callers. */
+        static char parent[PATH_MAX];
         int plen = last_slash - path;
         if (plen >= PATH_MAX) return NULL;
         memcpy(parent, path, plen);
@@ -497,7 +500,7 @@ static struct inode *fs_namei_parent(const char *path, char *name_out)
 /* Create a new file/dir */
 struct inode *fs_create(const char *path, uint8_t type)
 {
-    char name[NAME_MAX];
+    static char name[NAME_MAX];
     struct inode *dp = fs_namei_parent(path, name);
     if (!dp) return NULL;
 
@@ -532,7 +535,7 @@ struct inode *fs_create(const char *path, uint8_t type)
 
 int fs_unlink(const char *path)
 {
-    char name[NAME_MAX];
+    static char name[NAME_MAX];
     struct inode *dp = fs_namei_parent(path, name);
     if (!dp) return -ENOENT;
 
@@ -560,7 +563,7 @@ int fs_rename(const char *oldpath, const char *newpath)
     struct inode *ip = fs_namei(oldpath);
     if (!ip) return -ENOENT;
 
-    char oldname[NAME_MAX], newname[NAME_MAX];
+    static char oldname[NAME_MAX], newname[NAME_MAX];
     struct inode *old_dp = fs_namei_parent(oldpath, oldname);
     struct inode *new_dp = fs_namei_parent(newpath, newname);
 
@@ -587,7 +590,7 @@ int fs_mkdir(const char *path)
     if (!ip) return -EIO;
 
     /* Add . and .. entries */
-    char name[NAME_MAX];
+    static char name[NAME_MAX];
     struct inode *dp = fs_namei_parent(path, name);
     uint16_t parent_inum = dp ? dp->inum : 1;
     if (dp) fs_iput(dp);
@@ -609,7 +612,7 @@ int fs_rmdir(const char *path)
     }
 
     /* Check if empty (only . and ..) */
-    struct dirent_disk de;
+    static struct dirent_disk de;
     int count = 0;
     for (uint32_t off = 0; off < ip->size; off += sizeof(de)) {
         if (fs_read(ip, &de, off, sizeof(de)) != sizeof(de))
@@ -624,8 +627,21 @@ int fs_rmdir(const char *path)
         return -ENOTEMPTY;
     }
 
+    /* Unlink the directory entry from its parent.
+     * Can't use fs_unlink() — it rejects FT_DIR. */
+    static char rmdir_name[NAME_MAX];
+    struct inode *dp = fs_namei_parent(path, rmdir_name);
+    if (!dp) {
+        fs_iput(ip);
+        return -ENOENT;
+    }
+
+    dir_unlink(dp, rmdir_name);
+    ip->nlink--;
+    ip->dirty = 1;
     fs_iput(ip);
-    return fs_unlink(path);
+    fs_iput(dp);
+    return 0;
 }
 
 int fs_getdents(struct inode *ip, void *buf, uint32_t off, uint32_t n)
